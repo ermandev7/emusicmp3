@@ -14,58 +14,41 @@ El repositorio está dividido en dos proyectos principales que se comunican entr
 ## 🏗️ Mapa Conceptual de la Arquitectura
 
 ```mermaid
-graph TD
+graph LR
     %% Frontend
-    subgraph Frontend [🌐 React (eMusic/)]
-        UI[Interfaz Gráfica]
-        Store[Zustand Store]
-        Queue[Gestión de Cola]
-        API_Piped[Cliente API Piped]
+    subgraph Web ["🌐 React (Frontend Web)"]
+        UI["📱 Interfaz Visual"]
+        Queue["🎵 Gestor de Canciones"]
     end
 
     %% Puente Híbrido
-    subgraph Bridge [🌉 Puente Híbrido (emusic://)]
-        P_Play[emusic://play]
-        P_Next[emusic://preparenext]
-        P_Crossfade[emusic://startcrossfade]
-        P_Download[emusic://download]
-        JS_Callbacks[window.onNativeTrackEnded]
+    subgraph Bridge ["🌉 Puente de Comunicación"]
+        PlayCmd("▶️ Iniciar (emusic://play)")
+        NextCmd("⏳ Precargar (emusic://preparenext)")
+        FadeCmd("🎚️ Mezclar (emusic://startcrossfade)")
+        DownloadCmd("⬇️ Guardar (emusic://download)")
     end
 
     %% Backend Nativo
-    subgraph Backend [📱 MAUI (eMusicApp/)]
-        MainPage[MainPage.xaml.cs]
-        AutoMedia[AutoMediaService Android]
-        Downloader[DownloadManager C#]
-        Storage[(Almacenamiento Local)]
-        
-        PlayerA(Reproductor A)
-        PlayerB(Reproductor B)
+    subgraph Native ["⚙️ App Nativa (MAUI C#)"]
+        Offline["💾 Almacenamiento Offline"]
+        PlayerA["🔊 Reproductor A"]
+        PlayerB["🔊 Reproductor B (Crossfade)"]
     end
 
-    %% Conexiones
-    UI --> Store
-    Store --> Queue
-    Queue --> API_Piped
-    
-    Queue -- 1. Envia URL/ID --> P_Play
-    Queue -- 15s antes del final --> P_Next
-    Queue -- 3s antes del final --> P_Crossfade
-    UI -- "Descargar" --> P_Download
-    
-    P_Play --> MainPage
-    P_Next --> MainPage
-    P_Crossfade --> MainPage
-    P_Download --> MainPage
-    
-    MainPage --> Downloader
-    Downloader --> Storage
-    
-    MainPage --> AutoMedia
-    AutoMedia --> PlayerA
-    AutoMedia --> PlayerB
-    AutoMedia -- "Fin de pista" --> JS_Callbacks
-    JS_Callbacks --> Store
+    %% Flujo Principal
+    UI -->|"Descargar"| DownloadCmd
+    DownloadCmd --> Offline
+
+    Queue -->|"Dar Play"| PlayCmd
+    PlayCmd --> PlayerA
+
+    Queue -.->|"Faltan 15 seg"| NextCmd
+    NextCmd --> PlayerB
+
+    Queue -.->|"Faltan 3 seg"| FadeCmd
+    FadeCmd -.->|"Fade In/Out"| PlayerA
+    FadeCmd -.->|"Fade In/Out"| PlayerB
 ```
 
 ---

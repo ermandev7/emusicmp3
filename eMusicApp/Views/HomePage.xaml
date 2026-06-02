@@ -38,7 +38,7 @@
                         
                         <Border StrokeThickness="0"
                                 StrokeShape="RoundRectangle 5"
-                                BackgroundColor="#2A2A2A"
+                                BackgroundColor="#282828"
                                 HeightRequest="55">
                             
                             <Grid ColumnDefinitions="55, *">

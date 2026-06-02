@@ -20,8 +20,13 @@ namespace eMusicApp.ViewModels
             {
                 MainThread.BeginInvokeOnMainThread(() =>
                 {
-                    Position = posMs;
-                    Duration = durMs;
+                    if (!IsDraggingSlider)
+                    {
+                        // IMPORTANTE: Primero actualizar la duración (SliderMaximum) para evitar que el control 
+                        // Slider de MAUI trunque la posición al valor máximo anterior (1).
+                        Duration = durMs;
+                        Position = posMs;
+                    }
                 });
             };
 
@@ -66,6 +71,9 @@ namespace eMusicApp.ViewModels
         private Track _currentTrack;
 
         public bool HasCurrentTrack => CurrentTrack != null;
+
+        [ObservableProperty]
+        private bool _isDraggingSlider;
 
         [ObservableProperty]
         [NotifyPropertyChangedFor(nameof(PlayPauseIcon))]
@@ -168,15 +176,12 @@ namespace eMusicApp.ViewModels
             Position = 0;
             Duration = 0;
             
-            // Add to History asynchronously
-            _ = _apiService.AddHistoryAsync(track);
-            
             // Try playing local downloaded file first
             DownloadManager.Initialize();
             string? localPath = DownloadManager.GetLocalPath(track.VideoId);
             if (!string.IsNullOrEmpty(localPath))
             {
-                NativeAudioController.RequestPlay(localPath, track.Title, track.Uploader, track.ThumbnailUrl);
+                NativeAudioController.RequestPlay(localPath, track.Title, track.Uploader, track.ThumbnailUrl, track.VideoId);
                 return;
             }
 
@@ -191,13 +196,21 @@ namespace eMusicApp.ViewModels
                 }
             }
 
-            if (!string.IsNullOrEmpty(streamUrl) && streamUrl.StartsWith("http"))
+            if (!string.IsNullOrEmpty(streamUrl) && streamUrl.StartsWith("http") && !streamUrl.Contains("watch?v="))
             {
-                NativeAudioController.RequestPlay(streamUrl, track.Title, track.Uploader, track.ThumbnailUrl);
+                NativeAudioController.RequestPlay(streamUrl, track.Title, track.Uploader, track.ThumbnailUrl, track.VideoId);
             }
             else
             {
-                NativeAudioController.RequestPlay(track.Url, track.Title, track.Uploader, track.ThumbnailUrl);
+                IsPlaying = false;
+                MainThread.BeginInvokeOnMainThread(async () =>
+                {
+                    if (Application.Current?.MainPage != null)
+                    {
+                        await Application.Current.MainPage.DisplayAlert("Stream no disponible", "Los servidores de extracción han bloqueado temporalmente esta canción por copyright. Intenta con otra.", "OK");
+                    }
+                    await NextTrack(); // Saltar a la siguiente si esta falla
+                });
             }
         }
 

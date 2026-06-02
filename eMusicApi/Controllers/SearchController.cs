@@ -8,26 +8,26 @@ namespace eMusicApi.Controllers;
 [Route("api/[controller]")]
 public class SearchController : ControllerBase
 {
-    private readonly PipedApiService _apiService;
+    private readonly MusicExtractionService _musicService;
 
-    public SearchController(PipedApiService apiService)
+    public SearchController(MusicExtractionService musicService)
     {
-        _apiService = apiService;
+        _musicService = musicService;
     }
 
     [HttpGet]
     public async Task<IActionResult> Get([FromQuery] string q)
     {
         if (string.IsNullOrEmpty(q)) return BadRequest("Query parameter 'q' is required.");
-        
+
         try
         {
-            var result = await _apiService.SearchAsync(q);
+            var result = await _musicService.SearchAsync(q);
             return Content(result, "application/json");
         }
-        catch (System.Exception ex)
+        catch (Exception ex)
         {
-            return StatusCode(500, ex.Message);
+            return StatusCode(500, new { error = ex.Message });
         }
     }
 }

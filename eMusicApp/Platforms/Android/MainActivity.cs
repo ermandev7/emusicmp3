@@ -34,13 +34,13 @@ public class MainActivity : MauiAppCompatActivity
         // Start the service so it's alive and listening to NativeAudioController
         try
         {
-            var intent = new Android.Content.Intent(this, typeof(Platforms.Android.AutoMediaService));
+            var intent = new Android.Content.Intent(this, typeof(Platforms.Android.AndroidMedia3Service));
             StartService(intent);
-            Logger.Log("AutoMediaService started from MainActivity.");
+            Logger.Log("AndroidMedia3Service started from MainActivity.");
         }
         catch (Exception ex)
         {
-            Logger.Log("Failed to start AutoMediaService from MainActivity.", ex);
+            Logger.Log("Failed to start AndroidMedia3Service from MainActivity.", ex);
         }
     }
 }

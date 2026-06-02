@@ -21,15 +21,31 @@ public class HistoryController : ControllerBase
     [HttpGet]
     public async Task<IActionResult> Get()
     {
-        return Ok(await _context.History.AsNoTracking().OrderByDescending(h => h.PlayedAt).Take(10).ToListAsync());
+        return Ok(await _context.History.AsNoTracking().OrderByDescending(h => h.PlayedAt).Take(20).ToListAsync());
     }
 
     [HttpPost]
     public async Task<IActionResult> Post(History history)
     {
+        // Evitar duplicados: borrar cualquier registro previo con el mismo VideoId
+        var existing = await _context.History.Where(h => h.VideoId == history.VideoId).ToListAsync();
+        if (existing.Any())
+        {
+            _context.History.RemoveRange(existing);
+        }
+
         history.PlayedAt = System.DateTime.UtcNow;
         _context.History.Add(history);
         await _context.SaveChangesAsync();
+
+        // Limpiar el historial antiguo (mantener solo los últimos 50)
+        var oldHistory = await _context.History.OrderByDescending(h => h.PlayedAt).Skip(50).ToListAsync();
+        if (oldHistory.Any())
+        {
+            _context.History.RemoveRange(oldHistory);
+            await _context.SaveChangesAsync();
+        }
+
         return CreatedAtAction(nameof(Get), new { id = history.Id }, history);
     }
 

@@ -33,9 +33,18 @@ namespace eMusicApp.ViewModels
                         Duration = duration
                     };
 
-                    // Optimistic UI Update: Empujar el ítem al principio visualmente
+                    // Optimistic UI Update: Evitar duplicados visuales eliminando instancias previas
+                    for (int i = RecentTracks.Count - 1; i >= 0; i--)
+                    {
+                        if (RecentTracks[i].VideoId == newTrack.VideoId || RecentTracks[i].VideoIdFromJson == newTrack.VideoIdFromJson)
+                        {
+                            RecentTracks.RemoveAt(i);
+                        }
+                    }
+
+                    // Empujar el ítem al principio visualmente
                     RecentTracks.Insert(0, newTrack);
-                    if (RecentTracks.Count > 10)
+                    if (RecentTracks.Count > 20)
                     {
                         RecentTracks.RemoveAt(RecentTracks.Count - 1);
                     }

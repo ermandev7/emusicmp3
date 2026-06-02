@@ -132,76 +132,97 @@ public class MusicExtractionService
     {
         try
         {
-            var process = new System.Diagnostics.Process
+            // Primero intentamos YouTube Music (resultados de canciones precisos)
+            var ytMusicResult = await RunYtDlpSearch(
+                $"https://music.youtube.com/search?q={Uri.EscapeDataString(query)}&sp=EgWKAQIIAWoKEAMQBBAJEAoQBQ%3D%3D",
+                query, isMusic: true);
+
+            if (ytMusicResult.Count > 0)
             {
-                StartInfo = new System.Diagnostics.ProcessStartInfo
-                {
-                    FileName = "yt-dlp",
-                    // ytsearch15 busca los 15 primeros resultados de YouTube
-                    Arguments = $"ytsearch15:{query} --flat-playlist -j --quiet --no-warnings",
-                    RedirectStandardOutput = true,
-                    RedirectStandardError = true,
-                    UseShellExecute = false,
-                    CreateNoWindow = true
-                }
-            };
-            process.Start();
-            var output = await process.StandardOutput.ReadToEndAsync();
-            await process.WaitForExitAsync();
-
-            if (string.IsNullOrWhiteSpace(output))
-                return "{\"items\":[],\"nextpage\":null}";
-
-            var items = new List<object>();
-            foreach (var line in output.Split('\n', StringSplitOptions.RemoveEmptyEntries))
-            {
-                try
-                {
-                    using var doc = JsonDocument.Parse(line);
-                    var root = doc.RootElement;
-
-                    var id = root.TryGetProperty("id", out var idEl) ? idEl.GetString() ?? "" : "";
-                    var title = root.TryGetProperty("title", out var titleEl) ? titleEl.GetString() ?? "" : "";
-                    var uploader = root.TryGetProperty("uploader", out var uploaderEl) ? uploaderEl.GetString() ?? "" : "";
-                    var thumbnail = root.TryGetProperty("thumbnail", out var thumbEl) ? thumbEl.GetString() ?? "" : "";
-                    var duration = root.TryGetProperty("duration", out var durEl) ? (long)durEl.GetDouble() : 0L;
-                    var views = root.TryGetProperty("view_count", out var viewEl) && viewEl.ValueKind == JsonValueKind.Number
-                        ? viewEl.GetInt64() : 0L;
-
-                    if (string.IsNullOrEmpty(id) || string.IsNullOrEmpty(title)) continue;
-
-                    items.Add(new
-                    {
-                        url = $"/watch?v={id}",
-                        type = "stream",
-                        title = title,
-                        thumbnail = thumbnail,
-                        uploaderName = uploader,
-                        uploaderUrl = "",
-                        uploaderAvatar = "",
-                        uploaderVerified = false,
-                        duration = duration,
-                        views = views,
-                        uploaded = 0L,
-                        shortDescription = "",
-                        isShort = false
-                    });
-                }
-                catch { /* ignorar líneas malformadas */ }
+                Console.WriteLine($"[yt-dlp Search] ✅ {ytMusicResult.Count} resultados de YouTube Music para '{query}'");
+                return BuildSearchJson(ytMusicResult);
             }
 
-            var result = JsonSerializer.Serialize(
-                new { items, nextpage = (string?)null, suggestion = (string?)null, corrected = false },
-                new JsonSerializerOptions { PropertyNamingPolicy = JsonNamingPolicy.CamelCase });
-
-            Console.WriteLine($"[yt-dlp Search] ✅ {items.Count} resultados para '{query}'");
-            return result;
+            // Fallback: YouTube general con filtro de duración mínima (evita clips cortos de gaming)
+            var ytResult = await RunYtDlpSearch($"ytsearch20:{query}", query, isMusic: false);
+            Console.WriteLine($"[yt-dlp Search] ✅ {ytResult.Count} resultados de YouTube para '{query}'");
+            return BuildSearchJson(ytResult);
         }
         catch (Exception ex)
         {
             Console.WriteLine($"[yt-dlp Search] ERROR: {ex.Message}");
             return "{\"items\":[],\"nextpage\":null}";
         }
+    }
+
+    private async Task<List<object>> RunYtDlpSearch(string searchArg, string query, bool isMusic)
+    {
+        var process = new System.Diagnostics.Process
+        {
+            StartInfo = new System.Diagnostics.ProcessStartInfo
+            {
+                FileName = "yt-dlp",
+                Arguments = $"\"{searchArg}\" --flat-playlist -j --quiet --no-warnings --playlist-end 20",
+                RedirectStandardOutput = true,
+                RedirectStandardError = true,
+                UseShellExecute = false,
+                CreateNoWindow = true
+            }
+        };
+        process.Start();
+        var output = await process.StandardOutput.ReadToEndAsync();
+        await process.WaitForExitAsync();
+
+        var items = new List<object>();
+        if (string.IsNullOrWhiteSpace(output)) return items;
+
+        foreach (var line in output.Split('\n', StringSplitOptions.RemoveEmptyEntries))
+        {
+            try
+            {
+                using var doc = JsonDocument.Parse(line);
+                var root = doc.RootElement;
+
+                var id = root.TryGetProperty("id", out var idEl) ? idEl.GetString() ?? "" : "";
+                var title = root.TryGetProperty("title", out var titleEl) ? titleEl.GetString() ?? "" : "";
+                var uploader = root.TryGetProperty("uploader", out var uploaderEl) ? uploaderEl.GetString() ?? "" : "";
+                var thumbnail = root.TryGetProperty("thumbnail", out var thumbEl) ? thumbEl.GetString() ?? "" : "";
+                var duration = root.TryGetProperty("duration", out var durEl) && durEl.ValueKind == JsonValueKind.Number
+                    ? (long)durEl.GetDouble() : 0L;
+                var views = root.TryGetProperty("view_count", out var viewEl) && viewEl.ValueKind == JsonValueKind.Number
+                    ? viewEl.GetInt64() : 0L;
+
+                if (string.IsNullOrEmpty(id) || string.IsNullOrEmpty(title)) continue;
+                // Filtrar clips cortos de gaming (<30s) en búsquedas generales
+                if (!isMusic && duration > 0 && duration < 30) continue;
+
+                items.Add(new
+                {
+                    url = $"/watch?v={id}",
+                    type = "stream",
+                    title = title,
+                    thumbnail = thumbnail,
+                    uploaderName = uploader,
+                    uploaderUrl = "",
+                    uploaderAvatar = "",
+                    uploaderVerified = false,
+                    duration = duration,
+                    views = views,
+                    uploaded = 0L,
+                    shortDescription = "",
+                    isShort = false
+                });
+            }
+            catch { /* ignorar líneas malformadas */ }
+        }
+        return items;
+    }
+
+    private static string BuildSearchJson(List<object> items)
+    {
+        return JsonSerializer.Serialize(
+            new { items, nextpage = (string?)null, suggestion = (string?)null, corrected = false },
+            new JsonSerializerOptions { PropertyNamingPolicy = JsonNamingPolicy.CamelCase });
     }
 
     // ─────────────────────────────────────────────────────────────────

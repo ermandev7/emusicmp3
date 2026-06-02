@@ -95,26 +95,25 @@ namespace eMusicApp.Platforms.Android
             _progressTimer.Start();
         }
 
-        // ── Timer tick — actualiza la barra de progreso y detecta cambio de track ──
+        // ── Timer tick — TODA la lectura de ExoPlayer debe hacerse en el Main Thread ──
         private void OnProgressTick(object? sender, System.Timers.ElapsedEventArgs e)
         {
-            if (_player == null) return;
-
-            var state = _player.PlaybackState;
-            bool isBuffering = (state == 2); // STATE_BUFFERING
-
             Microsoft.Maui.ApplicationModel.MainThread.BeginInvokeOnMainThread(() =>
             {
                 if (_player == null) return;
 
+                var state       = _player.PlaybackState;   // Seguro en Main Thread
+                bool isBuffering = (state == 2);           // STATE_BUFFERING
+                bool isPlaying   = _player.IsPlaying;
+
                 NativeAudioController.ReportBufferingState(isBuffering);
                 if (!isBuffering)
-                    NativeAudioController.ReportPlaybackState(_player.IsPlaying);
+                    NativeAudioController.ReportPlaybackState(isPlaying);
 
-                if (_player.IsPlaying)
+                if (isPlaying)
                 {
-                    long dur = _player.Duration;
-                    long pos = _player.CurrentPosition;
+                    long dur  = _player.Duration;
+                    long pos  = _player.CurrentPosition;
                     int durMs = dur < 0 ? 0 : (int)dur;
                     int posMs = pos < 0 ? 0 : (int)pos;
 
@@ -125,12 +124,12 @@ namespace eMusicApp.Platforms.Android
                     if (!string.IsNullOrEmpty(playingId) && playingId != _currentMediaId)
                     {
                         _currentMediaId = playingId;
-                        var title  = _player.CurrentMediaItem?.MediaMetadata?.Title?.ToString() ?? "";
-                        var artist = _player.CurrentMediaItem?.MediaMetadata?.Artist?.ToString() ?? "";
+                        var title  = _player.CurrentMediaItem?.MediaMetadata?.Title?.ToString()      ?? "";
+                        var artist = _player.CurrentMediaItem?.MediaMetadata?.Artist?.ToString()     ?? "";
                         var thumb  = _player.CurrentMediaItem?.MediaMetadata?.ArtworkUri?.ToString() ?? "";
                         NativeAudioController.ReportTrackStarted(playingId, title, artist, thumb, durMs);
 
-                        // El track cambió → pre-fetch del siguiente ya
+                        // Track cambió → pre-fetch del siguiente
                         _nextPrepared = false;
                         if (_nativeQueue.Count > 0 && !_isFetchingNext)
                             _ = FetchNextTrackNativelyAsync();

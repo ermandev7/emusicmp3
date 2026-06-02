@@ -17,7 +17,8 @@
                 StrokeThickness="0"
                 StrokeShape="RoundRectangle 8"
                 BackgroundColor="#242424">
-            <SearchBar Placeholder="¿Qué quieres escuchar?"
+            <SearchBar x:Name="SearchBarControl"
+                       Placeholder="¿Qué quieres escuchar?"
                        Text="{Binding SearchQuery}"
                        SearchCommand="{Binding SearchCommand}"
                        TextColor="White"
@@ -38,7 +39,8 @@
                         <Grid.GestureRecognizers>
                             <TapGestureRecognizer 
                                 Command="{Binding Source={RelativeSource AncestorType={x:Type vm:SearchViewModel}}, Path=Player.PlayTrackCommand}" 
-                                CommandParameter="{Binding .}"/>
+                                CommandParameter="{Binding .}"
+                                Tapped="OnTrackTapped"/>
                         </Grid.GestureRecognizers>
                         
                         <Grid ColumnDefinitions="Auto, *" BackgroundColor="Transparent" Padding="10">

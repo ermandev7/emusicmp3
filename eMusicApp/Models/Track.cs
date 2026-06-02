@@ -18,6 +18,10 @@ namespace eMusicApp.Models
         [JsonPropertyName("uploader")]
         public string? UploaderFromJson { get; set; }
 
+        // Invidious usa "author" en lugar de "uploaderName"
+        [JsonPropertyName("author")]
+        public string? AuthorFromJson { get; set; }
+
         [JsonPropertyName("thumbnailUrl")]
         public string? ThumbnailUrlFromJson { get; set; }
 
@@ -37,11 +41,15 @@ namespace eMusicApp.Models
         public string Title { get; set; } = "";
 
         private string _uploader = "";
-        // Piped usa "uploaderName" en búsqueda y "uploader" en streams
+        // Piped usa "uploaderName", la BD usa "artist", Invidious usa "author"
         [JsonPropertyName("uploaderName")]
         public string Uploader 
         { 
-            get => !string.IsNullOrEmpty(_uploader) ? _uploader : (!string.IsNullOrEmpty(ArtistFromJson) ? ArtistFromJson : (!string.IsNullOrEmpty(UploaderFromJson) ? UploaderFromJson : string.Empty));
+            get => !string.IsNullOrEmpty(_uploader) ? _uploader 
+                 : (!string.IsNullOrEmpty(ArtistFromJson)   ? ArtistFromJson 
+                 : (!string.IsNullOrEmpty(UploaderFromJson) ? UploaderFromJson 
+                 : (!string.IsNullOrEmpty(AuthorFromJson)   ? AuthorFromJson 
+                 : string.Empty)));
             set => _uploader = value;
         }
 

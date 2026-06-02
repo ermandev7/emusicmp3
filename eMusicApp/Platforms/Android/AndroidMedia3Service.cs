@@ -7,12 +7,10 @@ using AndroidX.Media3.DataSource;
 using AndroidX.Media3.DataSource.Cache;
 using AndroidX.Media3.Database;
 using AndroidX.Media3.Session;
-using Java.Util.Concurrent;
 using System.Collections.Generic;
 using System.Net.Http;
 using System.Text.Json;
 using System.Threading.Tasks;
-using System.IO;
 
 namespace eMusicApp.Platforms.Android
 {
@@ -23,45 +21,47 @@ namespace eMusicApp.Platforms.Android
         private MediaSession? _mediaSession;
         private IExoPlayer? _player;
 
-        // Instancia estática para acceso rápido y control puente desde NativeAudioController
         public static AndroidMedia3Service? Instance { get; private set; }
 
         private System.Timers.Timer? _progressTimer;
 
-        // Variables de Autoplay / Gapless
+        // Cola nativa para autoplay
         private Queue<string> _nativeQueue = new Queue<string>();
         private bool _isFetchingNext = false;
         private bool _nextPrepared = false;
         private string? _currentMediaId;
-        private static readonly HttpClient _httpClient = new HttpClient();
+        private static readonly HttpClient _httpClient = new HttpClient { Timeout = System.TimeSpan.FromSeconds(30) };
 
-        // Variables de Caché Nativa LRU
+        // Caché LRU
         private SimpleCache? _simpleCache;
         private StandaloneDatabaseProvider? _databaseProvider;
+
+        // Listener nativo de ExoPlayer — detecta cambios de canción SIN depender del hilo de MAUI
+        private PlayerListener? _playerListener;
 
         public override void OnCreate()
         {
             base.OnCreate();
             Instance = this;
 
-            // 1. Puente: Vinculamos los botones de la UI de MAUI directamente a este servicio
-            NativeAudioController.OnPlayRequested = (url, title, artist, thumb, videoId) => PlayStream(url, title, artist, thumb, videoId);
-            NativeAudioController.OnPauseRequested = Pause;
+            // Puente MAUI → Nativo
+            NativeAudioController.OnPlayRequested  = (url, title, artist, thumb, videoId) => PlayStream(url, title, artist, thumb, videoId);
+            NativeAudioController.OnPauseRequested  = Pause;
             NativeAudioController.OnResumeRequested = Resume;
-            NativeAudioController.OnSeekRequested = (pos) => SeekTo(pos);
-            NativeAudioController.OnUpdateQueueRequested = (videoIds) => {
+            NativeAudioController.OnSeekRequested   = (pos) => SeekTo(pos);
+            NativeAudioController.OnUpdateQueueRequested = (videoIds) =>
+            {
                 _nativeQueue.Clear();
                 foreach (var id in videoIds) _nativeQueue.Enqueue(id);
-                _nextPrepared = false; // Reset flag for gapless
+                _nextPrepared = false;
             };
 
-            // 0. Configurar la Caché LRU de 500MB en el sistema de archivos del usuario
+            // Caché LRU 500 MB
             var cacheDir = new Java.IO.File(CacheDir, "emusic_audio_cache");
             _databaseProvider = new StandaloneDatabaseProvider(this);
-            var evictor = new LeastRecentlyUsedCacheEvictor(500 * 1024 * 1024); // 500 MB max
+            var evictor = new LeastRecentlyUsedCacheEvictor(500 * 1024 * 1024);
             _simpleCache = new SimpleCache(cacheDir, evictor, _databaseProvider);
 
-            // Fabricante HTTP -> Fabricante Caché
             var httpDataSourceFactory = new DefaultHttpDataSource.Factory().SetAllowCrossProtocolRedirects(true);
             var cacheDataSourceFactory = new CacheDataSource.Factory()
                 .SetCache(_simpleCache)
@@ -71,101 +71,88 @@ namespace eMusicApp.Platforms.Android
             var mediaSourceFactory = new DefaultMediaSourceFactory(this)
                 .SetDataSourceFactory(cacheDataSourceFactory);
 
-            // 1. Inicializar ExoPlayer con optimizaciones de red, batería y Caché
-            _player = new AndroidX.Media3.ExoPlayer.ExoPlayerBuilder(this)
+            // Construir ExoPlayer
+            _player = new ExoPlayerBuilder(this)
                 .SetMediaSourceFactory(mediaSourceFactory)
-                // ExoPlayer maneja automáticamente los WakeLocks nativos con esta configuración
                 .SetWakeMode(C.WakeModeNetwork)
-                // Pausa automática al desconectar auriculares
-                .SetHandleAudioBecomingNoisy(true) 
+                .SetHandleAudioBecomingNoisy(true)
                 .Build();
 
-            // 2. Inicializar MediaSession (Gestiona la UI de la notificación y Lockscreen)
-            _mediaSession = new MediaSession.Builder(this, _player).Build();
+            // ── Listener nativo: detecta MediaItem transition (canción siguiente) ──
+            _playerListener = new PlayerListener(this);
+            _player.AddListener(_playerListener);
 
-            // 3. Temporizador para actualizar la barra de progreso en la UI y el estado
+            // MediaSession — esto genera automáticamente la notificación con los controles
+            _mediaSession = new MediaSession.Builder(this, _player)
+                .SetCallback(new MediaSessionCallback())
+                .Build();
+
+            // Proveedor de notificación con ícono del sistema
+            var notifProvider = new DefaultMediaNotificationProvider.Builder(this).Build();
+            notifProvider.SetSmallIcon(global::Android.Resource.Drawable.IcMediaPlay);
+            SetMediaNotificationProvider(notifProvider);
+
+            // Temporizador de progreso (solo UI de MAUI — no afecta autoplay)
             _progressTimer = new System.Timers.Timer(1000);
             _progressTimer.Elapsed += (s, e) =>
             {
+                if (_player == null) return;
+                var state = _player.PlaybackState;
+                bool isBuffering = (state == 2);
+
                 Microsoft.Maui.ApplicationModel.MainThread.BeginInvokeOnMainThread(() =>
                 {
-                    if (_player != null)
+                    NativeAudioController.ReportBufferingState(isBuffering);
+                    if (!isBuffering)
+                        NativeAudioController.ReportPlaybackState(_player.IsPlaying);
+
+                    if (_player.IsPlaying)
                     {
-                        var state = _player.PlaybackState;
-                        // STATE_IDLE=1, STATE_BUFFERING=2, STATE_READY=3, STATE_ENDED=4
-                        // Durante BUFFERING no cambiamos IsPlaying para evitar que el botón
-                        // vuelva a "▶️" mientras yt-dlp está extrayendo/cargando el audio.
-                        bool isBuffering = (state == 2);
-                        NativeAudioController.ReportBufferingState(isBuffering);
+                        long dur = _player.Duration;
+                        long pos = _player.CurrentPosition;
+                        int durMs = dur < 0 ? 0 : (int)dur;
+                        int posMs = pos < 0 ? 0 : (int)pos;
+                        NativeAudioController.ReportProgress(posMs, durMs);
 
-                        if (!isBuffering)
+                        // Historial: detectar cambio de track
+                        var playingId = _player.CurrentMediaItem?.MediaId;
+                        if (!string.IsNullOrEmpty(playingId) && playingId != _currentMediaId)
                         {
-                            NativeAudioController.ReportPlaybackState(_player.IsPlaying);
+                            _currentMediaId = playingId;
+                            var title  = _player.CurrentMediaItem?.MediaMetadata?.Title?.ToString() ?? "";
+                            var artist = _player.CurrentMediaItem?.MediaMetadata?.Artist?.ToString() ?? "";
+                            var thumb  = _player.CurrentMediaItem?.MediaMetadata?.ArtworkUri?.ToString() ?? "";
+                            NativeAudioController.ReportTrackStarted(playingId, title, artist, thumb, durMs);
                         }
 
-                        if (_player.IsPlaying)
+                        // Pre-fetch siguiente cuando quedan 15 s
+                        if (durMs > 0 && (durMs - posMs) <= 15000)
                         {
-                            long dur = _player.Duration;
-                            int durMs = dur < 0 ? 0 : (int)dur;
-                            long pos = _player.CurrentPosition;
-                            int posMs = pos < 0 ? 0 : (int)pos;
+                            if (!_isFetchingNext && !_nextPrepared && _nativeQueue.Count > 0)
+                                _ = FetchNextTrackNativelyAsync();
+                        }
+                    }
 
-                            NativeAudioController.ReportProgress(posMs, durMs);
-                            
-                            // Gatillo para TrackStarted (Historial)
-                            var playingId = _player.CurrentMediaItem?.MediaId;
-                            if (!string.IsNullOrEmpty(playingId) && playingId != _currentMediaId)
-                            {
-                                _currentMediaId = playingId;
-                                var title = _player.CurrentMediaItem?.MediaMetadata?.Title?.ToString() ?? "";
-                                var artist = _player.CurrentMediaItem?.MediaMetadata?.Artist?.ToString() ?? "";
-                                var thumb = _player.CurrentMediaItem?.MediaMetadata?.ArtworkUri?.ToString() ?? "";
-                                NativeAudioController.ReportTrackStarted(playingId, title, artist, thumb, durMs);
-                            }
-
-                            // Gatillo de 15 segundos para Pre-fetching Gapless
-                            if (durMs > 0 && (durMs - posMs) <= 15000)
-                            {
-                                if (!_isFetchingNext && !_nextPrepared && _nativeQueue.Count > 0)
-                                {
-                                    _ = FetchNextTrackNativelyAsync();
-                                }
-                            }
-                        }
-                        
-                        // Comprobar si hay error de red o bloqueo
-                        if (_player.PlayerError != null)
-                        {
-                            System.Diagnostics.Debug.WriteLine($"[ExoPlayer ERROR] {_player.PlayerError.ErrorCodeName}: {_player.PlayerError.Message}");
-                            NativeAudioController.ReportPlaybackState(false);
-                            NativeAudioController.ReportTrackEnded();
-                            _player.ClearMediaItems();
-                        }
-                        
-                        // Comprobar si terminó (STATE_ENDED = 4)
-                        if (state == 4)
-                        {
-                            NativeAudioController.ReportTrackEnded();
-                            _nextPrepared = false;
-                        }
+                    if (_player.PlayerError != null)
+                    {
+                        NativeAudioController.ReportPlaybackState(false);
+                        NativeAudioController.ReportTrackEnded();
+                        _player.ClearMediaItems();
                     }
                 });
             };
             _progressTimer.Start();
         }
 
-        // Endpoint principal para que Android descubra la sesión
+        // Android descubre la sesión aquí
         public override MediaSession? OnGetSession(MediaSession.ControllerInfo controllerInfo)
-        {
-            return _mediaSession;
-        }
+            => _mediaSession;
 
-        // --- Inyección de Audio ---
+        // ── Reproducción ──
         public void PlayStream(string url, string title, string artist, string thumbUrl, string videoId)
         {
             if (_player == null) return;
             _nextPrepared = false;
-
             _player.SetMediaItem(CreateMediaItem(url, title, artist, thumbUrl, videoId));
             _player.Prepare();
             _player.Play();
@@ -182,53 +169,69 @@ namespace eMusicApp.Platforms.Android
             return new MediaItem.Builder()
                 .SetUri(url)
                 .SetMediaId(videoId)
-                .SetCustomCacheKey(videoId)
+                .SetCustomCacheKey(videoId)   // Caché ignora tokens de URL
                 .SetMediaMetadata(metadata)
                 .Build();
         }
 
-        private async Task FetchNextTrackNativelyAsync()
+        // ── Pre-fetch de la siguiente pista ──
+        public async Task FetchNextTrackNativelyAsync()
         {
             _isFetchingNext = true;
             try
             {
+                if (_nativeQueue.Count == 0) return;
                 var nextVideoId = _nativeQueue.Dequeue();
-                
-                // Llama al servidor local de la Raspberry Pi de forma silenciosa
+
                 var response = await _httpClient.GetStringAsync($"http://emusicmp3.duckdns.org:5050/api/streams/{nextVideoId}");
                 using var doc = JsonDocument.Parse(response);
                 var root = doc.RootElement;
-                
-                var title = root.GetProperty("title").GetString() ?? "Unknown";
-                var uploader = root.GetProperty("uploader").GetString() ?? "Unknown";
-                var thumb = root.GetProperty("thumbnailUrl").GetString() ?? "";
-                
+
+                var title    = root.GetProperty("title").GetString()        ?? "Unknown";
+                var uploader = root.GetProperty("uploader").GetString()     ?? "Unknown";
+                var thumb    = root.GetProperty("thumbnailUrl").GetString() ?? "";
+
                 var audioStreams = root.GetProperty("audioStreams");
                 if (audioStreams.GetArrayLength() > 0)
                 {
-                    var nextUrl = audioStreams[0].GetProperty("url").GetString();
-                    
-                    if (!string.IsNullOrEmpty(nextUrl) && _player != null)
+                    // Seleccionar stream de mayor bitrate
+                    int bestBitrate = 0;
+                    string? bestUrl = null;
+                    foreach (var s in audioStreams.EnumerateArray())
                     {
-                        // Inyectar el siguiente track a ExoPlayer para GAPLESS PLAYBACK
-                        _player.AddMediaItem(CreateMediaItem(nextUrl, title, uploader, thumb, nextVideoId));
+                        int br = s.TryGetProperty("bitrate", out var brEl) ? brEl.GetInt32() : 0;
+                        string? su = s.TryGetProperty("url", out var suEl) ? suEl.GetString() : null;
+                        if (su != null && br > bestBitrate) { bestBitrate = br; bestUrl = su; }
+                    }
+                    
+                    if (!string.IsNullOrEmpty(bestUrl) && _player != null)
+                    {
+                        // Añadir a la cola de ExoPlayer para gapless
+                        _player.AddMediaItem(CreateMediaItem(bestUrl, title, uploader, thumb, nextVideoId));
                         _nextPrepared = true;
-                        
-                        // AUTOPLAY INFINITO: Regenerar la cola nativa con los nuevos "relatedStreams"
-                        var related = root.GetProperty("relatedStreams");
-                        _nativeQueue.Clear();
-                        foreach (var rel in related.EnumerateArray())
+
+                        // Regenerar cola con relatedStreams
+                        if (root.TryGetProperty("relatedStreams", out var related))
                         {
-                            var vId = rel.GetProperty("videoId").GetString();
-                            if (!string.IsNullOrEmpty(vId)) _nativeQueue.Enqueue(vId);
+                            _nativeQueue.Clear();
+                            foreach (var rel in related.EnumerateArray())
+                            {
+                                if (rel.TryGetProperty("videoId", out var vIdEl))
+                                {
+                                    var vId = vIdEl.GetString();
+                                    if (!string.IsNullOrEmpty(vId)) _nativeQueue.Enqueue(vId);
+                                }
+                            }
                         }
+
+                        System.Diagnostics.Debug.WriteLine($"[Autoplay] Siguiente preparado: {title}");
                     }
                 }
             }
             catch (Exception ex)
             {
-                // Error de red silencioso
-                System.Diagnostics.Debug.WriteLine($"Error prefetching next track: {ex.Message}");
+                System.Diagnostics.Debug.WriteLine($"[Autoplay] Error fetch siguiente: {ex.Message}");
+                _nextPrepared = false;
             }
             finally
             {
@@ -236,33 +239,100 @@ namespace eMusicApp.Platforms.Android
             }
         }
 
-        public void Pause() => _player?.Pause();
-        public void Resume() => _player?.Play();
+        public void Pause()   => _player?.Pause();
+        public void Resume()  => _player?.Play();
         public void SeekTo(long positionMs) => _player?.SeekTo(positionMs);
-        
+
         public long CurrentPosition => _player?.CurrentPosition ?? 0;
-        public long Duration => _player?.Duration ?? 0;
-        public bool IsPlaying => _player?.IsPlaying ?? false;
+        public long Duration        => _player?.Duration        ?? 0;
+        public bool IsPlaying       => _player?.IsPlaying       ?? false;
 
         public override void OnDestroy()
         {
-            NativeAudioController.OnPlayRequested = null;
-            NativeAudioController.OnPauseRequested = null;
-            NativeAudioController.OnResumeRequested = null;
-            NativeAudioController.OnSeekRequested = null;
+            _progressTimer?.Stop();
+            _progressTimer?.Dispose();
+
+            NativeAudioController.OnPlayRequested        = null;
+            NativeAudioController.OnPauseRequested       = null;
+            NativeAudioController.OnResumeRequested      = null;
+            NativeAudioController.OnSeekRequested        = null;
             NativeAudioController.OnUpdateQueueRequested = null;
+
+            if (_playerListener != null && _player != null)
+                _player.RemoveListener(_playerListener);
 
             _mediaSession?.Player?.Release();
             _mediaSession?.Release();
-            
-            // Liberar Caché para evitar locks de DB
             _simpleCache?.Release();
-            _simpleCache = null;
+            _simpleCache  = null;
             _databaseProvider = null;
-            
             _mediaSession = null;
-            Instance = null;
+            Instance      = null;
             base.OnDestroy();
+        }
+
+        // ══════════════════════════════════════════════════════════
+        // Listener nativo — completamente independiente del UI thread
+        // ══════════════════════════════════════════════════════════
+        private class PlayerListener : Java.Lang.Object, IPlayerListener
+        {
+            private readonly AndroidMedia3Service _svc;
+            public PlayerListener(AndroidMedia3Service svc) => _svc = svc;
+
+            // Se llama cuando ExoPlayer cambia de MediaItem (siguiente canción)
+            public void OnMediaItemTransition(MediaItem? mediaItem, int reason)
+            {
+                // reason 1 = MEDIA_ITEM_TRANSITION_REASON_AUTO (canción terminó → siguiente automático)
+                if (reason == 1)
+                {
+                    _svc._nextPrepared = false;
+                    var id     = mediaItem?.MediaId ?? "";
+                    var title  = mediaItem?.MediaMetadata?.Title?.ToString()      ?? "";
+                    var artist = mediaItem?.MediaMetadata?.Artist?.ToString()     ?? "";
+                    var thumb  = mediaItem?.MediaMetadata?.ArtworkUri?.ToString() ?? "";
+
+                    Microsoft.Maui.ApplicationModel.MainThread.BeginInvokeOnMainThread(() =>
+                    {
+                        NativeAudioController.ReportTrackStarted(id, title, artist, thumb, 0);
+                    });
+
+                    // Si la cola nativa tiene más, pre-fetch ya
+                    if (_svc._nativeQueue.Count > 0 && !_svc._isFetchingNext)
+                        _ = _svc.FetchNextTrackNativelyAsync();
+                }
+            }
+
+            // Se llama cuando ExoPlayer llega al final de toda la cola (STATE_ENDED)
+            public void OnPlaybackStateChanged(int state)
+            {
+                // STATE_ENDED = 4
+                if (state == 4)
+                {
+                    if ((_svc._player?.MediaItemCount ?? 0) == 0 && _svc._nativeQueue.Count == 0)
+                    {
+                        Microsoft.Maui.ApplicationModel.MainThread.BeginInvokeOnMainThread(() =>
+                        {
+                            NativeAudioController.ReportTrackEnded();
+                        });
+                    }
+                }
+            }
+        }
+
+
+        // ══════════════════════════════════════════════════════════
+        // Callback de MediaSession — habilita TODOS los controles
+        // en la notificación, pantalla de bloqueo y Android Auto
+        // ══════════════════════════════════════════════════════════
+        private class MediaSessionCallback : Java.Lang.Object, MediaSession.ICallback
+        {
+            public MediaSession.ConnectionResult OnConnect(MediaSession session, MediaSession.ControllerInfo controller)
+            {
+                // Exponer TODOS los comandos por defecto — habilita Play, Pause, Next, Previous en notificación y lockscreen
+                return MediaSession.ConnectionResult.Accept(
+                    MediaSession.ConnectionResult.DefaultSessionCommands,
+                    MediaSession.ConnectionResult.DefaultPlayerCommands);
+            }
         }
     }
 }

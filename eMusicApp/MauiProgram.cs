@@ -1,4 +1,8 @@
-﻿using Microsoft.Extensions.Logging;
+using Microsoft.Extensions.Logging;
+using eMusicApp.Services;
+using eMusicApp.ViewModels;
+using eMusicApp.Views;
+using Maui.Skeleton;
 
 namespace eMusicApp;
 
@@ -18,6 +22,20 @@ public static class MauiProgram
 #if DEBUG
 		builder.Logging.AddDebug();
 #endif
+
+		// Services
+		builder.Services.AddSingleton<ApiService>();
+		builder.Services.AddSingleton<PlayerViewModel>();
+
+		// ViewModels
+		builder.Services.AddTransient<HomeViewModel>();
+		builder.Services.AddTransient<SearchViewModel>();
+		builder.Services.AddTransient<LibraryViewModel>();
+
+		// Pages
+		builder.Services.AddTransient<HomePage>();
+		builder.Services.AddTransient<SearchPage>();
+		builder.Services.AddTransient<LibraryPage>();
 
 		return builder.Build();
 	}

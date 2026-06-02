@@ -1,0 +1,68 @@
+using Microsoft.AspNetCore.Mvc;
+using Microsoft.EntityFrameworkCore;
+using System.Threading.Tasks;
+using eMusicApi.Data;
+using eMusicApi.Models;
+
+namespace eMusicApi.Controllers;
+
+[ApiController]
+[Route("api/[controller]")]
+public class PlaylistsController : ControllerBase
+{
+    private readonly AppDbContext _context;
+
+    public PlaylistsController(AppDbContext context)
+    {
+        _context = context;
+    }
+
+    [HttpGet]
+    public async Task<IActionResult> Get()
+    {
+        return Ok(await _context.Playlists.AsNoTracking().ToListAsync());
+    }
+
+    [HttpGet("{id}")]
+    public async Task<IActionResult> Get(int id)
+    {
+        var playlist = await _context.Playlists.AsNoTracking().FirstOrDefaultAsync(p => p.Id == id);
+        if (playlist == null) return NotFound();
+        return Ok(playlist);
+    }
+
+    [HttpPost]
+    public async Task<IActionResult> Post(Playlist playlist)
+    {
+        _context.Playlists.Add(playlist);
+        await _context.SaveChangesAsync();
+        return CreatedAtAction(nameof(Get), new { id = playlist.Id }, playlist);
+    }
+
+    [HttpPut("{id}")]
+    public async Task<IActionResult> Put(int id, Playlist updatedPlaylist)
+    {
+        if (id != updatedPlaylist.Id) return BadRequest();
+
+        var existing = await _context.Playlists.FindAsync(id);
+        if (existing == null) return NotFound();
+
+        existing.Name = updatedPlaylist.Name;
+        existing.Description = updatedPlaylist.Description;
+        existing.SongsJson = updatedPlaylist.SongsJson;
+
+        await _context.SaveChangesAsync();
+        return NoContent();
+    }
+
+    [HttpDelete("{id}")]
+    public async Task<IActionResult> Delete(int id)
+    {
+        var playlist = await _context.Playlists.FindAsync(id);
+        if (playlist == null) return NotFound();
+
+        _context.Playlists.Remove(playlist);
+        await _context.SaveChangesAsync();
+        return NoContent();
+    }
+}

@@ -13,6 +13,8 @@ public static class NativeAudioController
     // Events from Android Native to WebView
     public static Action<int, int>? OnProgressUpdated { get; set; } // positionMs, durationMs
     public static Action? OnTrackEnded { get; set; }
+    public static Action<string, string, string>? OnCrossfadeCompleted { get; set; }
+    public static Action<string[]>? OnNativeQueueUpdated { get; set; }
     public static Action? OnSkipToNext { get; set; }
     public static Action? OnSkipToPrevious { get; set; }
     public static Action<string>? OnSearchRequested { get; set; }
@@ -58,6 +60,16 @@ public static class NativeAudioController
     public static void ReportTrackEnded()
     {
         OnTrackEnded?.Invoke();
+    }
+
+    public static void ReportCrossfadeCompleted(string title, string artist, string thumb)
+    {
+        OnCrossfadeCompleted?.Invoke(title, artist, thumb);
+    }
+
+    public static void ReportNativeQueueUpdated(string[] ids)
+    {
+        OnNativeQueueUpdated?.Invoke(ids);
     }
 
     public static void ReportPlaybackState(bool isPlaying)

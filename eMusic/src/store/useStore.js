@@ -152,7 +152,7 @@ export const useStore = create(
                 const t = encodeURIComponent(streamInfo.title || '');
                 const a = encodeURIComponent(streamInfo.uploader || '');
                 const img = encodeURIComponent(streamInfo.thumbnail || '');
-                window.location.href = `emusic://preparenext?url=${u}&title=${t}&artist=${a}&thumb=${img}&id=${videoId}`;
+                window.sendNativeCommand(`emusic://preparenext?url=${u}&title=${t}&artist=${a}&thumb=${img}&id=${videoId}`);
              }
           }
         }
@@ -165,11 +165,41 @@ export const useStore = create(
         set({ isCrossfadingTriggered: true, isNextPrepared: false });
         
         if (window.isNativeApp) {
-           window.location.href = 'emusic://startcrossfade';
+           window.sendNativeCommand('emusic://startcrossfade');
         }
         
         set({ 
            currentTrack: nextStreamInfo, 
+           currentIndex: currentIndex + 1,
+           nextStreamInfo: null
+        });
+      },
+
+      completeNativeCrossfade: (title, artist, thumb) => {
+        const { currentIndex, nextStreamInfo } = get();
+        
+        // Si C# hizo un fetch nativo, nextStreamInfo será null
+        // Así que usamos la info que C# nos mandó
+        let newTrack = nextStreamInfo;
+        if (!newTrack && title && artist) {
+            newTrack = {
+                title: title,
+                uploader: artist,
+                thumbnail: thumb,
+                url: "native_background_playback",
+                id: "native_" + Date.now()
+            };
+        }
+
+        if (!newTrack) {
+          get().playNext();
+          return;
+        }
+
+        set({ 
+           isCrossfadingTriggered: true, 
+           isNextPrepared: false,
+           currentTrack: newTrack, 
            currentIndex: currentIndex + 1,
            nextStreamInfo: null
         });
@@ -274,7 +304,7 @@ export const useStore = create(
           
           // If no relatedStreams or it was empty, do a fallback search based on artist
           if (currentTrack) {
-             const query = currentTrack.uploader || currentTrack.title;
+             let query = (currentTrack.uploader || currentTrack.title).replace(/ - Topic/ig, '').replace(/VEVO/ig, '').trim();
              fetch(`https://api.emusicmp3.duckdns.org/search?q=${encodeURIComponent(query)}&filter=music_songs`)
                .then(res => res.json())
                .then(data => {
@@ -319,3 +349,13 @@ export const useStore = create(
     }
   )
 );
+
+useStore.subscribe((state, prevState) => {
+    if (state.queue !== prevState.queue || state.currentIndex !== prevState.currentIndex) {
+        if (window.isNativeApp && window.sendNativeCommand) {
+            const nextTracks = state.queue.slice(state.currentIndex + 1, state.currentIndex + 21);
+            const ids = nextTracks.map(t => t.id).filter(id => id).join(',');
+            window.sendNativeCommand(`emusic://setqueue?ids=${ids}`);
+        }
+    }
+});

@@ -41,23 +41,21 @@ namespace eMusicApp.Platforms.Android
             base.OnCreate();
             Instance = this;
 
-            // Puente MAUI → Nativo
+            // ── Puente MAUI → Nativo ──
             NativeAudioController.OnPlayRequested = (url, title, artist, thumb, videoId) =>
                 PlayStream(url, title, artist, thumb, videoId);
             NativeAudioController.OnPauseRequested  = Pause;
             NativeAudioController.OnResumeRequested = Resume;
             NativeAudioController.OnSeekRequested   = (pos) => SeekTo(pos);
+            // OnUpdateQueueRequested ya no es necesario: la cola se puebla desde relatedStreams
             NativeAudioController.OnUpdateQueueRequested = (videoIds) =>
             {
                 _nativeQueue.Clear();
                 foreach (var id in videoIds) _nativeQueue.Enqueue(id);
                 _nextPrepared = false;
-                // Iniciar pre-fetch del siguiente inmediatamente al actualizar la cola
-                if (_nativeQueue.Count > 0 && !_isFetchingNext)
-                    _ = FetchNextTrackNativelyAsync();
             };
 
-            // Caché LRU 500 MB
+            // ── Caché LRU 500 MB ──
             var cacheDir = new Java.IO.File(CacheDir, "emusic_audio_cache");
             _databaseProvider = new StandaloneDatabaseProvider(this);
             var evictor = new LeastRecentlyUsedCacheEvictor(500 * 1024 * 1024);
@@ -72,38 +70,35 @@ namespace eMusicApp.Platforms.Android
             var mediaSourceFactory = new DefaultMediaSourceFactory(this)
                 .SetDataSourceFactory(cacheDataSourceFactory);
 
-            // ExoPlayer con WakeLock de red — sigue reproduciendo con pantalla apagada
+            // ── ExoPlayer con WakeLock — sigue reproduciendo con pantalla apagada ──
             _player = new ExoPlayerBuilder(this)
                 .SetMediaSourceFactory(mediaSourceFactory)
                 .SetWakeMode(C.WakeModeNetwork)
                 .SetHandleAudioBecomingNoisy(true)
                 .Build();
 
-            // MediaSession con Callback que habilita todos los controles nativos
-            _mediaSession = new MediaSession.Builder(this, _player)
-                .SetCallback(new AllCommandsCallback())
-                .Build();
+            // ── MediaSession — SIN callback personalizado: Media3 gestiona TODO automáticamente ──
+            // Esto incluye: notificación, lockscreen, Android Auto, botones de auriculares
+            _mediaSession = new MediaSession.Builder(this, _player).Build();
 
-            // Ícono de notificación estándar (evita crash silencioso de notificación)
-            var notifProvider = new DefaultMediaNotificationProvider.Builder(this).Build();
-            notifProvider.SetSmallIcon(global::Android.Resource.Drawable.IcMediaPlay);
-            SetMediaNotificationProvider(notifProvider);
-
-            // Timer de progreso: solo actualiza la UI de MAUI (no es crítico con pantalla apagada)
+            // ── Timer de UI — 1 s (solo para barra de progreso en pantalla) ──
             _progressTimer = new System.Timers.Timer(1000);
             _progressTimer.Elapsed += OnProgressTick;
             _progressTimer.Start();
         }
 
-        // ── Timer tick — TODA la lectura de ExoPlayer debe hacerse en el Main Thread ──
+        public override MediaSession? OnGetSession(MediaSession.ControllerInfo controllerInfo)
+            => _mediaSession;
+
+        // ── Timer tick ── TODA lectura de ExoPlayer en el Main Thread ──
         private void OnProgressTick(object? sender, System.Timers.ElapsedEventArgs e)
         {
             Microsoft.Maui.ApplicationModel.MainThread.BeginInvokeOnMainThread(() =>
             {
                 if (_player == null) return;
 
-                var state       = _player.PlaybackState;   // Seguro en Main Thread
-                bool isBuffering = (state == 2);           // STATE_BUFFERING
+                var state        = _player.PlaybackState;
+                bool isBuffering = (state == 2);   // STATE_BUFFERING
                 bool isPlaying   = _player.IsPlaying;
 
                 NativeAudioController.ReportBufferingState(isBuffering);
@@ -119,7 +114,7 @@ namespace eMusicApp.Platforms.Android
 
                     NativeAudioController.ReportProgress(posMs, durMs);
 
-                    // Detectar cambio de track (ExoPlayer ya transitó al siguiente)
+                    // Detectar cambio de track (ExoPlayer transitó al siguiente automáticamente)
                     var playingId = _player.CurrentMediaItem?.MediaId;
                     if (!string.IsNullOrEmpty(playingId) && playingId != _currentMediaId)
                     {
@@ -145,38 +140,62 @@ namespace eMusicApp.Platforms.Android
             });
         }
 
-        public override MediaSession? OnGetSession(MediaSession.ControllerInfo controllerInfo)
-            => _mediaSession;
-
-        // ── Reproducción ──
+        // ── Reproducir ──
+        // Llama INMEDIATAMENTE a FetchRelatedAndQueueNextAsync para llenar la cola nativa
         public void PlayStream(string url, string title, string artist, string thumbUrl, string videoId)
         {
             if (_player == null) return;
+
             _nextPrepared = false;
+            _nativeQueue.Clear();
+
             _player.ClearMediaItems();
             _player.SetMediaItem(CreateMediaItem(url, title, artist, thumbUrl, videoId));
             _player.Prepare();
             _player.Play();
+
+            // Clave para el autoplay: poblar la cola desde relatedStreams del mismo video
+            _ = FetchRelatedAndQueueNextAsync(videoId);
         }
 
-        private MediaItem CreateMediaItem(string url, string title, string artist, string thumbUrl, string videoId)
+        // Obtiene los relatedStreams del track actual y pre-fetcha el siguiente para gapless playback
+        private async Task FetchRelatedAndQueueNextAsync(string videoId)
         {
-            var metadata = new MediaMetadata.Builder()
-                .SetTitle(title)
-                .SetArtist(artist)
-                .SetArtworkUri(global::Android.Net.Uri.Parse(thumbUrl))
-                .Build();
+            try
+            {
+                System.Diagnostics.Debug.WriteLine($"[Autoplay] Cargando related de: {videoId}");
+                var response = await _httpClient.GetStringAsync(
+                    $"http://emusicmp3.duckdns.org:5050/api/streams/{videoId}");
+                using var doc = JsonDocument.Parse(response);
+                var root = doc.RootElement;
 
-            return new MediaItem.Builder()
-                .SetUri(url)
-                .SetMediaId(videoId)
-                .SetCustomCacheKey(videoId)   // Caché ignora tokens temporales de la URL
-                .SetMediaMetadata(metadata)
-                .Build();
+                // Poblar la cola nativa con los relatedStreams
+                _nativeQueue.Clear();
+                if (root.TryGetProperty("relatedStreams", out var related))
+                {
+                    foreach (var rel in related.EnumerateArray())
+                    {
+                        if (rel.TryGetProperty("videoId", out var vIdEl))
+                        {
+                            var vId = vIdEl.GetString();
+                            if (!string.IsNullOrEmpty(vId)) _nativeQueue.Enqueue(vId);
+                        }
+                    }
+                }
+
+                System.Diagnostics.Debug.WriteLine($"[Autoplay] Cola: {_nativeQueue.Count} canciones");
+
+                // Pre-fetch inmediato de la primera canción de la cola
+                if (_nativeQueue.Count > 0 && !_isFetchingNext)
+                    await FetchNextTrackNativelyAsync();
+            }
+            catch (Exception ex)
+            {
+                System.Diagnostics.Debug.WriteLine($"[Autoplay] Error cargando related: {ex.Message}");
+            }
         }
 
-        // ── Pre-fetch de la siguiente pista y añadir a la cola de ExoPlayer ──
-        // ExoPlayer transiciona automáticamente — funciona con pantalla apagada
+        // Pre-fetch el siguiente track y lo añade a la cola de ExoPlayer para gapless
         public async Task FetchNextTrackNativelyAsync()
         {
             if (_isFetchingNext || _nextPrepared || _nativeQueue.Count == 0) return;
@@ -188,31 +207,31 @@ namespace eMusicApp.Platforms.Android
 
                 var response = await _httpClient.GetStringAsync(
                     $"http://emusicmp3.duckdns.org:5050/api/streams/{nextVideoId}");
-                using var doc  = JsonDocument.Parse(response);
-                var root       = doc.RootElement;
+                using var doc = JsonDocument.Parse(response);
+                var root = doc.RootElement;
 
                 var title    = root.GetProperty("title").GetString()        ?? "Unknown";
                 var uploader = root.GetProperty("uploader").GetString()     ?? "";
                 var thumb    = root.GetProperty("thumbnailUrl").GetString() ?? "";
 
-                // Seleccionar el stream de audio de mayor bitrate
-                string? bestUrl    = null;
+                // Seleccionar stream de mayor bitrate
+                string? bestUrl     = null;
                 int     bestBitrate = 0;
                 foreach (var s in root.GetProperty("audioStreams").EnumerateArray())
                 {
-                    int    br  = s.TryGetProperty("bitrate",  out var brEl)  ? brEl.GetInt32()    : 0;
-                    string? su = s.TryGetProperty("url",      out var suEl)  ? suEl.GetString()   : null;
+                    int    br  = s.TryGetProperty("bitrate", out var brEl) ? brEl.GetInt32()  : 0;
+                    string? su = s.TryGetProperty("url",     out var suEl) ? suEl.GetString() : null;
                     if (su != null && br > bestBitrate) { bestBitrate = br; bestUrl = su; }
                 }
 
                 if (!string.IsNullOrEmpty(bestUrl) && _player != null)
                 {
-                    // AddMediaItem → ExoPlayer hace la transición gapless automáticamente
+                    // Añadir a la cola interna de ExoPlayer → transición gapless automática
                     _player.AddMediaItem(CreateMediaItem(bestUrl, title, uploader, thumb, nextVideoId));
                     _nextPrepared = true;
-                    System.Diagnostics.Debug.WriteLine($"[Autoplay] Siguiente en cola: {title}");
+                    System.Diagnostics.Debug.WriteLine($"[Autoplay] ✅ Siguiente preparado: {title}");
 
-                    // Regenerar cola con relatedStreams para autoplay infinito
+                    // Regenerar cola con relatedStreams del siguiente
                     if (root.TryGetProperty("relatedStreams", out var related))
                     {
                         _nativeQueue.Clear();
@@ -236,6 +255,22 @@ namespace eMusicApp.Platforms.Android
             {
                 _isFetchingNext = false;
             }
+        }
+
+        private MediaItem CreateMediaItem(string url, string title, string artist, string thumbUrl, string videoId)
+        {
+            var metadata = new MediaMetadata.Builder()
+                .SetTitle(title)
+                .SetArtist(artist)
+                .SetArtworkUri(global::Android.Net.Uri.Parse(thumbUrl))
+                .Build();
+
+            return new MediaItem.Builder()
+                .SetUri(url)
+                .SetMediaId(videoId)
+                .SetCustomCacheKey(videoId)
+                .SetMediaMetadata(metadata)
+                .Build();
         }
 
         public void Pause()   => _player?.Pause();
@@ -266,19 +301,6 @@ namespace eMusicApp.Platforms.Android
             _mediaSession     = null;
             Instance          = null;
             base.OnDestroy();
-        }
-
-        // ── MediaSessionCallback: habilita Play, Pause, Siguiente, Anterior ──
-        // en la notificación, pantalla de bloqueo y Android Auto
-        private class AllCommandsCallback : Java.Lang.Object, MediaSession.ICallback
-        {
-            public MediaSession.ConnectionResult OnConnect(
-                MediaSession session, MediaSession.ControllerInfo controller)
-            {
-                return MediaSession.ConnectionResult.Accept(
-                    MediaSession.ConnectionResult.DefaultSessionCommands,
-                    MediaSession.ConnectionResult.DefaultPlayerCommands);
-            }
         }
     }
 }

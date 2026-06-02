@@ -35,7 +35,11 @@ public class MainActivity : MauiAppCompatActivity
         try
         {
             var intent = new Android.Content.Intent(this, typeof(Platforms.Android.AndroidMedia3Service));
-            StartService(intent);
+            // Android 8+ requiere StartForegroundService para que el servicio pueda mostrar notificación
+            if (global::Android.OS.Build.VERSION.SdkInt >= global::Android.OS.BuildVersionCodes.O)
+                StartForegroundService(intent);
+            else
+                StartService(intent);
             Logger.Log("AndroidMedia3Service started from MainActivity.");
         }
         catch (Exception ex)

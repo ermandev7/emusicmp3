@@ -67,13 +67,14 @@ public class MusicExtractionService
                 if (response.IsSuccessStatusCode)
                 {
                     var json = await response.Content.ReadAsStringAsync();
-                    if (json.Contains("\"items\""))
+                    // Validar que items exista Y tenga al menos 1 resultado real
+                    if (HasNonEmptyItems(json))
                     {
-                        // Sólo cachear si hay resultados reales
                         _cache.Set(cacheKey, json, TimeSpan.FromMinutes(30));
                         Console.WriteLine($"[Search] OK via {instance}");
                         return json;
                     }
+                    Console.WriteLine($"[Search] {instance} devolvió items vacíos, probando siguiente...");
                 }
             }
             catch (Exception ex)
@@ -324,10 +325,19 @@ public class MusicExtractionService
                 return false;
             return streams.GetArrayLength() > 0;
         }
-        catch
+        catch { return false; }
+    }
+
+    private static bool HasNonEmptyItems(string json)
+    {
+        try
         {
-            return false;
+            using var doc = JsonDocument.Parse(json);
+            if (!doc.RootElement.TryGetProperty("items", out var items))
+                return false;
+            return items.GetArrayLength() > 0;
         }
+        catch { return false; }
     }
 
     private static string BuildCompatibleJson(YoutubeExplode.Videos.Video video, IAudioStreamInfo stream)

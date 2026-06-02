@@ -64,6 +64,14 @@ namespace eMusicApp.ViewModels
                     await NextTrack();
                 });
             };
+
+            NativeAudioController.OnBufferingChanged = (isBuffering) =>
+            {
+                MainThread.BeginInvokeOnMainThread(() =>
+                {
+                    IsBuffering = isBuffering;
+                });
+            };
         }
 
         [ObservableProperty]
@@ -79,6 +87,13 @@ namespace eMusicApp.ViewModels
         [NotifyPropertyChangedFor(nameof(PlayPauseIcon))]
         [NotifyPropertyChangedFor(nameof(PlayPauseImage))]
         private bool _isPlaying;
+
+        [ObservableProperty]
+        [NotifyPropertyChangedFor(nameof(ShowLoadingSpinner))]
+        private bool _isBuffering;
+
+        // Muestra spinner cuando está buscando la URL de stream O cuando ExoPlayer está en buffering
+        public bool ShowLoadingSpinner => IsBuffering;
 
         public string PlayPauseIcon => IsPlaying ? "⏸️" : "▶️";
         public string PlayPauseImage => IsPlaying ? "pause.png" : "play.png";
@@ -173,6 +188,7 @@ namespace eMusicApp.ViewModels
             
             CurrentTrack = track;
             IsPlaying = true;
+            IsBuffering = true; // Mostrar spinner mientras se obtiene la URL
             Position = 0;
             Duration = 0;
             

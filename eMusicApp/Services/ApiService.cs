@@ -25,7 +25,8 @@ namespace eMusicApp.Services
         {
             _httpClient = new HttpClient
             {
-                Timeout = System.TimeSpan.FromSeconds(20)
+                // 45s para dar margen a yt-dlp que puede tardar 15-30s extrayendo
+                Timeout = System.TimeSpan.FromSeconds(45)
             };
             _httpClient.DefaultRequestHeaders.Add("User-Agent", "eMusicApp/1.0");
         }

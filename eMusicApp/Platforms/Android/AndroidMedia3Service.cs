@@ -91,10 +91,19 @@ namespace eMusicApp.Platforms.Android
                 {
                     if (_player != null)
                     {
-                        bool isPlaying = _player.IsPlaying;
-                        NativeAudioController.ReportPlaybackState(isPlaying);
+                        var state = _player.PlaybackState;
+                        // STATE_IDLE=1, STATE_BUFFERING=2, STATE_READY=3, STATE_ENDED=4
+                        // Durante BUFFERING no cambiamos IsPlaying para evitar que el botón
+                        // vuelva a "▶️" mientras yt-dlp está extrayendo/cargando el audio.
+                        bool isBuffering = (state == 2);
+                        NativeAudioController.ReportBufferingState(isBuffering);
 
-                        if (isPlaying)
+                        if (!isBuffering)
+                        {
+                            NativeAudioController.ReportPlaybackState(_player.IsPlaying);
+                        }
+
+                        if (_player.IsPlaying)
                         {
                             long dur = _player.Duration;
                             int durMs = dur < 0 ? 0 : (int)dur;
@@ -124,19 +133,18 @@ namespace eMusicApp.Platforms.Android
                             }
                         }
                         
-                        // Comprobar si hay error de red o bloqueo de Piped API
+                        // Comprobar si hay error de red o bloqueo
                         if (_player.PlayerError != null)
                         {
                             System.Diagnostics.Debug.WriteLine($"[ExoPlayer ERROR] {_player.PlayerError.ErrorCodeName}: {_player.PlayerError.Message}");
-                            NativeAudioController.ReportTrackEnded(); // Forzamos el salto a la siguiente canción
-                            _player.ClearMediaItems(); // Limpiamos el estado de error
+                            NativeAudioController.ReportPlaybackState(false);
+                            NativeAudioController.ReportTrackEnded();
+                            _player.ClearMediaItems();
                         }
                         
                         // Comprobar si terminó (STATE_ENDED = 4)
-                        if (_player.PlaybackState == 4)
+                        if (state == 4)
                         {
-                            // Si terminó, ExoPlayer pasará al siguiente MediaItem automáticamente por Gapless.
-                            // Solo notificamos a la UI que hubo un salto.
                             NativeAudioController.ReportTrackEnded();
                             _nextPrepared = false;
                         }

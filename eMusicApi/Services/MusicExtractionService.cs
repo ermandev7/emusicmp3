@@ -83,9 +83,97 @@ public class MusicExtractionService
             }
         }
 
-        // Sin resultados de ningún proveedor Piped → usar yt-dlp como Plan B
-        Console.WriteLine($"[Search] Todos los Piped fallaron. Usando yt-dlp para '{query}'...");
+        // Sin resultados de ningún proveedor Piped → intentar Invidious (REST API rápida, ~1-2s)
+        Console.WriteLine($"[Search] Piped fallaron. Intentando Invidious para '{query}'...");
+        var invidiousResult = await SearchWithInvidiousAsync(query);
+        if (invidiousResult != null)
+        {
+            _cache.Set(cacheKey, invidiousResult, TimeSpan.FromMinutes(30));
+            return invidiousResult;
+        }
+
+        // Último recurso: yt-dlp (lento pero robusto)
+        Console.WriteLine($"[Search] Invidious falló. Usando yt-dlp para '{query}'...");
         return await SearchWithYtDlpAsync(query);
+    }
+
+    // ─────────────────────────────────────────────────────────────────
+    // BÚSQUEDA con Invidious API — Plan B, REST rápida sin JavaScript
+    // ─────────────────────────────────────────────────────────────────
+    private static readonly string[] InvidiousInstances =
+    [
+        "https://inv.nadeko.net",
+        "https://invidious.nerdvpn.de",
+        "https://yt.artemislena.eu",
+        "https://invidious.fdn.fr",
+        "https://invidious.privacyredirect.com"
+    ];
+
+    private async Task<string?> SearchWithInvidiousAsync(string query)
+    {
+        foreach (var instance in InvidiousInstances)
+        {
+            try
+            {
+                var client = _httpClientFactory.CreateClient();
+                client.Timeout = TimeSpan.FromSeconds(6);
+                var url = $"{instance}/api/v1/search?q={Uri.EscapeDataString(query)}&type=video&sort_by=relevance";
+                var response = await client.GetAsync(url);
+                if (!response.IsSuccessStatusCode) continue;
+
+                var json = await response.Content.ReadAsStringAsync();
+                using var doc = JsonDocument.Parse(json);
+                if (doc.RootElement.ValueKind != JsonValueKind.Array) continue;
+
+                var items = new List<object>();
+                foreach (var v in doc.RootElement.EnumerateArray())
+                {
+                    var type = v.TryGetProperty("type", out var t) ? t.GetString() : "";
+                    if (type != "video") continue;
+
+                    var id = v.TryGetProperty("videoId", out var idEl) ? idEl.GetString() ?? "" : "";
+                    var title = v.TryGetProperty("title", out var titleEl) ? titleEl.GetString() ?? "" : "";
+                    var author = v.TryGetProperty("author", out var authEl) ? authEl.GetString() ?? "" : "";
+                    var length = v.TryGetProperty("lengthSeconds", out var lenEl) && lenEl.ValueKind == JsonValueKind.Number
+                        ? lenEl.GetInt64() : 0L;
+                    var views = v.TryGetProperty("viewCount", out var viewEl) && viewEl.ValueKind == JsonValueKind.Number
+                        ? viewEl.GetInt64() : 0L;
+
+                    if (string.IsNullOrEmpty(id) || string.IsNullOrEmpty(title)) continue;
+
+                    // Thumbnail fiable usando la URL estándar de YouTube
+                    var thumb = $"https://i.ytimg.com/vi/{id}/mqdefault.jpg";
+
+                    items.Add(new
+                    {
+                        url = $"/watch?v={id}",
+                        type = "stream",
+                        title = title,
+                        thumbnail = thumb,
+                        uploaderName = author,
+                        uploaderUrl = "",
+                        uploaderAvatar = "",
+                        uploaderVerified = false,
+                        duration = length,
+                        views = views,
+                        uploaded = 0L,
+                        shortDescription = "",
+                        isShort = false
+                    });
+                }
+
+                if (items.Count == 0) continue;
+
+                var result = BuildSearchJson(items);
+                Console.WriteLine($"[Invidious Search] ✅ {items.Count} resultados via {instance}");
+                return result;
+            }
+            catch (Exception ex)
+            {
+                Console.WriteLine($"[Invidious Search] Fallo en {instance}: {ex.Message}");
+            }
+        }
+        return null;
     }
 
     // ─────────────────────────────────────────────────────────────────
@@ -143,8 +231,8 @@ public class MusicExtractionService
                 return BuildSearchJson(ytMusicResult);
             }
 
-            // Fallback: YouTube general con filtro de duración mínima (evita clips cortos de gaming)
-            var ytResult = await RunYtDlpSearch($"ytsearch20:{query}", query, isMusic: false);
+            // Fallback: YouTube general — resultado más limitado
+            var ytResult = await RunYtDlpSearch($"ytsearch10:{query}", query, isMusic: false);
             Console.WriteLine($"[yt-dlp Search] ✅ {ytResult.Count} resultados de YouTube para '{query}'");
             return BuildSearchJson(ytResult);
         }
@@ -186,7 +274,8 @@ public class MusicExtractionService
                 var id = root.TryGetProperty("id", out var idEl) ? idEl.GetString() ?? "" : "";
                 var title = root.TryGetProperty("title", out var titleEl) ? titleEl.GetString() ?? "" : "";
                 var uploader = root.TryGetProperty("uploader", out var uploaderEl) ? uploaderEl.GetString() ?? "" : "";
-                var thumbnail = root.TryGetProperty("thumbnail", out var thumbEl) ? thumbEl.GetString() ?? "" : "";
+                // Thumbnail fiable con URL estándar de YouTube (siempre funciona)
+                var thumb = $"https://i.ytimg.com/vi/{id}/mqdefault.jpg";
                 var duration = root.TryGetProperty("duration", out var durEl) && durEl.ValueKind == JsonValueKind.Number
                     ? (long)durEl.GetDouble() : 0L;
                 var views = root.TryGetProperty("view_count", out var viewEl) && viewEl.ValueKind == JsonValueKind.Number
@@ -201,7 +290,7 @@ public class MusicExtractionService
                     url = $"/watch?v={id}",
                     type = "stream",
                     title = title,
-                    thumbnail = thumbnail,
+                    thumbnail = thumb,
                     uploaderName = uploader,
                     uploaderUrl = "",
                     uploaderAvatar = "",

@@ -1,4 +1,5 @@
 using Microsoft.AspNetCore.Mvc;
+using System.Text.Json;
 using System.Threading.Tasks;
 using eMusicApi.Services;
 
@@ -20,8 +21,12 @@ public class TrendingController : ControllerBase
     {
         try
         {
-            var result = await _apiService.GetTrendingAsync();
-            return Content(result, "application/json");
+            // Piped devuelve un array plano [...]
+            // Lo envolvemos en {"items": [...]} para que sea consistente con /search
+            var raw = await _apiService.GetTrendingAsync();
+            var array = JsonSerializer.Deserialize<System.Text.Json.Nodes.JsonArray>(raw);
+            var wrapped = new { items = array };
+            return Ok(wrapped);
         }
         catch (System.Exception ex)
         {

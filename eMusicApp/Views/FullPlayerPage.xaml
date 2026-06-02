@@ -118,13 +118,11 @@
                                  WidthRequest="70"
                                  HeightRequest="70"
                                  Padding="18" />
-                    <!-- Spinner de carga (se superpone cuando está buffering) -->
                     <Border BackgroundColor="#1DB954"
                             StrokeShape="RoundRectangle 35"
                             StrokeThickness="0"
                             WidthRequest="70"
                             HeightRequest="70"
-                            IsClippedToBounds="True"
                             Padding="0"
                             IsVisible="{Binding Player.ShowLoadingSpinner}">
                         <ActivityIndicator IsRunning="{Binding Player.ShowLoadingSpinner}"

@@ -30,19 +30,19 @@ export default function Player() {
           if (useStore.getState().isCrossfadingTriggered) {
             useStore.getState().setCrossfadeTriggered(false);
           } else {
-            const u = encodeURIComponent(currentTrack.url);
             const t = encodeURIComponent(currentTrack.title || '');
-            const a = encodeURIComponent(currentTrack.uploader || '');
+            const a = encodeURIComponent(currentTrack.uploader || currentTrack.artist || '');
             const img = encodeURIComponent(currentTrack.thumbnail || '');
-            const trackId = currentTrack.id || '';
-            window.location.href = `emusic://play?url=${u}&title=${t}&artist=${a}&thumb=${img}&id=${trackId}`;
+            const u = encodeURIComponent(currentTrack.url);
+            const trackId = encodeURIComponent(currentTrack.id || '');
+            window.sendNativeCommand(`emusic://play?url=${u}&title=${t}&artist=${a}&thumb=${img}&id=${trackId}`);
           }
         } else {
           audioRef.current.play().catch(console.error);
         }
       } else {
-        if (isNative && currentTrack?.url && !currentTrack.url.startsWith('blob:')) {
-          window.location.href = `emusic://pause`;
+        if (isNative) {
+          window.sendNativeCommand(`emusic://pause`);
         } else {
           audioRef.current.pause();
         }
@@ -61,16 +61,26 @@ export default function Player() {
 
       const rem = durSec - posSec;
       const state = useStore.getState();
-      if (rem <= 15 && rem > 3 && !state.isNextPrepared) {
+      
+      // Preparar la siguiente canción casi inmediatamente (a los 2 segundos)
+      if (posSec >= 2 && !state.isNextPrepared && rem > 10) {
           state.prepareNextTrack();
       }
-      if (rem <= 3 && rem > 0 && state.isNextPrepared && !state.isCrossfadingTriggered) {
+      
+      // El Crossfade ahora lo hace C# de forma independiente a los 25 segundos.
+      // Ya no disparamos el crossfade desde JS para la app nativa.
+      // Para la versión web (React puro), dejamos que termine sola o cruce a los 2s.
+      if (!isNative && rem <= 2 && rem > 0 && state.isNextPrepared && !state.isCrossfadingTriggered) {
           state.triggerCrossfade();
       }
     };
     
     window.onNativeTrackEnded = () => {
       playNext();
+    };
+    
+    window.onNativeCrossfadeCompleted = (title, artist, thumb) => {
+      useStore.getState().completeNativeCrossfade(title, artist, thumb);
     };
     
     window.playNativeNext = () => {
@@ -91,11 +101,11 @@ export default function Player() {
 
     window.onNativeDownloadComplete = () => {
       useStore.getState().setDownloadingId(null);
-      window.location.href = 'emusic://getdownloads';
+      window.sendNativeCommand('emusic://getdownloads');
     };
 
     window.onNativeDownloadDeleted = () => {
-      window.location.href = 'emusic://getdownloads';
+      window.sendNativeCommand('emusic://getdownloads');
     };
 
     window.onNativeDownloadsReceived = (jsonString) => {
@@ -119,7 +129,7 @@ export default function Player() {
 
     // Solicitar descargas iniciales al montar si es nativo
     if (isNative) {
-        window.location.href = 'emusic://getdownloads';
+      window.sendNativeCommand('emusic://getdownloads');
     }
 
     return () => {
@@ -176,7 +186,9 @@ export default function Player() {
         }
       } else {
         const targetTimeMs = Math.floor(percentage * duration * 1000);
-        window.location.href = `emusic://seek?position=${targetTimeMs}`;
+        if (isNative) {
+          window.sendNativeCommand(`emusic://seek?position=${targetTimeMs}`);
+        }
         setProgress(percentage * 100);
         setCurrentTime(percentage * duration);
       }
@@ -190,7 +202,7 @@ export default function Player() {
         const hex = color.hex();
         setThemeColor(hex);
         if (isNative) {
-          window.location.href = `emusic://color?hex=${hex.replace('#', '')}`;
+          window.sendNativeCommand(`emusic://color?hex=${hex.replace('#', '')}`);
         }
       }
     } catch (err) {
@@ -353,7 +365,7 @@ export default function Player() {
                   const isDownloaded = state.downloads.some(d => d.id === currentTrack.id);
                   if (isDownloaded) {
                     if (isNative) {
-                      window.location.href = `emusic://deletedownload?id=${currentTrack.id}`;
+                      window.sendNativeCommand(`emusic://deletedownload?id=${currentTrack.id}`);
                     } else {
                       const { removeTrackBlob } = await import('../store/offline.js');
                       await removeTrackBlob(currentTrack.id);
@@ -366,7 +378,7 @@ export default function Player() {
                       const t = encodeURIComponent(currentTrack.title || '');
                       const a = encodeURIComponent(currentTrack.uploader || '');
                       const img = encodeURIComponent(currentTrack.thumbnail || '');
-                      window.location.href = `emusic://download?id=${currentTrack.id}&url=${u}&title=${t}&artist=${a}&thumb=${img}`;
+                      window.sendNativeCommand(`emusic://download?id=${currentTrack.id}&url=${u}&title=${t}&artist=${a}&thumb=${img}`);
                     } else {
                       const { downloadTrackBlob } = await import('../store/offline.js');
                       const success = await downloadTrackBlob(currentTrack);

@@ -1,0 +1,82 @@
+<?xml version="1.0" encoding="utf-8" ?>
+<ContentPage xmlns="http://schemas.microsoft.com/dotnet/2021/maui"
+             xmlns:x="http://schemas.microsoft.com/winfx/2009/xaml"
+             xmlns:vm="clr-namespace:eMusicApp.ViewModels"
+             x:Class="eMusicApp.Views.FullPlayerPage"
+             BackgroundColor="#121212">
+
+    <ContentPage.Background>
+        <LinearGradientBrush StartPoint="0,0" EndPoint="0,1">
+            <GradientStop Color="#282828" Offset="0.0" />
+            <GradientStop Color="#121212" Offset="0.5" />
+        </LinearGradientBrush>
+    </ContentPage.Background>
+
+    <Grid RowDefinitions="Auto, *, Auto, Auto" Padding="20">
+        
+        <!-- Top Bar -->
+        <Grid Grid.Row="0" ColumnDefinitions="Auto, *, Auto" Margin="0,10,0,30">
+            <ImageButton Grid.Column="0" 
+                         Source="chevron_down.png" 
+                         BackgroundColor="Transparent"
+                         WidthRequest="40" HeightRequest="40"
+                         Padding="10"
+                         Command="{Binding MinimizeCommand}" />
+            
+            <Label Grid.Column="1" 
+                   Text="REPRODUCIENDO AHORA" 
+                   TextColor="White" 
+                   FontSize="12" 
+                   FontAttributes="Bold"
+                   HorizontalOptions="Center" 
+                   VerticalOptions="Center" />
+                   
+            <BoxView Grid.Column="2" WidthRequest="40" Color="Transparent" />
+        </Grid>
+
+        <!-- Album Art -->
+        <Border Grid.Row="1" 
+                StrokeThickness="0" 
+                StrokeShape="RoundRectangle 8"
+                Margin="0,0,0,30"
+                BackgroundColor="#2A2A2A"
+                Shadow="{Shadow Brush=Black, Offset='0,10', Radius=20, Opacity=0.5}">
+            <Image Source="{Binding Player.CurrentTrack.ThumbnailUrl}" Aspect="AspectFill" />
+        </Border>
+
+        <!-- Track Info -->
+        <Grid Grid.Row="2" ColumnDefinitions="*, Auto" Margin="0,0,0,20">
+            <StackLayout Grid.Column="0" VerticalOptions="Center">
+                <Label Text="{Binding Player.CurrentTrack.Title}" 
+                       TextColor="White" 
+                       FontSize="24" 
+                       FontAttributes="Bold" 
+                       MaxLines="1" 
+                       LineBreakMode="TailTruncation" />
+                <Label Text="{Binding Player.CurrentTrack.Uploader}" 
+                       TextColor="#B3B3B3" 
+                       FontSize="16" 
+                       MaxLines="1" 
+                       LineBreakMode="TailTruncation" />
+            </StackLayout>
+            <ImageButton Grid.Column="1" 
+                         Source="heart_outline.png" 
+                         BackgroundColor="Transparent" 
+                         WidthRequest="30" HeightRequest="30"
+                         VerticalOptions="Center" />
+        </Grid>
+
+        <!-- Controls -->
+        <Grid Grid.Row="3" RowDefinitions="Auto, Auto" Margin="0,0,0,30">
+            <!-- Progress Bar -->
+            <Slider Grid.Row="0" MinimumTrackColor="White" MaximumTrackColor="#4DFFFFFF" ThumbColor="White" Margin="0,0,0,20" />
+            
+            <Grid Grid.Row="1" ColumnDefinitions="*, Auto, Auto, Auto, *" HorizontalOptions="FillAndExpand">
+                <Button Grid.Column="1" Text="⏮️" BackgroundColor="Transparent" TextColor="White" FontSize="30" VerticalOptions="Center" Padding="0" Margin="10,0" Command="{Binding Player.PreviousTrackCommand}" />
+                <Button Grid.Column="2" Text="{Binding Player.PlayPauseIcon}" Command="{Binding Player.TogglePlaybackCommand}" BackgroundColor="#1DB954" TextColor="Black" CornerRadius="35" WidthRequest="70" HeightRequest="70" FontSize="30" FontAttributes="Bold" VerticalOptions="Center" Padding="0" Margin="20,0" />
+                <Button Grid.Column="3" Text="⏭️" BackgroundColor="Transparent" TextColor="White" FontSize="30" VerticalOptions="Center" Padding="0" Margin="10,0" Command="{Binding Player.NextTrackCommand}" />
+            </Grid>
+        </Grid>
+        
+    </Grid>
+</ContentPage>

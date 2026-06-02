@@ -12,7 +12,7 @@ export default function Search() {
     setIsLoading(true);
     const results = await searchMusic(searchQuery);
     setSearchResults(results);
-    setSearchQuery('');
+    // No borramos la búsqueda (setSearchQuery('')) para que el usuario pueda ver lo que buscó
     setIsLoading(false);
   };
 
@@ -33,7 +33,7 @@ export default function Search() {
           <SearchIcon size={20} />
         </div>
         <input 
-          type="text" 
+          type="search" 
           placeholder="¿Qué quieres escuchar?" 
           value={searchQuery}
           onChange={(e) => setSearchQuery(e.target.value)}

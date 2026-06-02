@@ -1,0 +1,85 @@
+<?xml version="1.0" encoding="utf-8" ?>
+<ContentPage xmlns="http://schemas.microsoft.com/dotnet/2021/maui"
+             xmlns:x="http://schemas.microsoft.com/winfx/2009/xaml"
+             xmlns:vm="clr-namespace:eMusicApp.ViewModels"
+             xmlns:models="clr-namespace:eMusicApp.Models"
+             xmlns:views="clr-namespace:eMusicApp.Views"
+             xmlns:skeleton="clr-namespace:Maui.Skeleton;assembly=Maui.Skeleton"
+             x:Class="eMusicApp.Views.LibraryPage"
+             Title="Library"
+             BackgroundColor="#121212">
+
+    <Grid RowDefinitions="Auto, *, Auto">
+        
+        <Label Grid.Row="0" Text="Your Library" TextColor="White" FontSize="24" FontAttributes="Bold" Margin="15,20,15,10"/>
+        
+        <!-- Liked Songs List -->
+        <CollectionView Grid.Row="1"
+                        ItemsSource="{Binding LikedSongs}"
+                        SelectionMode="None"
+                        Margin="10,0"
+                        skeleton:Skeleton.IsParent="True"
+                        skeleton:Skeleton.IsBusy="{Binding IsBusy}">
+            <CollectionView.Header>
+                <Border StrokeThickness="0" StrokeShape="RoundRectangle 10" BackgroundColor="#1DB954" Margin="5,0,5,15" Padding="15">
+                    <Grid ColumnDefinitions="*, Auto">
+                        <StackLayout VerticalOptions="Center">
+                            <Label Text="Liked Songs" TextColor="White" FontAttributes="Bold" FontSize="18"/>
+                            <Label Text="{Binding LikedSongs.Count, StringFormat='{0} songs'}" TextColor="#E0E0E0" FontSize="13"/>
+                        </StackLayout>
+                        <Button Grid.Column="1" Text="▶️" WidthRequest="45" HeightRequest="45" CornerRadius="22" BackgroundColor="#121212" TextColor="White" FontAttributes="Bold" FontSize="18" Padding="0" VerticalOptions="Center"/>
+                    </Grid>
+                </Border>
+            </CollectionView.Header>
+            
+            <CollectionView.ItemTemplate>
+                <DataTemplate x:DataType="models:Track">
+                    <Grid Padding="5,5">
+                        <Grid.GestureRecognizers>
+                            <TapGestureRecognizer 
+                                Command="{Binding Source={RelativeSource AncestorType={x:Type vm:LibraryViewModel}}, Path=Player.PlayTrackCommand}" 
+                                CommandParameter="{Binding .}"/>
+                        </Grid.GestureRecognizers>
+                        
+                        <Grid ColumnDefinitions="Auto, *, Auto" BackgroundColor="Transparent" Padding="10">
+                            <!-- Thumbnail -->
+                            <Border Grid.Column="0"
+                                    StrokeThickness="0"
+                                    StrokeShape="RoundRectangle 5"
+                                    WidthRequest="50"
+                                    HeightRequest="50"
+                                    Margin="0,0,15,0">
+                                <Image Source="{Binding ThumbnailUrl}" Aspect="AspectFill" 
+                                       skeleton:Skeleton.IsBusy="{Binding Source={RelativeSource AncestorType={x:Type vm:LibraryViewModel}}, Path=IsBusy}"
+                                       skeleton:Skeleton.BackgroundColor="#3E3E3E"/>
+                            </Border>
+                            
+                            <!-- Text Info -->
+                            <StackLayout Grid.Column="1" VerticalOptions="Center">
+                                <Label Text="{Binding Title}" TextColor="#1DB954" FontAttributes="Bold" FontSize="15" MaxLines="1" LineBreakMode="TailTruncation" 
+                                       skeleton:Skeleton.IsBusy="{Binding Source={RelativeSource AncestorType={x:Type vm:LibraryViewModel}}, Path=IsBusy}"
+                                       skeleton:Skeleton.BackgroundColor="#3E3E3E" />
+                                <Label Text="{Binding Uploader}" TextColor="#B3B3B3" FontSize="13" Margin="0,3,0,0" MaxLines="1" LineBreakMode="TailTruncation" 
+                                       skeleton:Skeleton.IsBusy="{Binding Source={RelativeSource AncestorType={x:Type vm:LibraryViewModel}}, Path=IsBusy}"
+                                       skeleton:Skeleton.BackgroundColor="#3E3E3E" />
+                            </StackLayout>
+                            
+                            <!-- Remove Favorite Button -->
+                            <ImageButton Grid.Column="2"
+                                         Source="heart_filled.png"
+                                         BackgroundColor="Transparent"
+                                         WidthRequest="16"
+                                         HeightRequest="16"
+                                         Margin="0,0,10,0"
+                                         VerticalOptions="Center"
+                                         Command="{Binding Source={RelativeSource AncestorType={x:Type vm:LibraryViewModel}}, Path=RemoveFavoriteCommand}"
+                                         CommandParameter="{Binding .}" />
+                        </Grid>
+                    </Grid>
+                </DataTemplate>
+            </CollectionView.ItemTemplate>
+        </CollectionView>
+
+        <views:MiniPlayerView Grid.Row="2" />
+    </Grid>
+</ContentPage>

@@ -1,0 +1,73 @@
+<?xml version="1.0" encoding="utf-8" ?>
+<ContentPage xmlns="http://schemas.microsoft.com/dotnet/2021/maui"
+             xmlns:x="http://schemas.microsoft.com/winfx/2009/xaml"
+             xmlns:vm="clr-namespace:eMusicApp.ViewModels"
+             xmlns:models="clr-namespace:eMusicApp.Models"
+             xmlns:views="clr-namespace:eMusicApp.Views"
+             xmlns:skeleton="clr-namespace:Maui.Skeleton;assembly=Maui.Skeleton"
+             x:Class="eMusicApp.Views.HomePage"
+             Title="Home"
+             BackgroundColor="#121212">
+
+    <Grid RowDefinitions="Auto, *, Auto">
+        <!-- Header -->
+        <HorizontalStackLayout Grid.Row="0" Margin="15,20,15,10">
+            <Label Text="Trending" TextColor="White" FontSize="22" FontAttributes="Bold" />
+        </HorizontalStackLayout>
+        
+        <!-- Recent History Grid -->
+        <CollectionView Grid.Row="1"
+                        ItemsSource="{Binding RecentTracks}"
+                        SelectionMode="None"
+                        Margin="10,0"
+                        skeleton:Skeleton.IsParent="True"
+                        skeleton:Skeleton.IsBusy="{Binding IsBusy}">
+            
+            <CollectionView.ItemsLayout>
+                <GridItemsLayout Orientation="Vertical" Span="2" HorizontalItemSpacing="10" VerticalItemSpacing="10" />
+            </CollectionView.ItemsLayout>
+
+            <CollectionView.ItemTemplate>
+                <DataTemplate x:DataType="models:Track">
+                    <Grid>
+                        <Grid.GestureRecognizers>
+                            <TapGestureRecognizer 
+                                Command="{Binding Source={RelativeSource AncestorType={x:Type vm:HomeViewModel}}, Path=Player.PlayTrackCommand}" 
+                                CommandParameter="{Binding .}"/>
+                        </Grid.GestureRecognizers>
+                        
+                        <Border StrokeThickness="0"
+                                StrokeShape="RoundRectangle 5"
+                                BackgroundColor="#2A2A2A"
+                                HeightRequest="55">
+                            
+                            <Grid ColumnDefinitions="55, *">
+                                <!-- Thumbnail -->
+                                <Image Grid.Column="0" 
+                                       Source="{Binding ThumbnailUrl}" 
+                                       Aspect="AspectFill" 
+                                       skeleton:Skeleton.IsBusy="{Binding Source={RelativeSource AncestorType={x:Type vm:HomeViewModel}}, Path=IsBusy}"
+                                       skeleton:Skeleton.BackgroundColor="#3E3E3E" />
+                                
+                                <!-- Title -->
+                                <Label Grid.Column="1" 
+                                       Text="{Binding Title}" 
+                                       TextColor="White" 
+                                       FontAttributes="Bold" 
+                                       FontSize="12" 
+                                       VerticalOptions="Center" 
+                                       Margin="10,0" 
+                                       MaxLines="2" 
+                                       LineBreakMode="TailTruncation"
+                                       skeleton:Skeleton.IsBusy="{Binding Source={RelativeSource AncestorType={x:Type vm:HomeViewModel}}, Path=IsBusy}"
+                                       skeleton:Skeleton.BackgroundColor="#3E3E3E" />
+                            </Grid>
+                        </Border>
+                    </Grid>
+                </DataTemplate>
+            </CollectionView.ItemTemplate>
+        </CollectionView>
+        
+        <views:MiniPlayerView Grid.Row="2" />
+    </Grid>
+</ContentPage>

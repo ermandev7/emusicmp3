@@ -9,6 +9,8 @@ using AndroidX.Media;
 using System.Collections.Generic;
 using System;
 using System.Net.Http;
+using System.Text.Json;
+using System.Threading.Tasks;
 
 namespace eMusicApp.Platforms.Android
 {
@@ -29,10 +31,12 @@ namespace eMusicApp.Platforms.Android
         
         private MediaPlayer? _nextMediaPlayer;
         private string? _nextUrl;
+        private bool _nextPrepared = false;
+        private bool _isFetchingNext = false;
+        private Queue<string> _nativeQueue = new Queue<string>();
         private string? _nextTitle;
         private string? _nextArtist;
         private string? _nextThumbUrl;
-        private bool _nextPrepared = false;
         
         private const int NOTIFICATION_ID = 1001;
         private const string CHANNEL_ID = "emusic_media_channel";
@@ -41,10 +45,31 @@ namespace eMusicApp.Platforms.Android
         {
             base.OnCreate();
 
+            NativeAudioController.OnSkipToPrevious = () => { /* Implementado en JS si la app está en primer plano */ };
+
+            NativeAudioController.OnNativeQueueUpdated = (ids) => {
+                _nativeQueue.Clear();
+                if (ids != null) {
+                    foreach(var id in ids) { 
+                        _nativeQueue.Enqueue(id); 
+                    }
+                }
+            };
+
             _progressTimer = new System.Timers.Timer(1000); // 1 second
             _progressTimer.Elapsed += (s, e) => {
                 if (_mediaPlayer != null && _mediaPlayer.IsPlaying) {
-                    NativeAudioController.ReportProgress(_mediaPlayer.CurrentPosition, _mediaPlayer.Duration);
+                    int pos = _mediaPlayer.CurrentPosition;
+                    int dur = _mediaPlayer.Duration;
+                    NativeAudioController.ReportProgress(pos, dur);
+
+                    // Reportar progreso y cruzar
+                    if (dur > 0 && (dur - pos) <= 12000 && _nextPrepared) {
+                        StartCrossfade();
+                    }
+                    else if (dur > 0 && (dur - pos) <= 35000 && !_nextPrepared && !_isFetchingNext && string.IsNullOrEmpty(_nextUrl)) {
+                        _ = FetchNextTrackNativelyAsync();
+                    }
                 }
             };
 
@@ -217,6 +242,101 @@ namespace eMusicApp.Platforms.Android
             }
         }
 
+        private async Task FetchNextTrackNativelyAsync()
+        {
+            if (_isFetchingNext) return;
+            _isFetchingNext = true;
+
+            try
+            {
+                using var client = new HttpClient();
+                client.Timeout = TimeSpan.FromSeconds(15);
+
+                if (_nativeQueue.Count > 0)
+                {
+                    string nextId = _nativeQueue.Dequeue();
+                    string localPath = DownloadManager.GetLocalPath(nextId);
+                    if (!string.IsNullOrEmpty(localPath))
+                    {
+                        var dldJson = DownloadManager.GetDownloadedTracksJson();
+                        using var dldDoc = JsonDocument.Parse(dldJson);
+                        foreach(var track in dldDoc.RootElement.EnumerateArray())
+                        {
+                            if (track.GetProperty("id").GetString() == nextId)
+                            {
+                                string dldTitle = track.GetProperty("title").GetString() ?? "";
+                                string dldArtist = track.GetProperty("uploader").GetString() ?? "";
+                                string dldThumb = track.GetProperty("thumbnail").GetString() ?? "";
+                                Logger.Log($"Natively fetched local track: {dldTitle}");
+                                PrepareNextAudio(localPath, dldTitle, dldArtist, dldThumb);
+                                return;
+                            }
+                        }
+                    }
+
+                    var streamResponse = await client.GetStringAsync($"https://api.emusicmp3.duckdns.org/streams/{nextId}");
+                    using var streamDoc = JsonDocument.Parse(streamResponse);
+                    var audioStreams = streamDoc.RootElement.GetProperty("audioStreams");
+                    if (audioStreams.GetArrayLength() > 0)
+                    {
+                        string audioUrl = audioStreams[0].GetProperty("url").GetString() ?? "";
+                        string title = streamDoc.RootElement.GetProperty("title").GetString() ?? "";
+                        string artist = streamDoc.RootElement.GetProperty("uploader").GetString() ?? "";
+                        string thumb = streamDoc.RootElement.GetProperty("thumbnailUrl").GetString() ?? "";
+                        
+                        Logger.Log($"Natively fetched queued track: {title}");
+                        PrepareNextAudio(audioUrl, title, artist, thumb);
+                        return;
+                    }
+                }
+
+                string query = _currentArtist?.Replace(" - Topic", "")?.Replace("VEVO", "")?.Trim() ?? "";
+                if (string.IsNullOrEmpty(query)) query = _currentTitle ?? "music";
+
+                var searchResponse = await client.GetStringAsync($"https://api.emusicmp3.duckdns.org/search?q={Uri.EscapeDataString(query)}&filter=music_songs");
+
+                using var searchDoc = JsonDocument.Parse(searchResponse);
+                var items = searchDoc.RootElement.GetProperty("items");
+                if (items.GetArrayLength() > 0)
+                {
+                    var rand = new Random();
+                    int index = rand.Next(Math.Min(3, items.GetArrayLength()));
+                    var firstItem = items[index];
+
+                    string url = firstItem.GetProperty("url").GetString() ?? "";
+                    string title = firstItem.GetProperty("title").GetString() ?? "";
+                    string artist = firstItem.GetProperty("uploaderName").GetString() ?? "";
+                    string thumb = firstItem.GetProperty("thumbnail").GetString() ?? "";
+
+                    if (!string.IsNullOrEmpty(url) && url.Contains("?v="))
+                    {
+                        string videoId = url.Split("?v=")[1];
+                        var streamResponse = await client.GetStringAsync($"https://api.emusicmp3.duckdns.org/streams/{videoId}");
+                        using var streamDoc = JsonDocument.Parse(streamResponse);
+                        var audioStreams = streamDoc.RootElement.GetProperty("audioStreams");
+                        if (audioStreams.GetArrayLength() > 0)
+                        {
+                            string audioUrl = audioStreams[0].GetProperty("url").GetString() ?? "";
+                            if (!string.IsNullOrEmpty(audioUrl))
+                            {
+                                Logger.Log($"Natively fetched next track: {title}");
+                                PrepareNextAudio(audioUrl, title, artist, thumb);
+                                return;
+                            }
+                        }
+                    }
+                }
+            }
+            catch (Exception ex)
+            {
+                Logger.Log("Error fetching next track natively", ex);
+            }
+            finally
+            {
+                _isFetchingNext = false;
+            }
+        }
+
         public async void StartCrossfade()
         {
             if (_nextMediaPlayer == null || !_nextPrepared) 
@@ -270,6 +390,18 @@ namespace eMusicApp.Platforms.Android
                 _currentArtist = _nextArtist;
                 
                 UpdateMetadata(_currentTitle, _currentArtist, _nextThumbUrl);
+                
+                // WakeLock para despertar al WebView y que pueda buscar la canción #3
+                try {
+                    var powerManager = (PowerManager?)GetSystemService(PowerService);
+                    var wakeLock = powerManager?.NewWakeLock(WakeLockFlags.Partial, "eMusic:CrossfadeWake");
+                    wakeLock?.Acquire(15000); // Hold for 15 seconds max
+                } catch (Exception ex) {
+                    Logger.Log("Error acquiring WakeLock in Crossfade", ex);
+                }
+                
+                // Avisar a React que ya hicimos la transición a la siguiente canción por crossfade
+                NativeAudioController.ReportCrossfadeCompleted(_currentTitle, _currentArtist, _nextThumbUrl);
             }
             catch (Exception ex)
             {

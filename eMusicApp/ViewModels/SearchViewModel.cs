@@ -43,19 +43,11 @@ namespace eMusicApp.ViewModels
                 return;
 
             IsBusy = true;
-            
-            // Populate with fake items for skeleton to show
             SearchResults.Clear();
-            for(int i=0; i<8; i++) SearchResults.Add(new Track()); 
 
             var results = await _apiService.SearchTracksAsync(SearchQuery);
             
-            SearchResults.Clear();
-            foreach (var track in results)
-            {
-                SearchResults.Add(track);
-            }
-
+            SearchResults = new ObservableCollection<Track>(results);
             Player.SetQueue(SearchResults);
             
             IsBusy = false;

@@ -119,21 +119,21 @@
                                  HeightRequest="70"
                                  Padding="18" />
                     <!-- Spinner de carga (se superpone cuando está buffering) -->
-                    <Frame BackgroundColor="#1DB954"
-                           CornerRadius="35"
-                           WidthRequest="70"
-                           HeightRequest="70"
-                           IsClippedToBounds="True"
-                           HasShadow="False"
-                           Padding="0"
-                           IsVisible="{Binding Player.ShowLoadingSpinner}">
-                        <ActivityIndicator IsRunning="True"
+                    <Border BackgroundColor="#1DB954"
+                            StrokeShape="RoundRectangle 35"
+                            StrokeThickness="0"
+                            WidthRequest="70"
+                            HeightRequest="70"
+                            IsClippedToBounds="True"
+                            Padding="0"
+                            IsVisible="{Binding Player.ShowLoadingSpinner}">
+                        <ActivityIndicator IsRunning="{Binding Player.ShowLoadingSpinner}"
                                            Color="White"
                                            WidthRequest="28"
                                            HeightRequest="28"
                                            HorizontalOptions="Center"
                                            VerticalOptions="Center" />
-                    </Frame>
+                    </Border>
                 </Grid>
 
                 

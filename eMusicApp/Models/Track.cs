@@ -57,6 +57,7 @@ namespace eMusicApp.Models
         public int Duration { get; set; }
 
         // Extrae el videoId de la URL relativa (/watch?v=XXXX)
+        [JsonIgnore]
         public string VideoId
         {
             get

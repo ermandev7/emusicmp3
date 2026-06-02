@@ -179,7 +179,12 @@ namespace eMusicApp.Platforms.Android
                 .SetArtworkUri(global::Android.Net.Uri.Parse(thumbUrl))
                 .Build();
 
-            return new MediaItem.Builder().SetUri(url).SetMediaId(videoId).SetMediaMetadata(metadata).Build();
+            return new MediaItem.Builder()
+                .SetUri(url)
+                .SetMediaId(videoId)
+                .SetCustomCacheKey(videoId)
+                .SetMediaMetadata(metadata)
+                .Build();
         }
 
         private async Task FetchNextTrackNativelyAsync()

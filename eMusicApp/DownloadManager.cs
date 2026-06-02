@@ -149,5 +149,15 @@ namespace eMusicApp
         {
             return JsonSerializer.Serialize(_tracks);
         }
+
+        public static List<DownloadedTrack> GetDownloadedTracks()
+        {
+            return new List<DownloadedTrack>(_tracks);
+        }
+
+        public static bool IsTrackDownloaded(string id)
+        {
+            return _tracks.Exists(t => t.Id == id);
+        }
     }
 }

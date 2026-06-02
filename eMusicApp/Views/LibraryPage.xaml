@@ -11,74 +11,185 @@
 
     <Grid RowDefinitions="Auto, *, Auto">
         
-        <Label Grid.Row="0" Text="Your Library" TextColor="White" FontSize="24" FontAttributes="Bold" Margin="15,20,15,10"/>
-        
-        <!-- Liked Songs List -->
-        <CollectionView Grid.Row="1"
-                        ItemsSource="{Binding LikedSongs}"
-                        SelectionMode="None"
-                        Margin="10,0"
-                        skeleton:Skeleton.IsParent="True"
-                        skeleton:Skeleton.IsBusy="{Binding IsBusy}">
-            <CollectionView.Header>
-                <Border StrokeThickness="0" StrokeShape="RoundRectangle 10" BackgroundColor="#1DB954" Margin="5,0,5,15" Padding="15">
-                    <Grid ColumnDefinitions="*, Auto">
-                        <StackLayout VerticalOptions="Center">
-                            <Label Text="Liked Songs" TextColor="White" FontAttributes="Bold" FontSize="18"/>
-                            <Label Text="{Binding LikedSongs.Count, StringFormat='{0} songs'}" TextColor="#E0E0E0" FontSize="13"/>
-                        </StackLayout>
-                        <Button Grid.Column="1" Text="▶️" WidthRequest="45" HeightRequest="45" CornerRadius="22" BackgroundColor="#121212" TextColor="White" FontAttributes="Bold" FontSize="18" Padding="0" VerticalOptions="Center"/>
-                    </Grid>
-                </Border>
-            </CollectionView.Header>
+        <!-- Header & Tabs -->
+        <StackLayout Grid.Row="0" Margin="15,20,15,10">
+            <Label Text="Tu Biblioteca" TextColor="White" FontSize="24" FontAttributes="Bold"/>
             
-            <CollectionView.ItemTemplate>
-                <DataTemplate x:DataType="models:Track">
-                    <Grid Padding="5,5">
-                        <Grid.GestureRecognizers>
-                            <TapGestureRecognizer 
-                                Command="{Binding Source={RelativeSource AncestorType={x:Type vm:LibraryViewModel}}, Path=Player.PlayTrackCommand}" 
-                                CommandParameter="{Binding .}"/>
-                        </Grid.GestureRecognizers>
-                        
-                        <Grid ColumnDefinitions="Auto, *, Auto" BackgroundColor="Transparent" Padding="10">
-                            <!-- Thumbnail -->
-                            <Border Grid.Column="0"
-                                    StrokeThickness="0"
-                                    StrokeShape="RoundRectangle 5"
-                                    WidthRequest="50"
-                                    HeightRequest="50"
-                                    Margin="0,0,15,0">
-                                <Image Source="{Binding ThumbnailUrl}" Aspect="AspectFill" 
-                                       skeleton:Skeleton.IsBusy="{Binding Source={RelativeSource AncestorType={x:Type vm:LibraryViewModel}}, Path=IsBusy}"
-                                       skeleton:Skeleton.BackgroundColor="#3E3E3E"/>
-                            </Border>
+            <Grid ColumnDefinitions="Auto, Auto" Margin="0,15,0,5">
+                <!-- Favorites Tab -->
+                <Button Grid.Column="0" 
+                        Text="Favoritos" 
+                        CornerRadius="18" 
+                        HeightRequest="36" 
+                        WidthRequest="110" 
+                        Margin="0,0,10,0" 
+                        Padding="0"
+                        FontSize="13"
+                        FontAttributes="Bold"
+                        BackgroundColor="{Binding ShowFavorites, Converter={StaticResource Key=System.Object}, ConverterParameter='CustomColors'}"
+                        TextColor="{Binding ShowFavorites, Converter={StaticResource Key=System.Object}, ConverterParameter='CustomColorsText'}">
+                    <!-- We can bind BackgroundColor and TextColor dynamically or use visual states, but since CommunityToolkit is present, we can just style it or bind properties -->
+                    <Button.Triggers>
+                        <DataTrigger TargetType="Button" Binding="{Binding ShowFavorites}" Value="True">
+                            <Setter Property="BackgroundColor" Value="#1DB954" />
+                            <Setter Property="TextColor" Value="Black" />
+                        </DataTrigger>
+                        <DataTrigger TargetType="Button" Binding="{Binding ShowFavorites}" Value="False">
+                            <Setter Property="BackgroundColor" Value="#2A2A2A" />
+                            <Setter Property="TextColor" Value="White" />
+                        </DataTrigger>
+                    </Button.Triggers>
+                    <Button.GestureRecognizers>
+                        <TapGestureRecognizer Command="{Binding SetTabCommand}" CommandParameter="Favoritos" />
+                    </Button.GestureRecognizers>
+                </Button>
+
+                <!-- Downloads Tab -->
+                <Button Grid.Column="1" 
+                        Text="Descargas" 
+                        CornerRadius="18" 
+                        HeightRequest="36" 
+                        WidthRequest="110" 
+                        Padding="0"
+                        FontSize="13"
+                        FontAttributes="Bold">
+                    <Button.Triggers>
+                        <DataTrigger TargetType="Button" Binding="{Binding ShowDownloads}" Value="True">
+                            <Setter Property="BackgroundColor" Value="#1DB954" />
+                            <Setter Property="TextColor" Value="Black" />
+                        </DataTrigger>
+                        <DataTrigger TargetType="Button" Binding="{Binding ShowDownloads}" Value="False">
+                            <Setter Property="BackgroundColor" Value="#2A2A2A" />
+                            <Setter Property="TextColor" Value="White" />
+                        </DataTrigger>
+                    </Button.Triggers>
+                    <Button.GestureRecognizers>
+                        <TapGestureRecognizer Command="{Binding SetTabCommand}" CommandParameter="Descargas" />
+                    </Button.GestureRecognizers>
+                </Button>
+            </Grid>
+        </StackLayout>
+        
+        <!-- Main Content Area -->
+        <Grid Grid.Row="1" Margin="10,0">
+            
+            <!-- Favoritos List -->
+            <CollectionView ItemsSource="{Binding LikedSongs}"
+                            SelectionMode="None"
+                            IsVisible="{Binding ShowFavorites}"
+                            skeleton:Skeleton.IsParent="True"
+                            skeleton:Skeleton.IsBusy="{Binding IsBusy}">
+                <CollectionView.ItemTemplate>
+                    <DataTemplate x:DataType="models:Track">
+                        <Grid Padding="5,5">
+                            <Grid.GestureRecognizers>
+                                <TapGestureRecognizer 
+                                    Command="{Binding Source={RelativeSource AncestorType={x:Type vm:LibraryViewModel}}, Path=Player.PlayTrackCommand}" 
+                                    CommandParameter="{Binding .}"/>
+                            </Grid.GestureRecognizers>
                             
-                            <!-- Text Info -->
-                            <StackLayout Grid.Column="1" VerticalOptions="Center">
-                                <Label Text="{Binding Title}" TextColor="#1DB954" FontAttributes="Bold" FontSize="15" MaxLines="1" LineBreakMode="TailTruncation" 
-                                       skeleton:Skeleton.IsBusy="{Binding Source={RelativeSource AncestorType={x:Type vm:LibraryViewModel}}, Path=IsBusy}"
-                                       skeleton:Skeleton.BackgroundColor="#3E3E3E" />
-                                <Label Text="{Binding Uploader}" TextColor="#B3B3B3" FontSize="13" Margin="0,3,0,0" MaxLines="1" LineBreakMode="TailTruncation" 
-                                       skeleton:Skeleton.IsBusy="{Binding Source={RelativeSource AncestorType={x:Type vm:LibraryViewModel}}, Path=IsBusy}"
-                                       skeleton:Skeleton.BackgroundColor="#3E3E3E" />
-                            </StackLayout>
-                            
-                            <!-- Remove Favorite Button -->
-                            <ImageButton Grid.Column="2"
-                                         Source="heart_filled.png"
-                                         BackgroundColor="Transparent"
-                                         WidthRequest="16"
-                                         HeightRequest="16"
-                                         Margin="0,0,10,0"
-                                         VerticalOptions="Center"
-                                         Command="{Binding Source={RelativeSource AncestorType={x:Type vm:LibraryViewModel}}, Path=RemoveFavoriteCommand}"
-                                         CommandParameter="{Binding .}" />
+                            <Grid ColumnDefinitions="Auto, *, Auto, Auto" BackgroundColor="Transparent" Padding="10">
+                                <!-- Thumbnail -->
+                                <Border Grid.Column="0"
+                                        StrokeThickness="0"
+                                        StrokeShape="RoundRectangle 5"
+                                        WidthRequest="50"
+                                        HeightRequest="50"
+                                        Margin="0,0,15,0">
+                                    <Image Source="{Binding ThumbnailUrl}" Aspect="AspectFill" 
+                                           skeleton:Skeleton.IsBusy="{Binding Source={RelativeSource AncestorType={x:Type vm:LibraryViewModel}}, Path=IsBusy}"
+                                           skeleton:Skeleton.BackgroundColor="#3E3E3E"/>
+                                </Border>
+                                
+                                <!-- Text Info -->
+                                <StackLayout Grid.Column="1" VerticalOptions="Center">
+                                    <Label Text="{Binding Title}" TextColor="White" FontAttributes="Bold" FontSize="15" MaxLines="1" LineBreakMode="TailTruncation" 
+                                           skeleton:Skeleton.IsBusy="{Binding Source={RelativeSource AncestorType={x:Type vm:LibraryViewModel}}, Path=IsBusy}"
+                                           skeleton:Skeleton.BackgroundColor="#3E3E3E" />
+                                    <Label Text="{Binding Uploader}" TextColor="#B3B3B3" FontSize="13" Margin="0,3,0,0" MaxLines="1" LineBreakMode="TailTruncation" 
+                                           skeleton:Skeleton.IsBusy="{Binding Source={RelativeSource AncestorType={x:Type vm:LibraryViewModel}}, Path=IsBusy}"
+                                           skeleton:Skeleton.BackgroundColor="#3E3E3E" />
+                                </StackLayout>
+                                
+                                <!-- Download Offline Button -->
+                                <ImageButton Grid.Column="2"
+                                             Source="download.png"
+                                             BackgroundColor="Transparent"
+                                             WidthRequest="30"
+                                             HeightRequest="30"
+                                             Padding="5"
+                                             Margin="0,0,10,0"
+                                             VerticalOptions="Center"
+                                             Command="{Binding Source={RelativeSource AncestorType={x:Type vm:LibraryViewModel}}, Path=DownloadTrackCommand}"
+                                             CommandParameter="{Binding .}">
+                                    <ImageButton.Triggers>
+                                        <!-- If downloaded, show green icon or similar. As a fallback/placeholder, we use a different opacity or standard styling -->
+                                    </ImageButton.Triggers>
+                                </ImageButton>
+                                
+                                <!-- Remove Favorite Button -->
+                                <ImageButton Grid.Column="3"
+                                             Source="heart_filled.png"
+                                             BackgroundColor="Transparent"
+                                             WidthRequest="30"
+                                             HeightRequest="30"
+                                             Padding="5"
+                                             VerticalOptions="Center"
+                                             Command="{Binding Source={RelativeSource AncestorType={x:Type vm:LibraryViewModel}}, Path=RemoveFavoriteCommand}"
+                                             CommandParameter="{Binding .}" />
+                            </Grid>
                         </Grid>
-                    </Grid>
-                </DataTemplate>
-            </CollectionView.ItemTemplate>
-        </CollectionView>
+                    </DataTemplate>
+                </CollectionView.ItemTemplate>
+            </CollectionView>
+
+            <!-- Descargas List (Offline) -->
+            <CollectionView ItemsSource="{Binding DownloadedSongs}"
+                            SelectionMode="None"
+                            IsVisible="{Binding ShowDownloads}">
+                <CollectionView.ItemTemplate>
+                    <DataTemplate x:DataType="models:Track">
+                        <Grid Padding="5,5">
+                            <Grid.GestureRecognizers>
+                                <TapGestureRecognizer 
+                                    Command="{Binding Source={RelativeSource AncestorType={x:Type vm:LibraryViewModel}}, Path=Player.PlayTrackCommand}" 
+                                    CommandParameter="{Binding .}"/>
+                            </Grid.GestureRecognizers>
+                            
+                            <Grid ColumnDefinitions="Auto, *, Auto" BackgroundColor="Transparent" Padding="10">
+                                <!-- Thumbnail -->
+                                <Border Grid.Column="0"
+                                        StrokeThickness="0"
+                                        StrokeShape="RoundRectangle 5"
+                                        WidthRequest="50"
+                                        HeightRequest="50"
+                                        Margin="0,0,15,0">
+                                    <Image Source="{Binding ThumbnailUrl}" Aspect="AspectFill" />
+                                </Border>
+                                
+                                <!-- Text Info -->
+                                <StackLayout Grid.Column="1" VerticalOptions="Center">
+                                    <Label Text="{Binding Title}" TextColor="#1DB954" FontAttributes="Bold" FontSize="15" MaxLines="1" LineBreakMode="TailTruncation" />
+                                    <Label Text="{Binding Uploader}" TextColor="#B3B3B3" FontSize="13" Margin="0,3,0,0" MaxLines="1" LineBreakMode="TailTruncation" />
+                                </StackLayout>
+                                
+                                <!-- Delete Download Button -->
+                                <ImageButton Grid.Column="2"
+                                             Source="trash.png"
+                                             BackgroundColor="Transparent"
+                                             WidthRequest="30"
+                                             HeightRequest="30"
+                                             Padding="5"
+                                             VerticalOptions="Center"
+                                             Command="{Binding Source={RelativeSource AncestorType={x:Type vm:LibraryViewModel}}, Path=DeleteDownloadCommand}"
+                                             CommandParameter="{Binding .}" />
+                            </Grid>
+                        </Grid>
+                    </DataTemplate>
+                </CollectionView.ItemTemplate>
+            </CollectionView>
+
+        </Grid>
 
         <views:MiniPlayerView Grid.Row="2" />
     </Grid>

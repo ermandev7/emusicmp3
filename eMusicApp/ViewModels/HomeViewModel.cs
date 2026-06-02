@@ -28,21 +28,21 @@ namespace eMusicApp.ViewModels
         [RelayCommand]
         private async Task LoadRecentTracksAsync()
         {
-            if (RecentTracks.Count > 0) return; // Prevent reload if already loaded
-
             IsBusy = true;
             
             // Populate with fake items for skeleton to show
             RecentTracks.Clear();
             for(int i=0; i<6; i++) RecentTracks.Add(new Track()); 
 
-            var hist = await _apiService.GetTrendingAsync();
+            var hist = await _apiService.GetHistoryAsync();
             
             RecentTracks.Clear();
             foreach (var h in hist)
             {
                 RecentTracks.Add(h);
             }
+
+            Player.SetQueue(RecentTracks);
             
             IsBusy = false;
         }

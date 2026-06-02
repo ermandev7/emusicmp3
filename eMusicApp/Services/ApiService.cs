@@ -42,9 +42,23 @@ namespace eMusicApp.Services
                 System.Diagnostics.Debug.WriteLine($"[API] Buscando: {url}");
 
                 var response = await _httpClient.GetAsync(url);
-                response.EnsureSuccessStatusCode();
-
-                var json = await response.Content.ReadAsStringAsync();
+                
+                string json;
+                if (response.IsSuccessStatusCode)
+                {
+                    json = await response.Content.ReadAsStringAsync();
+                }
+                else
+                {
+                    // Fallback to public Piped API instance if Raspberry Pi backend fails or is rate-limited!
+                    System.Diagnostics.Debug.WriteLine($"[API] Pi Backend failed ({(int)response.StatusCode}). Trying public Piped fallback...");
+                    var fallbackUrl = $"https://pipedapi.kavin.rocks/search?q={Uri.EscapeDataString(query)}&filter=music_songs";
+                    using var fallbackClient = new HttpClient { Timeout = TimeSpan.FromSeconds(10) };
+                    fallbackClient.DefaultRequestHeaders.Add("User-Agent", "eMusicApp/1.0");
+                    var fallbackResponse = await fallbackClient.GetAsync(fallbackUrl);
+                    fallbackResponse.EnsureSuccessStatusCode();
+                    json = await fallbackResponse.Content.ReadAsStringAsync();
+                }
 
                 using var document = JsonDocument.Parse(json);
                 var itemsElement = document.RootElement.GetProperty("items");
@@ -52,14 +66,37 @@ namespace eMusicApp.Services
                 var allItems = JsonSerializer.Deserialize<List<Track>>(itemsElement.GetRawText(), JsonOpts)
                                ?? new List<Track>();
 
-                // Solo devolvemos streams (canciones), no canales ni playlists
-                var tracks = allItems.FindAll(t => t.Type == "stream" && !string.IsNullOrEmpty(t.Title));
+                // Tolerance to missing type or casing differences
+                var tracks = allItems.FindAll(t => 
+                    (string.IsNullOrEmpty(t.Type) || t.Type.Equals("stream", StringComparison.OrdinalIgnoreCase)) 
+                    && !string.IsNullOrEmpty(t.Title));
+
                 System.Diagnostics.Debug.WriteLine($"[API] Tracks encontradas: {tracks.Count}");
                 return tracks;
             }
             catch (System.Exception ex)
             {
-                System.Diagnostics.Debug.WriteLine($"[API] SearchTracksAsync ERROR: {ex.Message}");
+                System.Diagnostics.Debug.WriteLine($"[API] SearchTracksAsync ERROR: {ex.Message}. Trying backup public Piped...");
+                try
+                {
+                    var fallbackUrl = $"https://api.piped.yt/search?q={Uri.EscapeDataString(query)}&filter=music_songs";
+                    using var fallbackClient = new HttpClient { Timeout = TimeSpan.FromSeconds(10) };
+                    fallbackClient.DefaultRequestHeaders.Add("User-Agent", "eMusicApp/1.0");
+                    var fallbackResponse = await fallbackClient.GetAsync(fallbackUrl);
+                    if (fallbackResponse.IsSuccessStatusCode)
+                    {
+                        var json = await fallbackResponse.Content.ReadAsStringAsync();
+                        using var document = JsonDocument.Parse(json);
+                        var itemsElement = document.RootElement.GetProperty("items");
+                        var allItems = JsonSerializer.Deserialize<List<Track>>(itemsElement.GetRawText(), JsonOpts)
+                                       ?? new List<Track>();
+                        return allItems.FindAll(t => 
+                            (string.IsNullOrEmpty(t.Type) || t.Type.Equals("stream", StringComparison.OrdinalIgnoreCase)) 
+                            && !string.IsNullOrEmpty(t.Title));
+                    }
+                }
+                catch { }
+
                 return new List<Track>();
             }
         }

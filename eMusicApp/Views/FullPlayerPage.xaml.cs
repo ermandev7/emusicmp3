@@ -13,6 +13,14 @@ namespace eMusicApp.Views
             // Create a temporary binding context that holds both the PlayerViewModel and the MinimizeCommand
             BindingContext = new FullPlayerViewModelWrapper(playerViewModel, Navigation);
         }
+
+        private void OnSliderDragCompleted(object sender, System.EventArgs e)
+        {
+            if (sender is Slider slider && BindingContext is FullPlayerViewModelWrapper wrapper)
+            {
+                wrapper.Player.SeekCommand.Execute(slider.Value);
+            }
+        }
     }
 
     public class FullPlayerViewModelWrapper

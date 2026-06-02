@@ -14,6 +14,12 @@ RUN dotnet publish -c Release -o /app/publish --no-restore
 FROM mcr.microsoft.com/dotnet/aspnet:9.0 AS runtime
 WORKDIR /app
 
+# Instalar Python3 + yt-dlp como extractor nativo de emergencia
+RUN apt-get update && \
+    apt-get install -y --no-install-recommends python3 python3-pip curl && \
+    pip3 install yt-dlp --break-system-packages && \
+    apt-get clean && rm -rf /var/lib/apt/lists/*
+
 # Copiar la app compilada
 COPY --from=build /app/publish ./
 

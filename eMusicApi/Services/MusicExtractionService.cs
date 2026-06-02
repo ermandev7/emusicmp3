@@ -165,9 +165,15 @@ public class MusicExtractionService
             }
         }
 
-        // FASE 2: Extracción nativa con YoutubeExplode (Plan B de emergencia)
-        Console.WriteLine($"[Stream] Todos los Piped fallaron. Usando YoutubeExplode para {videoId}...");
-        return await ExtractWithYoutubeExplodeAsync(videoId, cacheKey);
+        // FASE 2: Extracción nativa con YoutubeExplode (Plan B)
+        Console.WriteLine($"[Stream] Todos los Piped fallaron. Intentando YoutubeExplode para {videoId}...");
+        var ytExplodeResult = await ExtractWithYoutubeExplodeAsync(videoId, cacheKey);
+        if (HasValidAudioStreams(ytExplodeResult))
+            return ytExplodeResult;
+
+        // FASE 3: yt-dlp como último recurso (Plan C — el más robusto)
+        Console.WriteLine($"[Stream] YoutubeExplode falló. Usando yt-dlp para {videoId}...");
+        return await ExtractWithYtDlpAsync(videoId, cacheKey);
     }
 
     // ─────────────────────────────────────────────────────────────────
@@ -200,7 +206,109 @@ public class MusicExtractionService
         catch (Exception ex)
         {
             Console.WriteLine($"[YoutubeExplode] ERROR: {ex.Message}");
-            return BuildErrorJson(ex.Message);
+            return BuildErrorJson(ex.Message); // Se intentará yt-dlp después
+        }
+    }
+
+    // ─────────────────────────────────────────────────────────────────
+    // EXTRACTOR yt-dlp — Plan C, el más actualizado y robusto
+    // ─────────────────────────────────────────────────────────────────
+    private async Task<string> ExtractWithYtDlpAsync(string videoId, string cacheKey)
+    {
+        try
+        {
+            // Obtener URL directa de audio con yt-dlp
+            var urlProcess = new System.Diagnostics.Process
+            {
+                StartInfo = new System.Diagnostics.ProcessStartInfo
+                {
+                    FileName = "yt-dlp",
+                    Arguments = $"--format bestaudio --get-url --no-playlist --quiet https://www.youtube.com/watch?v={videoId}",
+                    RedirectStandardOutput = true,
+                    RedirectStandardError = true,
+                    UseShellExecute = false,
+                    CreateNoWindow = true
+                }
+            };
+            urlProcess.Start();
+            var audioUrl = (await urlProcess.StandardOutput.ReadToEndAsync()).Trim();
+            var errorOut = await urlProcess.StandardError.ReadToEndAsync();
+            await urlProcess.WaitForExitAsync();
+
+            if (urlProcess.ExitCode != 0 || string.IsNullOrEmpty(audioUrl))
+            {
+                Console.WriteLine($"[yt-dlp] ERROR: {errorOut}");
+                return BuildErrorJson($"yt-dlp falló: {errorOut}");
+            }
+
+            // Obtener título y duración con yt-dlp
+            var metaProcess = new System.Diagnostics.Process
+            {
+                StartInfo = new System.Diagnostics.ProcessStartInfo
+                {
+                    FileName = "yt-dlp",
+                    Arguments = $"--print title --print duration_string --print thumbnail --no-playlist --quiet https://www.youtube.com/watch?v={videoId}",
+                    RedirectStandardOutput = true,
+                    UseShellExecute = false,
+                    CreateNoWindow = true
+                }
+            };
+            metaProcess.Start();
+            var metaLines = (await metaProcess.StandardOutput.ReadToEndAsync()).Split('\n');
+            await metaProcess.WaitForExitAsync();
+
+            var title = metaLines.Length > 0 ? metaLines[0].Trim() : videoId;
+            var duration = metaLines.Length > 1 ? metaLines[1].Trim() : "0:00";
+            var thumbnail = metaLines.Length > 2 ? metaLines[2].Trim() : "";
+
+            // Construir JSON compatible con formato Piped
+            var result = new
+            {
+                title = title,
+                description = "",
+                uploader = "",
+                uploaderUrl = "",
+                uploaderAvatar = "",
+                uploaderVerified = false,
+                thumbnailUrl = thumbnail,
+                duration = 0L,
+                views = 0L,
+                likes = 0L,
+                dislikes = 0L,
+                hls = (string?)null,
+                dash = (string?)null,
+                livestream = false,
+                proxyUrl = "",
+                chapters = Array.Empty<object>(),
+                subtitles = Array.Empty<object>(),
+                relatedStreams = Array.Empty<object>(),
+                previewFrames = Array.Empty<object>(),
+                audioStreams = new[]
+                {
+                    new
+                    {
+                        url = audioUrl,
+                        format = "webm",
+                        quality = "bestaudio",
+                        mimeType = "audio/webm",
+                        bitrate = 128000L,
+                        videoOnly = false,
+                        itag = 0,
+                        codec = "opus"
+                    }
+                },
+                videoStreams = Array.Empty<object>()
+            };
+
+            var json = JsonSerializer.Serialize(result, new JsonSerializerOptions { PropertyNamingPolicy = JsonNamingPolicy.CamelCase });
+            _cache.Set(cacheKey, json, TimeSpan.FromMinutes(50));
+            Console.WriteLine($"[yt-dlp] ✅ Audio extraído exitosamente: {title}");
+            return json;
+        }
+        catch (Exception ex)
+        {
+            Console.WriteLine($"[yt-dlp] EXCEPCIÓN: {ex.Message}");
+            return BuildErrorJson($"Todos los extractores fallaron: {ex.Message}");
         }
     }
 

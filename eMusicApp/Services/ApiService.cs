@@ -42,61 +42,72 @@ namespace eMusicApp.Services
                 System.Diagnostics.Debug.WriteLine($"[API] Buscando: {url}");
 
                 var response = await _httpClient.GetAsync(url);
-                
-                string json;
                 if (response.IsSuccessStatusCode)
                 {
-                    json = await response.Content.ReadAsStringAsync();
+                    var json = await response.Content.ReadAsStringAsync();
+                    var tracks = ParseSearchJson(json);
+                    if (tracks.Count > 0) return tracks;
                 }
-                else
-                {
-                    // Fallback to public Piped API instance if Raspberry Pi backend fails or is rate-limited!
-                    System.Diagnostics.Debug.WriteLine($"[API] Pi Backend failed ({(int)response.StatusCode}). Trying public Piped fallback...");
-                    var fallbackUrl = $"https://pipedapi.kavin.rocks/search?q={Uri.EscapeDataString(query)}&filter=music_songs";
-                    using var fallbackClient = new HttpClient { Timeout = TimeSpan.FromSeconds(10) };
-                    fallbackClient.DefaultRequestHeaders.Add("User-Agent", "eMusicApp/1.0");
-                    var fallbackResponse = await fallbackClient.GetAsync(fallbackUrl);
-                    fallbackResponse.EnsureSuccessStatusCode();
-                    json = await fallbackResponse.Content.ReadAsStringAsync();
-                }
-
-                using var document = JsonDocument.Parse(json);
-                var itemsElement = document.RootElement.GetProperty("items");
-
-                var allItems = JsonSerializer.Deserialize<List<Track>>(itemsElement.GetRawText(), JsonOpts)
-                               ?? new List<Track>();
-
-                // Tolerance to missing type or casing differences
-                var tracks = allItems.FindAll(t => 
-                    (string.IsNullOrEmpty(t.Type) || t.Type.Equals("stream", StringComparison.OrdinalIgnoreCase)) 
-                    && !string.IsNullOrEmpty(t.Title));
-
-                System.Diagnostics.Debug.WriteLine($"[API] Tracks encontradas: {tracks.Count}");
-                return tracks;
+                System.Diagnostics.Debug.WriteLine($"[API] Pi Backend returned non-success or empty: {response.StatusCode}. Trying fallbacks...");
             }
             catch (System.Exception ex)
             {
-                System.Diagnostics.Debug.WriteLine($"[API] SearchTracksAsync ERROR: {ex.Message}. Trying backup public Piped...");
+                System.Diagnostics.Debug.WriteLine($"[API] Pi Backend exception: {ex.Message}. Trying fallbacks...");
+            }
+
+            // Sequential fallbacks
+            var fallbacks = new[]
+            {
+                $"https://pipedapi.kavin.rocks/search?q={Uri.EscapeDataString(query)}&filter=music_songs",
+                $"https://pipedapi.colby.land/search?q={Uri.EscapeDataString(query)}&filter=music_songs",
+                $"https://piped-api.garudalinux.org/search?q={Uri.EscapeDataString(query)}&filter=music_songs",
+                $"https://api.piped.yt/search?q={Uri.EscapeDataString(query)}&filter=music_songs"
+            };
+
+            foreach (var fallbackUrl in fallbacks)
+            {
                 try
                 {
-                    var fallbackUrl = $"https://api.piped.yt/search?q={Uri.EscapeDataString(query)}&filter=music_songs";
-                    using var fallbackClient = new HttpClient { Timeout = TimeSpan.FromSeconds(10) };
-                    fallbackClient.DefaultRequestHeaders.Add("User-Agent", "eMusicApp/1.0");
-                    var fallbackResponse = await fallbackClient.GetAsync(fallbackUrl);
-                    if (fallbackResponse.IsSuccessStatusCode)
+                    System.Diagnostics.Debug.WriteLine($"[API] Trying fallback: {fallbackUrl}");
+                    using var client = new HttpClient { Timeout = TimeSpan.FromSeconds(7) };
+                    client.DefaultRequestHeaders.Add("User-Agent", "eMusicApp/1.0");
+                    var response = await client.GetAsync(fallbackUrl);
+                    if (response.IsSuccessStatusCode)
                     {
-                        var json = await fallbackResponse.Content.ReadAsStringAsync();
-                        using var document = JsonDocument.Parse(json);
-                        var itemsElement = document.RootElement.GetProperty("items");
-                        var allItems = JsonSerializer.Deserialize<List<Track>>(itemsElement.GetRawText(), JsonOpts)
-                                       ?? new List<Track>();
-                        return allItems.FindAll(t => 
-                            (string.IsNullOrEmpty(t.Type) || t.Type.Equals("stream", StringComparison.OrdinalIgnoreCase)) 
-                            && !string.IsNullOrEmpty(t.Title));
+                        var json = await response.Content.ReadAsStringAsync();
+                        var tracks = ParseSearchJson(json);
+                        if (tracks.Count > 0)
+                        {
+                            System.Diagnostics.Debug.WriteLine($"[API] Fallback succeeded! Found {tracks.Count} tracks.");
+                            return tracks;
+                        }
                     }
                 }
-                catch { }
+                catch (System.Exception ex)
+                {
+                    System.Diagnostics.Debug.WriteLine($"[API] Fallback failed: {ex.Message}");
+                }
+            }
 
+            return new List<Track>();
+        }
+
+        private List<Track> ParseSearchJson(string json)
+        {
+            try
+            {
+                using var document = JsonDocument.Parse(json);
+                var itemsElement = document.RootElement.GetProperty("items");
+                var allItems = JsonSerializer.Deserialize<List<Track>>(itemsElement.GetRawText(), JsonOpts)
+                               ?? new List<Track>();
+
+                return allItems.FindAll(t => 
+                    (string.IsNullOrEmpty(t.Type) || t.Type.Equals("stream", StringComparison.OrdinalIgnoreCase)) 
+                    && !string.IsNullOrEmpty(t.Title));
+            }
+            catch (System.Exception ex)
+            {
+                System.Diagnostics.Debug.WriteLine($"[API] ParseSearchJson error: {ex.Message}");
                 return new List<Track>();
             }
         }
@@ -113,16 +124,53 @@ namespace eMusicApp.Services
                 System.Diagnostics.Debug.WriteLine($"[API] Stream: {url}");
 
                 var response = await _httpClient.GetAsync(url);
-                response.EnsureSuccessStatusCode();
-
-                var json = await response.Content.ReadAsStringAsync();
-                return JsonSerializer.Deserialize<StreamInfo>(json, JsonOpts);
+                if (response.IsSuccessStatusCode)
+                {
+                    var json = await response.Content.ReadAsStringAsync();
+                    return JsonSerializer.Deserialize<StreamInfo>(json, JsonOpts);
+                }
+                System.Diagnostics.Debug.WriteLine($"[API] Pi Backend stream returned non-success. Trying fallbacks...");
             }
             catch (System.Exception ex)
             {
-                System.Diagnostics.Debug.WriteLine($"[API] GetStreamAsync ERROR: {ex.Message}");
-                return null;
+                System.Diagnostics.Debug.WriteLine($"[API] GetStreamAsync Pi Backend ERROR: {ex.Message}. Trying fallbacks...");
             }
+
+            // Fallback sequential streams
+            var fallbacks = new[]
+            {
+                $"https://pipedapi.kavin.rocks/streams/{Uri.EscapeDataString(videoId)}",
+                $"https://pipedapi.colby.land/streams/{Uri.EscapeDataString(videoId)}",
+                $"https://piped-api.garudalinux.org/streams/{Uri.EscapeDataString(videoId)}",
+                $"https://api.piped.yt/streams/{Uri.EscapeDataString(videoId)}"
+            };
+
+            foreach (var fallbackUrl in fallbacks)
+            {
+                try
+                {
+                    System.Diagnostics.Debug.WriteLine($"[API] Trying stream fallback: {fallbackUrl}");
+                    using var client = new HttpClient { Timeout = TimeSpan.FromSeconds(7) };
+                    client.DefaultRequestHeaders.Add("User-Agent", "eMusicApp/1.0");
+                    var response = await client.GetAsync(fallbackUrl);
+                    if (response.IsSuccessStatusCode)
+                    {
+                        var json = await response.Content.ReadAsStringAsync();
+                        var info = JsonSerializer.Deserialize<StreamInfo>(json, JsonOpts);
+                        if (info != null && info.AudioStreams != null && info.AudioStreams.Count > 0)
+                        {
+                            System.Diagnostics.Debug.WriteLine($"[API] Stream fallback succeeded!");
+                            return info;
+                        }
+                    }
+                }
+                catch (System.Exception ex)
+                {
+                    System.Diagnostics.Debug.WriteLine($"[API] Stream fallback failed: {ex.Message}");
+                }
+            }
+
+            return null;
         }
 
         // ─────────────────────────────────────────────

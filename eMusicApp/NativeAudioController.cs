@@ -21,6 +21,7 @@ public static class NativeAudioController
     public static Action? OnSkipToPrevious { get; set; }
     public static Action<string>? OnSearchRequested { get; set; }
     public static Action<bool>? OnPlaybackStateChanged { get; set; }
+    public static Action<bool>? OnBufferingChanged { get; set; } // true = cargando/buffering
 
     // Called from WebView (MainPage)
     public static void RequestPlay(string url, string title, string artist, string thumb, string videoId)
@@ -87,5 +88,10 @@ public static class NativeAudioController
     public static void ReportPlaybackState(bool isPlaying)
     {
         OnPlaybackStateChanged?.Invoke(isPlaying);
+    }
+
+    public static void ReportBufferingState(bool isBuffering)
+    {
+        OnBufferingChanged?.Invoke(isBuffering);
     }
 }

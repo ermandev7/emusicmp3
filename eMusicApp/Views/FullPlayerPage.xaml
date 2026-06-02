@@ -107,16 +107,35 @@
                              Margin="10,0" 
                              Command="{Binding Player.PreviousTrackCommand}" />
                 
-                <ImageButton Grid.Column="2" 
-                             Source="{Binding Player.PlayPauseImage}" 
-                             Command="{Binding Player.TogglePlaybackCommand}" 
-                             BackgroundColor="#1DB954" 
-                             CornerRadius="35" 
-                             WidthRequest="70" 
-                             HeightRequest="70" 
-                             Padding="18" 
-                             VerticalOptions="Center" 
-                             Margin="20,0" />
+                <!-- Botón Play/Pause con spinner de carga superpuesto -->
+                <Grid Grid.Column="2" WidthRequest="70" HeightRequest="70" 
+                      VerticalOptions="Center" Margin="20,0">
+                    <!-- Botón normal play/pause -->
+                    <ImageButton Source="{Binding Player.PlayPauseImage}"
+                                 Command="{Binding Player.TogglePlaybackCommand}"
+                                 BackgroundColor="#1DB954"
+                                 CornerRadius="35"
+                                 WidthRequest="70"
+                                 HeightRequest="70"
+                                 Padding="18" />
+                    <!-- Spinner de carga (se superpone cuando está buffering) -->
+                    <Frame BackgroundColor="#1DB954"
+                           CornerRadius="35"
+                           WidthRequest="70"
+                           HeightRequest="70"
+                           IsClippedToBounds="True"
+                           HasShadow="False"
+                           Padding="0"
+                           IsVisible="{Binding Player.ShowLoadingSpinner}">
+                        <ActivityIndicator IsRunning="True"
+                                           Color="White"
+                                           WidthRequest="28"
+                                           HeightRequest="28"
+                                           HorizontalOptions="Center"
+                                           VerticalOptions="Center" />
+                    </Frame>
+                </Grid>
+
                 
                 <ImageButton Grid.Column="3" 
                              Source="next.png" 

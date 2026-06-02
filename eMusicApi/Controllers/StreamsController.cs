@@ -8,11 +8,11 @@ namespace eMusicApi.Controllers;
 [Route("api/[controller]")]
 public class StreamsController : ControllerBase
 {
-    private readonly PipedApiService _apiService;
+    private readonly MusicExtractionService _musicService;
 
-    public StreamsController(PipedApiService apiService)
+    public StreamsController(MusicExtractionService musicService)
     {
-        _apiService = apiService;
+        _musicService = musicService;
     }
 
     [HttpGet("{videoId}")]
@@ -20,12 +20,12 @@ public class StreamsController : ControllerBase
     {
         try
         {
-            var result = await _apiService.GetStreamAsync(videoId);
+            var result = await _musicService.GetStreamAsync(videoId);
             return Content(result, "application/json");
         }
-        catch (System.Exception ex)
+        catch (Exception ex)
         {
-            return StatusCode(500, ex.Message);
+            return StatusCode(500, new { error = ex.Message });
         }
     }
 }

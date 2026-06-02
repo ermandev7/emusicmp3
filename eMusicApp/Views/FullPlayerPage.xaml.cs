@@ -14,11 +14,20 @@ namespace eMusicApp.Views
             BindingContext = new FullPlayerViewModelWrapper(playerViewModel, Navigation);
         }
 
+        private void OnSliderDragStarted(object sender, System.EventArgs e)
+        {
+            if (BindingContext is FullPlayerViewModelWrapper wrapper)
+            {
+                wrapper.Player.IsDraggingSlider = true;
+            }
+        }
+
         private void OnSliderDragCompleted(object sender, System.EventArgs e)
         {
             if (sender is Slider slider && BindingContext is FullPlayerViewModelWrapper wrapper)
             {
                 wrapper.Player.SeekCommand.Execute(slider.Value);
+                wrapper.Player.IsDraggingSlider = false;
             }
         }
     }

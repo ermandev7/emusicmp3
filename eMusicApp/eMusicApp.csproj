@@ -64,6 +64,8 @@
 		<PackageReference Include="Microsoft.Maui.Controls" Version="$(MauiVersion)" />
 		<PackageReference Include="Microsoft.Extensions.Logging.Debug" Version="9.0.8" />
 		<PackageReference Include="Xamarin.AndroidX.Media" Version="1.8.0" />
+		<PackageReference Include="Xamarin.AndroidX.Media3.ExoPlayer" Version="1.10.1" />
+		<PackageReference Include="Xamarin.AndroidX.Media3.Session" Version="1.10.1.1" />
 	</ItemGroup>
 
 </Project>

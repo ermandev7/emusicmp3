@@ -88,6 +88,7 @@
                         MinimumTrackColor="#1DB954" 
                         MaximumTrackColor="#4DFFFFFF" 
                         ThumbColor="White"
+                        DragStarted="OnSliderDragStarted"
                         DragCompleted="OnSliderDragCompleted" />
                 <Grid ColumnDefinitions="*, *">
                     <Label Grid.Column="0" Text="{Binding Player.PositionText}" TextColor="#B3B3B3" FontSize="12" HorizontalOptions="Start" />

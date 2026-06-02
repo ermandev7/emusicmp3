@@ -21,11 +21,13 @@ public class MusicExtractionService
     private readonly IMemoryCache _cache;
     private readonly YoutubeClient _youtubeClient;
 
-    // Instancias Piped en orden de preferencia
+    // Instancias Piped en orden de preferencia.
+    // NOTA: dentro de Docker, el backend Piped se llama "piped-backend" en la red interna.
+    // El dominio externo NO se usa aquí para evitar bucles de red.
     private static readonly string[] PipedInstances = new[]
     {
-        "https://api.emusicmp3.duckdns.org",   // Tu servidor propio en la Pi (1ª prioridad)
-        "https://pipedapi.kavin.rocks",
+        "http://piped-backend:8080",           // Red interna Docker (1ª prioridad, la más rápida)
+        "https://pipedapi.kavin.rocks",        // Piped público de respaldo
         "https://pipedapi.colby.land",
         "https://piped-api.garudalinux.org",
         "https://api.piped.yt"

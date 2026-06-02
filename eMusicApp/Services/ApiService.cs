@@ -4,7 +4,6 @@ using System.Text.Json.Serialization;
 using System.Collections.Generic;
 using System.Threading.Tasks;
 using eMusicApp.Models;
-using Microsoft.Maui.Storage;
 
 namespace eMusicApp.Services
 {
@@ -12,10 +11,9 @@ namespace eMusicApp.Services
     {
         private readonly HttpClient _httpClient;
 
-        // URL del Piped Backend en la Raspberry Pi (via Caddy reverse proxy)
-        private const string PipedApiUrl = "https://api.emusicmp3.duckdns.org";
-        // URL del proxy de streams de audio
-        private const string PipedProxyUrl = "https://proxy.emusicmp3.duckdns.org";
+        // eMusicApi corriendo en la Raspberry Pi 5
+        // Puerto 5050 abierto en el router → Pi en 192.168.1.36
+        private const string BaseUrl = "http://emusicmp3.duckdns.org:5050/api";
 
         private static readonly JsonSerializerOptions JsonOpts = new JsonSerializerOptions
         {
@@ -34,27 +32,27 @@ namespace eMusicApp.Services
 
         // ─────────────────────────────────────────────
         // BUSQUEDA — Solo se dispara al presionar Buscar/Enter
+        // La API tiene caché de 30 minutos (IMemoryCache en la Pi)
         // ─────────────────────────────────────────────
         public async Task<List<Track>> SearchTracksAsync(string query)
         {
             try
             {
-                // filter=all devuelve resultados; music_songs devuelve vacío en esta instancia de Piped
-                var url = $"{PipedApiUrl}/search?q={Uri.EscapeDataString(query)}&filter=all";
+                var url = $"{BaseUrl}/search?q={Uri.EscapeDataString(query)}";
                 System.Diagnostics.Debug.WriteLine($"[API] Buscando: {url}");
 
                 var response = await _httpClient.GetAsync(url);
                 response.EnsureSuccessStatusCode();
 
                 var json = await response.Content.ReadAsStringAsync();
-                System.Diagnostics.Debug.WriteLine($"[API] Respuesta: {json.Substring(0, Math.Min(200, json.Length))}...");
 
                 using var document = JsonDocument.Parse(json);
                 var itemsElement = document.RootElement.GetProperty("items");
 
-                var allItems = JsonSerializer.Deserialize<List<Track>>(itemsElement.GetRawText(), JsonOpts) ?? new List<Track>();
+                var allItems = JsonSerializer.Deserialize<List<Track>>(itemsElement.GetRawText(), JsonOpts)
+                               ?? new List<Track>();
 
-                // Solo devolvemos streams (canciones/videos), no canales ni playlists
+                // Solo devolvemos streams (canciones), no canales ni playlists
                 var tracks = allItems.FindAll(t => t.Type == "stream" && !string.IsNullOrEmpty(t.Title));
                 System.Diagnostics.Debug.WriteLine($"[API] Tracks encontradas: {tracks.Count}");
                 return tracks;
@@ -67,14 +65,15 @@ namespace eMusicApp.Services
         }
 
         // ─────────────────────────────────────────────
-        // STREAM — Obtiene la URL de audio para reproducir
+        // STREAM — URL de audio para reproducir
+        // La API tiene caché de 60 minutos
         // ─────────────────────────────────────────────
         public async Task<StreamInfo?> GetStreamAsync(string videoId)
         {
             try
             {
-                var url = $"{PipedApiUrl}/streams/{Uri.EscapeDataString(videoId)}";
-                System.Diagnostics.Debug.WriteLine($"[API] Obteniendo stream: {url}");
+                var url = $"{BaseUrl}/streams/{Uri.EscapeDataString(videoId)}";
+                System.Diagnostics.Debug.WriteLine($"[API] Stream: {url}");
 
                 var response = await _httpClient.GetAsync(url);
                 response.EnsureSuccessStatusCode();
@@ -90,18 +89,21 @@ namespace eMusicApp.Services
         }
 
         // ─────────────────────────────────────────────
-        // TRENDING — Canciones en tendencia
+        // TRENDING — Con caché de 1 hora en la Pi
         // ─────────────────────────────────────────────
         public async Task<List<Track>> GetTrendingAsync()
         {
             try
             {
-                var url = $"{PipedApiUrl}/trending?region=US";
-                var response = await _httpClient.GetAsync(url);
+                var response = await _httpClient.GetAsync($"{BaseUrl}/trending");
                 if (!response.IsSuccessStatusCode) return new List<Track>();
 
                 var json = await response.Content.ReadAsStringAsync();
-                var items = JsonSerializer.Deserialize<List<Track>>(json, JsonOpts) ?? new List<Track>();
+                using var document = JsonDocument.Parse(json);
+                var itemsElement = document.RootElement.GetProperty("items");
+
+                var items = JsonSerializer.Deserialize<List<Track>>(itemsElement.GetRawText(), JsonOpts)
+                            ?? new List<Track>();
                 return items.FindAll(t => !string.IsNullOrEmpty(t.Title));
             }
             catch (System.Exception ex)
@@ -112,57 +114,123 @@ namespace eMusicApp.Services
         }
 
         // ─────────────────────────────────────────────
-        // FAVORITES — Almacenados localmente en el dispositivo
+        // FAVORITES — Guardados en SQLite de la Pi
         // ─────────────────────────────────────────────
-        private const string FavKey = "emusic_favorites";
-
         public async Task<List<Track>> GetFavoritesAsync()
         {
-            var json = await SecureStorage.GetAsync(FavKey);
-            if (string.IsNullOrEmpty(json)) return new List<Track>();
-            return JsonSerializer.Deserialize<List<Track>>(json, JsonOpts) ?? new List<Track>();
+            try
+            {
+                var response = await _httpClient.GetAsync($"{BaseUrl}/favorites");
+                if (!response.IsSuccessStatusCode) return new List<Track>();
+                var json = await response.Content.ReadAsStringAsync();
+                return JsonSerializer.Deserialize<List<Track>>(json, JsonOpts) ?? new List<Track>();
+            }
+            catch (System.Exception ex)
+            {
+                System.Diagnostics.Debug.WriteLine($"[API] GetFavoritesAsync ERROR: {ex.Message}");
+                return new List<Track>();
+            }
         }
 
         public async Task AddFavoriteAsync(Track track)
         {
-            var favs = await GetFavoritesAsync();
-            if (!favs.Exists(f => f.Url == track.Url))
+            try
             {
-                favs.Add(track);
-                await SecureStorage.SetAsync(FavKey, JsonSerializer.Serialize(favs, JsonOpts));
+                // Mapear campos de Track al modelo del API (Favorite)
+                var payload = new
+                {
+                    title = track.Title,
+                    artist = track.Uploader,
+                    thumbnailUrl = track.ThumbnailUrl,
+                    duration = track.Duration,
+                    videoId = track.VideoId
+                };
+                var json = JsonSerializer.Serialize(payload);
+                var content = new StringContent(json, System.Text.Encoding.UTF8, "application/json");
+                await _httpClient.PostAsync($"{BaseUrl}/favorites", content);
+            }
+            catch (System.Exception ex)
+            {
+                System.Diagnostics.Debug.WriteLine($"[API] AddFavoriteAsync ERROR: {ex.Message}");
             }
         }
 
-        public async Task RemoveFavoriteAsync(string url)
+        public async Task RemoveFavoriteAsync(string id)
         {
-            var favs = await GetFavoritesAsync();
-            favs.RemoveAll(f => f.Url == url || f.Id == url);
-            await SecureStorage.SetAsync(FavKey, JsonSerializer.Serialize(favs, JsonOpts));
+            try
+            {
+                await _httpClient.DeleteAsync($"{BaseUrl}/favorites/{id}");
+            }
+            catch (System.Exception ex)
+            {
+                System.Diagnostics.Debug.WriteLine($"[API] RemoveFavoriteAsync ERROR: {ex.Message}");
+            }
         }
 
         // ─────────────────────────────────────────────
-        // HISTORY — Almacenado localmente en el dispositivo
+        // HISTORY — Guardado en SQLite de la Pi
         // ─────────────────────────────────────────────
-        private const string HistKey = "emusic_history";
-
         public async Task<List<Track>> GetHistoryAsync()
         {
-            var json = await SecureStorage.GetAsync(HistKey);
-            if (string.IsNullOrEmpty(json)) return new List<Track>();
-            return JsonSerializer.Deserialize<List<Track>>(json, JsonOpts) ?? new List<Track>();
+            try
+            {
+                var response = await _httpClient.GetAsync($"{BaseUrl}/history");
+                if (!response.IsSuccessStatusCode) return new List<Track>();
+                var json = await response.Content.ReadAsStringAsync();
+                return JsonSerializer.Deserialize<List<Track>>(json, JsonOpts) ?? new List<Track>();
+            }
+            catch (System.Exception ex)
+            {
+                System.Diagnostics.Debug.WriteLine($"[API] GetHistoryAsync ERROR: {ex.Message}");
+                return new List<Track>();
+            }
         }
 
         public async Task AddHistoryAsync(Track track)
         {
-            var hist = await GetHistoryAsync();
-            hist.RemoveAll(h => h.Url == track.Url); // Elimina duplicados
-            hist.Insert(0, track); // Añade al principio (más reciente primero)
-            if (hist.Count > 50) hist = hist.GetRange(0, 50); // Máximo 50 entradas
-            await SecureStorage.SetAsync(HistKey, JsonSerializer.Serialize(hist, JsonOpts));
+            try
+            {
+                var payload = new
+                {
+                    title = track.Title,
+                    artist = track.Uploader,
+                    thumbnailUrl = track.ThumbnailUrl,
+                    duration = track.Duration,
+                    videoId = track.VideoId
+                };
+                var json = JsonSerializer.Serialize(payload);
+                var content = new StringContent(json, System.Text.Encoding.UTF8, "application/json");
+                await _httpClient.PostAsync($"{BaseUrl}/history", content);
+            }
+            catch (System.Exception ex)
+            {
+                System.Diagnostics.Debug.WriteLine($"[API] AddHistoryAsync ERROR: {ex.Message}");
+            }
+        }
+
+        // ─────────────────────────────────────────────
+        // PLAYLISTS — Guardadas en SQLite de la Pi
+        // ─────────────────────────────────────────────
+        public async Task<List<Playlist>> GetPlaylistsAsync()
+        {
+            try
+            {
+                var response = await _httpClient.GetAsync($"{BaseUrl}/playlists");
+                if (!response.IsSuccessStatusCode) return new List<Playlist>();
+                var json = await response.Content.ReadAsStringAsync();
+                return JsonSerializer.Deserialize<List<Playlist>>(json, JsonOpts) ?? new List<Playlist>();
+            }
+            catch (System.Exception ex)
+            {
+                System.Diagnostics.Debug.WriteLine($"[API] GetPlaylistsAsync ERROR: {ex.Message}");
+                return new List<Playlist>();
+            }
         }
     }
 
-    // Modelo para la respuesta de /streams/{videoId}
+    // ─────────────────────────────────────────────
+    // Modelos de respuesta del API de streams
+    // ─────────────────────────────────────────────
     public class StreamInfo
     {
         [JsonPropertyName("title")]

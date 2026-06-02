@@ -24,10 +24,22 @@ public class FavoritesController : ControllerBase
     }
 
     [HttpPost]
-    public async Task<IActionResult> Post(Favorite favorite)
+    public async Task<IActionResult> Post([FromBody] FavoriteRequest req)
     {
-        if (await _context.Favorites.AnyAsync(f => f.Id == favorite.Id))
+        var id = req.VideoId ?? req.Id ?? string.Empty;
+        if (string.IsNullOrEmpty(id)) return BadRequest("videoId is required.");
+
+        if (await _context.Favorites.AnyAsync(f => f.Id == id))
             return Conflict("Already exists in favorites.");
+
+        var favorite = new Favorite
+        {
+            Id           = id,
+            Title        = req.Title ?? string.Empty,
+            Artist       = req.Artist ?? string.Empty,
+            ThumbnailUrl = req.ThumbnailUrl ?? string.Empty,
+            Duration     = req.Duration
+        };
 
         _context.Favorites.Add(favorite);
         await _context.SaveChangesAsync();
@@ -44,4 +56,15 @@ public class FavoritesController : ControllerBase
         await _context.SaveChangesAsync();
         return NoContent();
     }
+}
+
+// DTO para aceptar el payload del POST desde la app MAUI
+public class FavoriteRequest
+{
+    public string? Id           { get; set; }
+    public string? VideoId      { get; set; } // Alias de Id
+    public string? Title        { get; set; }
+    public string? Artist       { get; set; }
+    public string? ThumbnailUrl { get; set; }
+    public long    Duration     { get; set; }
 }

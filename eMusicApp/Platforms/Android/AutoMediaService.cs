@@ -273,8 +273,7 @@ namespace eMusicApp.Platforms.Android
                             }
                         }
                     }
-
-                    var streamResponse = await client.GetStringAsync($"https://api.emusicmp3.duckdns.org/streams/{nextId}");
+                    var streamResponse = await client.GetStringAsync($"http://emusicmp3.duckdns.org:5050/api/streams/{nextId}");
                     using var streamDoc = JsonDocument.Parse(streamResponse);
                     var audioStreams = streamDoc.RootElement.GetProperty("audioStreams");
                     if (audioStreams.GetArrayLength() > 0)
@@ -293,7 +292,7 @@ namespace eMusicApp.Platforms.Android
                 string query = _currentArtist?.Replace(" - Topic", "")?.Replace("VEVO", "")?.Trim() ?? "";
                 if (string.IsNullOrEmpty(query)) query = _currentTitle ?? "music";
 
-                var searchResponse = await client.GetStringAsync($"https://api.emusicmp3.duckdns.org/search?q={Uri.EscapeDataString(query)}&filter=music_songs");
+                var searchResponse = await client.GetStringAsync($"http://emusicmp3.duckdns.org:5050/api/search?q={Uri.EscapeDataString(query)}");
 
                 using var searchDoc = JsonDocument.Parse(searchResponse);
                 var items = searchDoc.RootElement.GetProperty("items");
@@ -311,7 +310,7 @@ namespace eMusicApp.Platforms.Android
                     if (!string.IsNullOrEmpty(url) && url.Contains("?v="))
                     {
                         string videoId = url.Split("?v=")[1];
-                        var streamResponse = await client.GetStringAsync($"https://api.emusicmp3.duckdns.org/streams/{videoId}");
+                        var streamResponse = await client.GetStringAsync($"http://emusicmp3.duckdns.org:5050/api/streams/{videoId}");
                         using var streamDoc = JsonDocument.Parse(streamResponse);
                         var audioStreams = streamDoc.RootElement.GetProperty("audioStreams");
                         if (audioStreams.GetArrayLength() > 0)
@@ -415,12 +414,14 @@ namespace eMusicApp.Platforms.Android
             mp?.Start();
             UpdatePlaybackState(PlaybackStateCompat.StatePlaying);
             _progressTimer?.Start();
+            NativeAudioController.ReportPlaybackState(true);
         }
 
         public bool OnError(MediaPlayer? mp, MediaError what, int extra)
         {
             Logger.Log($"MediaPlayer OnError: what={what} extra={extra}");
             Console.WriteLine($"MediaPlayer Error: {what} Extra: {extra}");
+            NativeAudioController.ReportPlaybackState(false);
             NativeAudioController.ReportTrackEnded();
             return true;
         }
@@ -430,6 +431,7 @@ namespace eMusicApp.Platforms.Android
             Logger.Log("MediaPlayer OnCompletion.");
             UpdatePlaybackState(PlaybackStateCompat.StateStopped);
             _progressTimer?.Stop();
+            NativeAudioController.ReportPlaybackState(false);
             
             // Acquire a temporary WakeLock to give WebView time to fetch the next track
             try {

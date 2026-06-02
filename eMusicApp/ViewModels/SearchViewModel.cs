@@ -55,6 +55,8 @@ namespace eMusicApp.ViewModels
             {
                 SearchResults.Add(track);
             }
+
+            Player.SetQueue(SearchResults);
             
             IsBusy = false;
         }

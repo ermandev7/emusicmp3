@@ -21,7 +21,7 @@ public class HistoryController : ControllerBase
     [HttpGet]
     public async Task<IActionResult> Get()
     {
-        return Ok(await _context.History.AsNoTracking().OrderByDescending(h => h.PlayedAt).ToListAsync());
+        return Ok(await _context.History.AsNoTracking().OrderByDescending(h => h.PlayedAt).Take(10).ToListAsync());
     }
 
     [HttpPost]

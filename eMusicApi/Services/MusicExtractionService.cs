@@ -406,6 +406,7 @@ public class MusicExtractionService
                     // Verificar que el JSON tenga audioStreams válidos y no vacíos
                     if (HasValidAudioStreams(json))
                     {
+                        json = await EnrichRelatedStreamsIfEmptyAsync(json, videoId);
                         _cache.Set(cacheKey, json, TimeSpan.FromMinutes(55));
                         Console.WriteLine($"[Stream] OK via Piped: {instance}");
                         return json;
@@ -457,6 +458,7 @@ public class MusicExtractionService
 
             // Construir JSON compatible con el formato Piped que espera la app MAUI
             var resultJson = BuildCompatibleJson(video, audioStream);
+            resultJson = await EnrichRelatedStreamsIfEmptyAsync(resultJson, videoId);
             _cache.Set(cacheKey, resultJson, TimeSpan.FromMinutes(55));
             Console.WriteLine($"[YoutubeExplode] ✅ Stream extraído nativamente para: {video.Title}");
             return resultJson;
@@ -674,6 +676,49 @@ public class MusicExtractionService
             audioStreams = Array.Empty<object>(),
             videoStreams = Array.Empty<object>()
         });
+    }
+
+    // ─────────────────────────────────────────────────────────────────
+    // ENRICHMENT — inyectar relatedStreams en JSON cuando viene vacío
+    // ─────────────────────────────────────────────────────────────────
+    private async Task<string> EnrichRelatedStreamsIfEmptyAsync(string json, string videoId)
+    {
+        try
+        {
+            using var doc = JsonDocument.Parse(json);
+            if (doc.RootElement.TryGetProperty("relatedStreams", out var rs) && rs.GetArrayLength() > 0)
+                return json; // Ya tiene, no hace falta enriquecer
+
+            var related = await GetRelatedStreamsFromInvidiousAsync(videoId);
+            if (related.Length == 0) return json;
+
+            // Re-serializar el objeto inyectando el campo relatedStreams
+            using var ms = new System.IO.MemoryStream();
+            using var writer = new System.Text.Json.Utf8JsonWriter(ms);
+            writer.WriteStartObject();
+            foreach (var prop in doc.RootElement.EnumerateObject())
+            {
+                if (prop.Name == "relatedStreams")
+                {
+                    writer.WritePropertyName("relatedStreams");
+                    JsonSerializer.Serialize(writer, related);
+                }
+                else
+                {
+                    prop.WriteTo(writer);
+                }
+            }
+            writer.WriteEndObject();
+            writer.Flush();
+            var enriched = System.Text.Encoding.UTF8.GetString(ms.ToArray());
+            Console.WriteLine($"[Enrich] ✅ relatedStreams inyectados ({related.Length}) para {videoId}");
+            return enriched;
+        }
+        catch (Exception ex)
+        {
+            Console.WriteLine($"[Enrich] Error enriqueciendo JSON: {ex.Message}");
+            return json;
+        }
     }
 
     // ─────────────────────────────────────────────────────────────────

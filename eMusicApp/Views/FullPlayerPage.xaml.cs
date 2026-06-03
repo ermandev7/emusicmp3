@@ -63,7 +63,8 @@ namespace eMusicApp.Views
 
         private async void OnQueueClicked(object sender, System.EventArgs e)
         {
-            await Shell.Current.GoToAsync("QueuePage");
+            var queuePage = IPlatformApplication.Current.Services.GetRequiredService<QueuePage>();
+            await Navigation.PushAsync(queuePage);
         }
 
         private async void OnSleepTimerClicked(object sender, System.EventArgs e)

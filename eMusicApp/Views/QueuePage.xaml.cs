@@ -25,7 +25,7 @@ namespace eMusicApp.Views
 
         private async void OnBackClicked(object sender, System.EventArgs e)
         {
-            await Shell.Current.GoToAsync("..");
+            await Navigation.PopAsync();
         }
     }
 }

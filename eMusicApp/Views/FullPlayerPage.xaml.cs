@@ -56,7 +56,9 @@ namespace eMusicApp.Views
         {
             if (sender is Slider slider && BindingContext is FullPlayerViewModelWrapper wrapper)
             {
-                wrapper.Player.SeekCommand.Execute(slider.Value);
+                // Convertir fracción (0-1) a posición en ms
+                double positionMs = slider.Value * wrapper.Player.SliderMaximum;
+                wrapper.Player.SeekCommand.Execute(positionMs);
                 wrapper.Player.IsDraggingSlider = false;
             }
         }

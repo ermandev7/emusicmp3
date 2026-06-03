@@ -83,7 +83,7 @@ namespace eMusicApp.ViewModels
 
         [ObservableProperty]
         [NotifyPropertyChangedFor(nameof(HasCurrentTrack))]
-        private Track _currentTrack;
+        private Track? _currentTrack;
 
         partial void OnCurrentTrackChanged(Track? value)
         {

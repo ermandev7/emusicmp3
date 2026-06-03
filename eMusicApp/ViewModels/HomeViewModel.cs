@@ -51,12 +51,22 @@ namespace eMusicApp.ViewModels
                     OnPropertyChanged(nameof(HasNoHistory));
                     OnPropertyChanged(nameof(HasHistory));
 
-                    Player.SetQueue(RecentTracks);
+                    // No sobreescribir la cola si el modo radio está activo o si ya hay
+                    // tracks en cola (auto-avance nativo de ExoPlayer). Sobreescribir destruye
+                    // los tracks que ExtendQueueWithRelatedAsync() añadió.
+                    if (!Player.IsRadioMode && Player.PlayQueue.Count <= 1)
+                        Player.SetQueue(RecentTracks);
 
                     // Persistir en la Pi en background
                     await _apiService.AddHistoryAsync(newTrack);
                 });
             };
+
+            // Botones prev/next de la notificación MediaStyle
+            NativeAudioController.OnSkipToNext = () =>
+                MainThread.BeginInvokeOnMainThread(async () => await Player.NextTrackCommand.ExecuteAsync(null));
+            NativeAudioController.OnSkipToPrevious = () =>
+                MainThread.BeginInvokeOnMainThread(async () => await Player.PreviousTrackCommand.ExecuteAsync(null));
         }
 
         [ObservableProperty]

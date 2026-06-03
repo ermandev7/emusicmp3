@@ -78,6 +78,24 @@ namespace eMusicApp.ViewModels
         [NotifyPropertyChangedFor(nameof(HasCurrentTrack))]
         private Track _currentTrack;
 
+        // Actualizado por HomeViewModel cuando ExoPlayer auto-avanza al siguiente track
+        public void NotifyTrackStarted(Track track)
+        {
+            // Sincronizar índice de cola para que Next/Prev funcionen tras auto-avance
+            for (int i = 0; i < PlayQueue.Count; i++)
+            {
+                if (PlayQueue[i].VideoId == track.VideoId)
+                {
+                    _currentQueueIndex = i;
+                    break;
+                }
+            }
+            CurrentTrack = track;
+            IsPlaying = true;
+            IsBuffering = false;
+            Position = 0;
+        }
+
         public bool HasCurrentTrack => CurrentTrack != null;
 
         [ObservableProperty]
@@ -90,13 +108,21 @@ namespace eMusicApp.ViewModels
 
         [ObservableProperty]
         [NotifyPropertyChangedFor(nameof(ShowLoadingSpinner))]
+        [NotifyPropertyChangedFor(nameof(ShowPlayButton))]
         private bool _isBuffering;
 
         // Muestra spinner cuando está buscando la URL de stream O cuando ExoPlayer está en buffering
         public bool ShowLoadingSpinner => IsBuffering;
+        public bool ShowPlayButton     => !IsBuffering;
 
         public string PlayPauseIcon => IsPlaying ? "⏸️" : "▶️";
         public string PlayPauseImage => IsPlaying ? "pause.png" : "play.png";
+
+        [ObservableProperty]
+        [NotifyPropertyChangedFor(nameof(FavoriteIcon))]
+        private bool _isFavorite;
+
+        public string FavoriteIcon => IsFavorite ? "heart_filled.png" : "heart_outline.png";
 
         [ObservableProperty]
         [NotifyPropertyChangedFor(nameof(PositionText))]
@@ -137,15 +163,11 @@ namespace eMusicApp.ViewModels
         [RelayCommand]
         private void TogglePlayback()
         {
+            // Dejar que el nativo confirme el estado real vía OnPlaybackStateChanged
             if (IsPlaying)
-            {
                 NativeAudioController.RequestPause();
-            }
             else
-            {
                 NativeAudioController.RequestResume();
-            }
-            IsPlaying = !IsPlaying;
         }
 
         public System.Collections.ObjectModel.ObservableCollection<Track> PlayQueue { get; } = new System.Collections.ObjectModel.ObservableCollection<Track>();
@@ -189,6 +211,7 @@ namespace eMusicApp.ViewModels
             CurrentTrack = track;
             IsPlaying = true;
             IsBuffering = true; // Mostrar spinner mientras se obtiene la URL
+            IsFavorite = false; // Se restablece; se puede verificar contra API si se quiere
             Position = 0;
             Duration = 0;
             
@@ -301,7 +324,16 @@ namespace eMusicApp.ViewModels
         private async Task ToggleFavorite()
         {
             if (CurrentTrack == null) return;
-            await _apiService.AddFavoriteAsync(CurrentTrack);
+            if (IsFavorite)
+            {
+                IsFavorite = false;
+                await _apiService.RemoveFavoriteAsync(CurrentTrack.VideoId);
+            }
+            else
+            {
+                IsFavorite = true;
+                await _apiService.AddFavoriteAsync(CurrentTrack);
+            }
         }
     }
 }

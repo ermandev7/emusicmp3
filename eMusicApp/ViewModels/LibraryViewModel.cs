@@ -19,9 +19,21 @@ namespace eMusicApp.ViewModels
             Player = player;
             LikedSongs = new ObservableCollection<Track>();
             DownloadedSongs = new ObservableCollection<Track>();
-            
-            // Initialize DownloadManager
+
             DownloadManager.Initialize();
+
+            DownloadManager.OnDownloadProgress = (id, pct) =>
+            {
+                DownloadingId = id;
+                DownloadProgress = pct / 100.0;
+            };
+
+            DownloadManager.OnDownloadCompleted = (id, success) =>
+            {
+                DownloadingId = string.Empty;
+                DownloadProgress = 0.0;
+                if (success) LoadDownloadedSongs();
+            };
         }
 
         [ObservableProperty]
@@ -33,10 +45,29 @@ namespace eMusicApp.ViewModels
         [ObservableProperty]
         [NotifyPropertyChangedFor(nameof(ShowFavorites))]
         [NotifyPropertyChangedFor(nameof(ShowDownloads))]
+        [NotifyPropertyChangedFor(nameof(HasNoFavorites))]
+        [NotifyPropertyChangedFor(nameof(HasNoDownloads))]
         private string _selectedTab = "Favoritos";
 
         public bool ShowFavorites => SelectedTab == "Favoritos";
         public bool ShowDownloads => SelectedTab == "Descargas";
+
+        [ObservableProperty]
+        [NotifyPropertyChangedFor(nameof(IsDownloading))]
+        private string _downloadingId = string.Empty;
+
+        // 0.0-1.0 para ProgressBar; texto calculado con DownloadProgressText
+        [ObservableProperty]
+        [NotifyPropertyChangedFor(nameof(DownloadProgressText))]
+        private double _downloadProgress;
+
+        public string DownloadProgressText => $"Descargando... {(int)(DownloadProgress * 100)}%";
+        public bool IsDownloading => !string.IsNullOrEmpty(DownloadingId);
+
+        public bool HasNoFavorites        => ShowFavorites && !IsBusy && LikedSongs.Count == 0;
+        public bool HasFavorites          => LikedSongs.Count > 0;
+        public bool HasNoDownloads        => ShowDownloads && DownloadedSongs.Count == 0;
+        public bool HasDownloads          => DownloadedSongs.Count > 0;
 
         [RelayCommand]
         private void SetTab(string tab)
@@ -69,18 +100,17 @@ namespace eMusicApp.ViewModels
             
             LikedSongs.Clear();
             foreach (var f in favs)
-            {
                 LikedSongs.Add(f);
-            }
 
-            // Load downloaded songs
+            OnPropertyChanged(nameof(HasNoFavorites));
+
             LoadDownloadedSongs();
 
             if (SelectedTab == "Descargas")
                 Player.SetQueue(DownloadedSongs);
             else
                 Player.SetQueue(LikedSongs);
-            
+
             IsBusy = false;
         }
 
@@ -142,14 +172,15 @@ namespace eMusicApp.ViewModels
             {
                 DownloadedSongs.Add(new Track
                 {
-                    Id = d.Id,
-                    Url = d.LocalPath,
-                    Title = d.Title,
-                    Uploader = d.Artist,
+                    Id           = d.Id,
+                    Url          = d.LocalPath,
+                    Title        = d.Title,
+                    Uploader     = d.Artist,
                     ThumbnailUrl = d.ThumbUrl,
-                    Type = "stream"
+                    Type         = "stream"
                 });
             }
+            OnPropertyChanged(nameof(HasNoDownloads));
         }
 
         public bool IsTrackDownloaded(string videoId)

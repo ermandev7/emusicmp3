@@ -13,7 +13,7 @@ namespace eMusicApp.Services
 
         // eMusicApi corriendo en la Raspberry Pi 5
         // Puerto 5050 abierto en el router → Pi en 192.168.1.36
-        private const string BaseUrl = "http://emusicmp3.duckdns.org:5050/api";
+        private const string BaseUrl = AppConstants.ApiBaseUrl;
 
         private static readonly JsonSerializerOptions JsonOpts = new JsonSerializerOptions
         {
@@ -25,8 +25,8 @@ namespace eMusicApp.Services
         {
             _httpClient = new HttpClient
             {
-                // 45s para dar margen a yt-dlp que puede tardar 15-30s extrayendo
-                Timeout = System.TimeSpan.FromSeconds(45)
+                // 25s: suficiente para yt-dlp (~15-20s) sin bloquear la UI demasiado
+                Timeout = System.TimeSpan.FromSeconds(25)
             };
             _httpClient.DefaultRequestHeaders.Add("User-Agent", "eMusicApp/1.0");
         }
@@ -56,7 +56,7 @@ namespace eMusicApp.Services
                 System.Diagnostics.Debug.WriteLine($"[API] Pi Backend exception: {ex.Message}. Trying fallbacks...");
             }
 
-            // Sequential fallbacks
+            // Sequential fallbacks — reutilizamos _httpClient para evitar socket exhaustion
             var fallbacks = new[]
             {
                 $"https://pipedapi.kavin.rocks/search?q={Uri.EscapeDataString(query)}&filter=music_songs",
@@ -70,9 +70,8 @@ namespace eMusicApp.Services
                 try
                 {
                     System.Diagnostics.Debug.WriteLine($"[API] Trying fallback: {fallbackUrl}");
-                    using var client = new HttpClient { Timeout = TimeSpan.FromSeconds(7) };
-                    client.DefaultRequestHeaders.Add("User-Agent", "eMusicApp/1.0");
-                    var response = await client.GetAsync(fallbackUrl);
+                    using var cts = new System.Threading.CancellationTokenSource(TimeSpan.FromSeconds(7));
+                    var response = await _httpClient.GetAsync(fallbackUrl, cts.Token);
                     if (response.IsSuccessStatusCode)
                     {
                         var json = await response.Content.ReadAsStringAsync();
@@ -137,7 +136,7 @@ namespace eMusicApp.Services
                 System.Diagnostics.Debug.WriteLine($"[API] GetStreamAsync Pi Backend ERROR: {ex.Message}. Trying fallbacks...");
             }
 
-            // Fallback sequential streams
+            // Fallback sequential streams — reutilizamos _httpClient
             var fallbacks = new[]
             {
                 $"https://pipedapi.kavin.rocks/streams/{Uri.EscapeDataString(videoId)}",
@@ -151,9 +150,8 @@ namespace eMusicApp.Services
                 try
                 {
                     System.Diagnostics.Debug.WriteLine($"[API] Trying stream fallback: {fallbackUrl}");
-                    using var client = new HttpClient { Timeout = TimeSpan.FromSeconds(7) };
-                    client.DefaultRequestHeaders.Add("User-Agent", "eMusicApp/1.0");
-                    var response = await client.GetAsync(fallbackUrl);
+                    using var cts = new System.Threading.CancellationTokenSource(TimeSpan.FromSeconds(7));
+                    var response = await _httpClient.GetAsync(fallbackUrl, cts.Token);
                     if (response.IsSuccessStatusCode)
                     {
                         var json = await response.Content.ReadAsStringAsync();

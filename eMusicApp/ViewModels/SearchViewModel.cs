@@ -34,7 +34,12 @@ namespace eMusicApp.ViewModels
         private System.Threading.CancellationTokenSource _searchCts;
 
         [ObservableProperty]
+        [NotifyPropertyChangedFor(nameof(HasNoResults))]
         private bool _isBusy;
+
+        public bool HasNoResults    => !IsBusy && SearchResults.Count == 0 && !string.IsNullOrWhiteSpace(SearchQuery);
+        public bool HasResults      => SearchResults.Count > 0;
+        public bool ShowInitialPrompt => !IsBusy && string.IsNullOrWhiteSpace(SearchQuery);
 
         [RelayCommand]
         private async Task SearchAsync()
@@ -46,11 +51,14 @@ namespace eMusicApp.ViewModels
             SearchResults.Clear();
 
             var results = await _apiService.SearchTracksAsync(SearchQuery);
-            
+
             SearchResults = new ObservableCollection<Track>(results);
             Player.SetQueue(SearchResults);
-            
+
             IsBusy = false;
+            OnPropertyChanged(nameof(HasNoResults));
+            OnPropertyChanged(nameof(HasResults));
+            OnPropertyChanged(nameof(ShowInitialPrompt));
         }
 
         [RelayCommand]

@@ -7,62 +7,62 @@
             StrokeThickness="1"
             Stroke="#33FFFFFF"
             StrokeShape="RoundRectangle 20"
-            IsVisible="{Binding Player.HasCurrentTrack}">
-        
+            IsVisible="{Binding Player.HasCurrentTrack}"
+            BackgroundColor="#282828">
+
         <Border.GestureRecognizers>
             <TapGestureRecognizer Tapped="OnMiniPlayerTapped" />
         </Border.GestureRecognizers>
-        
-        <Border.Background>
-            <SolidColorBrush Color="#282828" />
-        </Border.Background>
 
         <Grid Padding="10,10,15,10" ColumnDefinitions="Auto, *, Auto, Auto">
             <!-- Thumbnail -->
-            <Border Grid.Column="0" 
+            <Border Grid.Column="0"
                     StrokeThickness="0"
-                    StrokeShape="RoundRectangle 12"
-                    WidthRequest="50" 
-                    HeightRequest="50" 
-                    Margin="0,0,15,0">
-                <Image Source="{Binding Player.CurrentTrack.ThumbnailUrl}" 
+                    StrokeShape="RoundRectangle 10"
+                    WidthRequest="50"
+                    HeightRequest="50"
+                    Margin="0,0,12,0">
+                <Image Source="{Binding Player.CurrentTrack.ThumbnailUrl}"
                        Aspect="AspectFill" />
             </Border>
 
             <!-- Track Info -->
-            <StackLayout Grid.Column="1" VerticalOptions="Center">
-                <Label Text="{Binding Player.CurrentTrack.Title}" 
-                       TextColor="White" 
-                       FontAttributes="Bold" 
-                       FontSize="14" 
-                       MaxLines="1" 
+            <StackLayout Grid.Column="1" VerticalOptions="Center" Spacing="2">
+                <Label Text="{Binding Player.CurrentTrack.Title}"
+                       TextColor="White"
+                       FontAttributes="Bold"
+                       FontSize="14"
+                       MaxLines="1"
                        LineBreakMode="TailTruncation" />
-                <Label Text="{Binding Player.CurrentTrack.Uploader}" 
-                       TextColor="#D1D1D1" 
-                       FontSize="12" 
-                       MaxLines="1" 
+                <Label Text="{Binding Player.CurrentTrack.Uploader}"
+                       TextColor="#B3B3B3"
+                       FontSize="12"
+                       MaxLines="1"
                        LineBreakMode="TailTruncation" />
             </StackLayout>
 
-            <!-- Play/Pause Button -->
-            <ImageButton Grid.Column="2" 
-                         Source="{Binding Player.PlayPauseImage}"
-                         Command="{Binding Player.TogglePlaybackCommand}" 
-                         WidthRequest="30" 
-                         HeightRequest="30" 
-                         BackgroundColor="Transparent"
-                         VerticalOptions="Center" 
-                         Padding="0" 
-                         Margin="0,0,15,0"/>
+            <!-- Spinner de buffering / Play-Pause -->
+            <Grid Grid.Column="2" WidthRequest="36" HeightRequest="36" Margin="0,0,10,0">
+                <ActivityIndicator IsRunning="{Binding Player.ShowLoadingSpinner}"
+                                   IsVisible="{Binding Player.ShowLoadingSpinner}"
+                                   Color="#1DB954"
+                                   WidthRequest="24" HeightRequest="24"
+                                   HorizontalOptions="Center" VerticalOptions="Center" />
+                <ImageButton Source="{Binding Player.PlayPauseImage}"
+                             Command="{Binding Player.TogglePlaybackCommand}"
+                             IsVisible="{Binding Player.ShowPlayButton}"
+                             WidthRequest="30" HeightRequest="30"
+                             BackgroundColor="Transparent"
+                             VerticalOptions="Center" Padding="0" />
+            </Grid>
 
             <!-- Next Button -->
-            <ImageButton Grid.Column="3" 
+            <ImageButton Grid.Column="3"
                          Source="next.png"
-                         Command="{Binding Player.NextTrackCommand}" 
-                         WidthRequest="30" 
-                         HeightRequest="30" 
+                         Command="{Binding Player.NextTrackCommand}"
+                         WidthRequest="30" HeightRequest="30"
                          BackgroundColor="Transparent"
-                         VerticalOptions="Center" 
+                         VerticalOptions="Center"
                          Padding="0" />
         </Grid>
     </Border>

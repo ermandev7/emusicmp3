@@ -70,9 +70,9 @@
                           VerticalOptions="Center" 
                           Command="{Binding Player.DownloadTrackCommand}"
                           CommandParameter="{Binding Player.CurrentTrack}" />
-            <ImageButton Grid.Column="2" 
-                          Source="heart_outline.png" 
-                          BackgroundColor="Transparent" 
+            <ImageButton Grid.Column="2"
+                          Source="{Binding Player.FavoriteIcon}"
+                          BackgroundColor="Transparent"
                           WidthRequest="30" HeightRequest="30"
                           VerticalOptions="Center"
                           Command="{Binding Player.ToggleFavoriteCommand}" />

@@ -10,12 +10,12 @@
              BackgroundColor="#121212">
 
     <Grid RowDefinitions="Auto, *, Auto">
-        
+
         <!-- Search Bar -->
         <Border Grid.Row="0"
                 Margin="15,15,15,10"
                 StrokeThickness="0"
-                StrokeShape="RoundRectangle 8"
+                StrokeShape="RoundRectangle 10"
                 BackgroundColor="#242424">
             <SearchBar x:Name="SearchBarControl"
                        Placeholder="¿Qué quieres escuchar?"
@@ -26,42 +26,98 @@
                        CancelButtonColor="White" />
         </Border>
 
-        <!-- Track List -->
+        <!-- Estado inicial: invitación a buscar -->
+        <StackLayout Grid.Row="1"
+                     IsVisible="{Binding ShowInitialPrompt}"
+                     VerticalOptions="Center"
+                     HorizontalOptions="Center"
+                     Spacing="10"
+                     Padding="40,0">
+            <Label Text="&#x1F50E;" FontSize="48" HorizontalOptions="Center" TextColor="#535353" />
+            <Label Text="Busca tu música favorita"
+                   TextColor="#B3B3B3"
+                   FontSize="18"
+                   FontAttributes="Bold"
+                   HorizontalOptions="Center" />
+        </StackLayout>
+
+        <!-- Spinner de carga -->
+        <StackLayout Grid.Row="1"
+                     IsVisible="{Binding IsBusy}"
+                     VerticalOptions="Center"
+                     HorizontalOptions="Center"
+                     Spacing="12">
+            <ActivityIndicator IsRunning="{Binding IsBusy}"
+                               Color="#1DB954"
+                               WidthRequest="40"
+                               HeightRequest="40" />
+            <Label Text="Buscando..."
+                   TextColor="#B3B3B3"
+                   FontSize="14"
+                   HorizontalOptions="Center" />
+        </StackLayout>
+
+        <!-- Sin resultados -->
+        <StackLayout Grid.Row="1"
+                     IsVisible="{Binding HasNoResults}"
+                     VerticalOptions="Center"
+                     HorizontalOptions="Center"
+                     Spacing="10"
+                     Padding="40,0">
+            <Label Text="&#x1F614;" FontSize="48" HorizontalOptions="Center" TextColor="#535353" />
+            <Label Text="Sin resultados"
+                   TextColor="#B3B3B3"
+                   FontSize="18"
+                   FontAttributes="Bold"
+                   HorizontalOptions="Center" />
+            <Label Text="Intenta con otro término de búsqueda"
+                   TextColor="#535353"
+                   FontSize="14"
+                   HorizontalOptions="Center"
+                   HorizontalTextAlignment="Center" />
+        </StackLayout>
+
+        <!-- Lista de resultados -->
         <CollectionView Grid.Row="1"
                         ItemsSource="{Binding SearchResults}"
                         SelectionMode="None"
                         Margin="10,0"
+                        IsVisible="{Binding HasResults}"
                         skeleton:Skeleton.IsParent="True"
                         skeleton:Skeleton.IsBusy="{Binding IsBusy}">
             <CollectionView.ItemTemplate>
                 <DataTemplate x:DataType="models:Track">
-                    <Grid Padding="5,5">
+                    <Grid Padding="5,4">
                         <Grid.GestureRecognizers>
-                            <TapGestureRecognizer 
-                                Command="{Binding Source={RelativeSource AncestorType={x:Type vm:SearchViewModel}}, Path=Player.PlayTrackCommand}" 
+                            <TapGestureRecognizer
+                                Command="{Binding Source={RelativeSource AncestorType={x:Type vm:SearchViewModel}}, Path=Player.PlayTrackCommand}"
                                 CommandParameter="{Binding .}"
                                 Tapped="OnTrackTapped"/>
                         </Grid.GestureRecognizers>
-                        
+
                         <Grid ColumnDefinitions="Auto, *" BackgroundColor="Transparent" Padding="10">
                             <!-- Thumbnail -->
                             <Border Grid.Column="0"
                                     StrokeThickness="0"
-                                    StrokeShape="RoundRectangle 5"
+                                    StrokeShape="RoundRectangle 6"
                                     WidthRequest="55"
                                     HeightRequest="55"
-                                    Margin="0,0,15,0">
-                                <Image Source="{Binding ThumbnailUrl}" Aspect="AspectFill" 
+                                    Margin="0,0,14,0">
+                                <Image Source="{Binding ThumbnailUrl}" Aspect="AspectFill"
                                        skeleton:Skeleton.IsBusy="{Binding Source={RelativeSource AncestorType={x:Type vm:SearchViewModel}}, Path=IsBusy}"
                                        skeleton:Skeleton.BackgroundColor="#3E3E3E"/>
                             </Border>
-                            
-                            <!-- Text Info -->
-                            <StackLayout Grid.Column="1" VerticalOptions="Center">
-                                <Label Text="{Binding Title}" TextColor="White" FontAttributes="Bold" FontSize="15" MaxLines="1" LineBreakMode="TailTruncation" 
+
+                            <!-- Texto -->
+                            <StackLayout Grid.Column="1" VerticalOptions="Center" Spacing="2">
+                                <Label Text="{Binding Title}"
+                                       TextColor="White" FontAttributes="Bold" FontSize="15"
+                                       MaxLines="1" LineBreakMode="TailTruncation"
                                        skeleton:Skeleton.IsBusy="{Binding Source={RelativeSource AncestorType={x:Type vm:SearchViewModel}}, Path=IsBusy}"
                                        skeleton:Skeleton.BackgroundColor="#3E3E3E" />
-                                <Label Text="{Binding Uploader}" TextColor="#B3B3B3" FontSize="13" Margin="0,3,0,0" MaxLines="1" LineBreakMode="TailTruncation" 
+                                <Label Text="{Binding Uploader}"
+                                       TextColor="#B3B3B3" FontSize="13"
+                                       MaxLines="1" LineBreakMode="TailTruncation"
                                        skeleton:Skeleton.IsBusy="{Binding Source={RelativeSource AncestorType={x:Type vm:SearchViewModel}}, Path=IsBusy}"
                                        skeleton:Skeleton.BackgroundColor="#3E3E3E" />
                             </StackLayout>

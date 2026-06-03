@@ -19,7 +19,8 @@ namespace eMusicApp.ViewModels
             Player = player;
             RecentTracks = new ObservableCollection<Track>();
             
-            // Sincronización Reactiva de Historial desde Capa Nativa (Punto 4)
+            // Sincronización Reactiva de Historial desde Capa Nativa
+            // También actualiza PlayerViewModel.CurrentTrack para auto-avance de ExoPlayer
             NativeAudioController.OnTrackStarted = (videoId, title, artist, thumb, duration) =>
             {
                 MainThread.BeginInvokeOnMainThread(async () =>
@@ -33,25 +34,26 @@ namespace eMusicApp.ViewModels
                         Duration = duration
                     };
 
-                    // Optimistic UI Update: Evitar duplicados visuales eliminando instancias previas
+                    // Actualizar CurrentTrack en el Player (cubre auto-avance nativo de ExoPlayer)
+                    Player.NotifyTrackStarted(newTrack);
+
+                    // Evitar duplicados en historial visual
                     for (int i = RecentTracks.Count - 1; i >= 0; i--)
                     {
                         if (RecentTracks[i].VideoId == newTrack.VideoId || RecentTracks[i].VideoIdFromJson == newTrack.VideoIdFromJson)
-                        {
                             RecentTracks.RemoveAt(i);
-                        }
                     }
 
-                    // Empujar el ítem al principio visualmente
                     RecentTracks.Insert(0, newTrack);
                     if (RecentTracks.Count > 20)
-                    {
                         RecentTracks.RemoveAt(RecentTracks.Count - 1);
-                    }
+
+                    OnPropertyChanged(nameof(HasNoHistory));
+                    OnPropertyChanged(nameof(HasHistory));
 
                     Player.SetQueue(RecentTracks);
 
-                    // Sincronización en Background hacia la API Docker
+                    // Persistir en la Pi en background
                     await _apiService.AddHistoryAsync(newTrack);
                 });
             };
@@ -61,19 +63,25 @@ namespace eMusicApp.ViewModels
         private ObservableCollection<Track> _recentTracks;
 
         [ObservableProperty]
+        [NotifyPropertyChangedFor(nameof(HasNoHistory))]
         private bool _isBusy;
+
+        public bool HasNoHistory => !IsBusy && RecentTracks.Count == 0;
+        public bool HasHistory   => !HasNoHistory;
 
         [RelayCommand]
         private async Task LoadRecentTracksAsync()
         {
             IsBusy = true;
-            
+
             var hist = await _apiService.GetHistoryAsync();
-            
+
             RecentTracks = new ObservableCollection<Track>(hist);
             Player.SetQueue(RecentTracks);
-            
+
             IsBusy = false;
+            OnPropertyChanged(nameof(HasNoHistory));
+            OnPropertyChanged(nameof(HasHistory));
         }
     }
 }

@@ -25,6 +25,11 @@ namespace eMusicApp
 
         private static List<DownloadedTrack> _tracks = new List<DownloadedTrack>();
 
+        // Progreso de descarga: (videoId, porcentaje 0-100). Invocado en MainThread.
+        public static Action<string, int>? OnDownloadProgress { get; set; }
+        // Notifica cuando una descarga termina (éxito o fallo)
+        public static Action<string, bool>? OnDownloadCompleted { get; set; }
+
         public static void Initialize()
         {
             if (!Directory.Exists(BasePath))
@@ -64,49 +69,52 @@ namespace eMusicApp
         {
             try
             {
-                if (_tracks.Find(t => t.Id == id) != null) return true; // Already downloaded
+                if (_tracks.Find(t => t.Id == id) != null) return true; // Ya descargado
 
                 string fileName = $"{id}.mp3";
                 string localPath = Path.Combine(BasePath, fileName);
 
-                using (var response = await _httpClient.GetAsync(url, HttpCompletionOption.ResponseHeadersRead))
+                using var response = await _httpClient.GetAsync(url, HttpCompletionOption.ResponseHeadersRead);
+                response.EnsureSuccessStatusCode();
+
+                long? contentLength = response.Content.Headers.ContentLength;
+                using var source = await response.Content.ReadAsStreamAsync();
+                using var dest = File.Open(localPath, FileMode.Create);
+
+                var buffer = new byte[81920]; // 80 KB chunks
+                long totalRead = 0;
+                int read;
+                while ((read = await source.ReadAsync(buffer)) > 0)
                 {
-                    response.EnsureSuccessStatusCode();
-                    using (var streamToReadFrom = await response.Content.ReadAsStreamAsync())
+                    await dest.WriteAsync(buffer.AsMemory(0, read));
+                    totalRead += read;
+
+                    if (contentLength > 0)
                     {
-                        using (var streamToWriteTo = File.Open(localPath, FileMode.Create))
-                        {
-                            await streamToReadFrom.CopyToAsync(streamToWriteTo);
-                        }
+                        int pct = (int)(totalRead * 100 / contentLength.Value);
+                        MainThread.BeginInvokeOnMainThread(() => OnDownloadProgress?.Invoke(id, pct));
                     }
                 }
 
                 var track = new DownloadedTrack
                 {
-                    Id = id,
-                    Title = title,
-                    Artist = artist,
+                    Id       = id,
+                    Title    = title,
+                    Artist   = artist,
                     ThumbUrl = thumbUrl,
                     LocalPath = localPath
                 };
 
                 _tracks.Add(track);
                 SaveMetadata();
-                
-                // Notify UI that download finished
-                MainThread.BeginInvokeOnMainThread(async () =>
-                {
-                    try { 
-                        var activity = Microsoft.Maui.ApplicationModel.Platform.CurrentActivity;
-                        // We will use the WebView to notify if possible, but for now we just save it.
-                    } catch { }
-                });
 
+                MainThread.BeginInvokeOnMainThread(() => OnDownloadCompleted?.Invoke(id, true));
                 return true;
             }
             catch (Exception ex)
             {
                 Console.WriteLine($"Error downloading {id}: {ex.Message}");
+                MainThread.BeginInvokeOnMainThread(() => OnDownloadCompleted?.Invoke(id, false));
                 return false;
             }
         }

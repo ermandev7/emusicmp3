@@ -33,6 +33,7 @@ namespace eMusicApp.Platforms.Android
         private bool _nextPrepared = false;
         private string? _currentMediaId;
         private string? _currentArtist;
+        private string? _currentTitle;
         private bool _trackEndedReported = false;
 
         // IDs ya reproducidos para evitar loops en radio mode
@@ -303,6 +304,7 @@ namespace eMusicApp.Platforms.Android
                     var title  = _player.CurrentMediaItem?.MediaMetadata?.Title?.ToString()      ?? "";
                     var artist = _player.CurrentMediaItem?.MediaMetadata?.Artist?.ToString()     ?? "";
                     _currentArtist = artist;
+                    _currentTitle = title;
                     var thumb  = _player.CurrentMediaItem?.MediaMetadata?.ArtworkUri?.ToString() ?? "";
                     NativeAudioController.ReportTrackStarted(playingId, title, artist, thumb, durMs);
                     PostMediaNotification();
@@ -379,27 +381,36 @@ namespace eMusicApp.Platforms.Android
         {
             try
             {
-                var response = await _httpClient.GetStringAsync(
-                    $"{AppConstants.ApiBaseUrl}/streams/{videoId}");
-                using var doc = JsonDocument.Parse(response);
-                var root = doc.RootElement;
-
                 _nativeQueue.Clear();
-                if (root.TryGetProperty("relatedStreams", out var related))
+
+                // Tier 0: Last.fm — recomendaciones por similitud musical
+                if (!string.IsNullOrEmpty(_currentArtist) && !string.IsNullOrEmpty(_currentTitle))
+                    await EnqueueFromLastFmAsync(_currentArtist, _currentTitle);
+
+                // Tier 1: relatedStreams
+                if (_nativeQueue.Count < 3)
                 {
-                    foreach (var rel in related.EnumerateArray())
+                    var response = await _httpClient.GetStringAsync(
+                        $"{AppConstants.ApiBaseUrl}/streams/{videoId}");
+                    using var doc = JsonDocument.Parse(response);
+                    var root = doc.RootElement;
+
+                    if (root.TryGetProperty("relatedStreams", out var related))
                     {
-                        var vId = ExtractVideoId(rel);
-                        if (!string.IsNullOrEmpty(vId) && vId != videoId && !_playedIds.Contains(vId))
-                            _nativeQueue.Enqueue(vId);
+                        foreach (var rel in related.EnumerateArray())
+                        {
+                            var vId = ExtractVideoId(rel);
+                            if (!string.IsNullOrEmpty(vId) && vId != videoId
+                                && !_playedIds.Contains(vId)
+                                && !_nativeQueue.Contains(vId))
+                                _nativeQueue.Enqueue(vId);
+                        }
                     }
                 }
 
-                // Fallback: si no hay tracks nuevos, buscar por artista
+                // Tier 2: búsqueda por artista
                 if (_nativeQueue.Count == 0 && !string.IsNullOrEmpty(_currentArtist))
-                {
                     await EnqueueFromArtistSearchAsync(_currentArtist);
-                }
 
                 System.Diagnostics.Debug.WriteLine($"[Autoplay] Cola: {_nativeQueue.Count} canciones");
 
@@ -448,6 +459,57 @@ namespace eMusicApp.Platforms.Android
             catch (Exception ex)
             {
                 System.Diagnostics.Debug.WriteLine($"[Autoplay] Error búsqueda artista: {ex.Message}");
+            }
+        }
+
+        /// <summary>
+        /// Obtiene recomendaciones de Last.fm y las busca en nuestra API para obtener videoIds.
+        /// </summary>
+        private async Task EnqueueFromLastFmAsync(string artist, string title)
+        {
+            try
+            {
+                var pairs = await eMusicApp.Services.RadioModeService.GetSimilarFromLastFmRawAsync(
+                    _httpClient, artist, title, 5);
+
+                foreach (var (recArtist, recTrack) in pairs)
+                {
+                    try
+                    {
+                        var searchUrl = $"{AppConstants.ApiBaseUrl}/search?q={Uri.EscapeDataString($"{recArtist} {recTrack}")}";
+                        using var cts = new System.Threading.CancellationTokenSource(System.TimeSpan.FromSeconds(7));
+                        var response = await _httpClient.GetStringAsync(searchUrl, cts.Token);
+                        using var doc = JsonDocument.Parse(response);
+
+                        if (doc.RootElement.TryGetProperty("items", out var items))
+                        {
+                            foreach (var item in items.EnumerateArray())
+                            {
+                                if (item.TryGetProperty("type", out var typeEl))
+                                {
+                                    var type = typeEl.GetString();
+                                    if (!string.IsNullOrEmpty(type) && type != "stream") continue;
+                                }
+                                var vId = ExtractVideoId(item);
+                                if (!string.IsNullOrEmpty(vId) && !_playedIds.Contains(vId))
+                                {
+                                    _nativeQueue.Enqueue(vId);
+                                    break;
+                                }
+                            }
+                        }
+                    }
+                    catch { }
+
+                    if (_nativeQueue.Count >= 5) break;
+                }
+
+                System.Diagnostics.Debug.WriteLine(
+                    $"[Autoplay Last.fm] '{artist} - {title}' → {pairs.Count} sugerencias, {_nativeQueue.Count} en cola");
+            }
+            catch (Exception ex)
+            {
+                System.Diagnostics.Debug.WriteLine($"[Autoplay Last.fm] Error: {ex.Message}");
             }
         }
 
@@ -569,28 +631,40 @@ namespace eMusicApp.Platforms.Android
                 // Rellenar la cola nativa si está vacía
                 if (_nativeQueue.Count == 0 && !string.IsNullOrEmpty(_currentMediaId))
                 {
-                    var response = await _httpClient.GetStringAsync(
-                        $"{AppConstants.ApiBaseUrl}/streams/{_currentMediaId}");
-                    using var doc = JsonDocument.Parse(response);
-                    if (doc.RootElement.TryGetProperty("relatedStreams", out var related))
+                    // Tier 0: Last.fm
+                    if (!string.IsNullOrEmpty(_currentArtist) && !string.IsNullOrEmpty(_currentTitle))
+                        await EnqueueFromLastFmAsync(_currentArtist, _currentTitle);
+
+                    // Tier 1: relatedStreams
+                    if (_nativeQueue.Count < 3)
                     {
-                        foreach (var rel in related.EnumerateArray())
+                        var response = await _httpClient.GetStringAsync(
+                            $"{AppConstants.ApiBaseUrl}/streams/{_currentMediaId}");
+                        using var doc = JsonDocument.Parse(response);
+                        if (doc.RootElement.TryGetProperty("relatedStreams", out var related))
                         {
-                            var vId = ExtractVideoId(rel);
-                            if (!string.IsNullOrEmpty(vId) && vId != _currentMediaId && !_playedIds.Contains(vId))
-                                _nativeQueue.Enqueue(vId);
+                            foreach (var rel in related.EnumerateArray())
+                            {
+                                var vId = ExtractVideoId(rel);
+                                if (!string.IsNullOrEmpty(vId) && vId != _currentMediaId
+                                    && !_playedIds.Contains(vId) && !_nativeQueue.Contains(vId))
+                                    _nativeQueue.Enqueue(vId);
+                            }
                         }
                     }
 
-                    // Fallback: buscar por artista
+                    // Tier 2: buscar por artista
                     if (_nativeQueue.Count == 0 && !string.IsNullOrEmpty(_currentArtist))
                         await EnqueueFromArtistSearchAsync(_currentArtist);
 
-                    // Último recurso: limpiar historial
+                    // Tier 3: limpiar historial
                     if (_nativeQueue.Count == 0)
                     {
                         _playedIds.Clear();
-                        if (doc.RootElement.TryGetProperty("relatedStreams", out var rel2))
+                        var fallbackResp = await _httpClient.GetStringAsync(
+                            $"{AppConstants.ApiBaseUrl}/streams/{_currentMediaId}");
+                        using var doc2 = JsonDocument.Parse(fallbackResp);
+                        if (doc2.RootElement.TryGetProperty("relatedStreams", out var rel2))
                         {
                             foreach (var rel in rel2.EnumerateArray())
                             {

@@ -1,6 +1,5 @@
 using Android.App;
 using Android.Content;
-using AndroidX.Core.App;
 using AndroidX.Media3.Common;
 using AndroidX.Media3.ExoPlayer;
 using AndroidX.Media3.ExoPlayer.Source;
@@ -24,9 +23,8 @@ namespace eMusicApp.Platforms.Android
 
         public static AndroidMedia3Service? Instance { get; private set; }
 
-        private global::Android.App.NotificationManager? _notificationManager;
-        private global::Android.OS.Handler?  _progressHandler;
-        private global::Java.Lang.Runnable?  _progressRunnable;
+        private global::Android.OS.Handler? _progressHandler;
+        private global::Java.Lang.Runnable? _progressRunnable;
 
         // Cola nativa para autoplay infinito
         private Queue<string> _nativeQueue = new Queue<string>();
@@ -34,14 +32,8 @@ namespace eMusicApp.Platforms.Android
         private bool _nextPrepared = false;
         private string? _currentMediaId;
         private bool _trackEndedReported = false;
-        private bool _lastNotifIsPlaying = false;
 
-        // Artwork cache para la notificación
-        private global::Android.Graphics.Bitmap? _artworkBitmap;
-        private string? _artworkBitmapUrl;
-        private bool _isLoadingArtwork;
-
-        // Crossfade state
+        // Crossfade
         private bool _isFadingIn;
 
         private static readonly HttpClient _httpClient = new HttpClient
@@ -53,19 +45,14 @@ namespace eMusicApp.Platforms.Android
         private SimpleCache? _simpleCache;
         private StandaloneDatabaseProvider? _databaseProvider;
 
-        // Notificación
-        private const string CHANNEL_ID      = "emusic_playback";
-        private const int    NOTIFICATION_ID  = 1001;
-        private const string ACTION_PREV      = "emusic.ACTION_PREV";
-        private const string ACTION_PLAY_PAUSE = "emusic.ACTION_PLAY_PAUSE";
-        private const string ACTION_NEXT      = "emusic.ACTION_NEXT";
+        private const string CHANNEL_ID     = "emusic_playback";
+        private const int    NOTIFICATION_ID = 1001;
 
         public override void OnCreate()
         {
             base.OnCreate();
             Instance = this;
 
-            _notificationManager = (global::Android.App.NotificationManager)GetSystemService(NotificationService)!;
             CreateNotificationChannel();
 
             // ── Puente MAUI → Nativo ──
@@ -73,8 +60,8 @@ namespace eMusicApp.Platforms.Android
                 PlayStream(url, title, artist, thumb, videoId);
             NativeAudioController.OnPauseRequested  = Pause;
             NativeAudioController.OnResumeRequested = Resume;
-            NativeAudioController.OnSeekRequested   = (pos) => SeekTo(pos);
-            NativeAudioController.OnUpdateQueueRequested = (videoIds) =>
+            NativeAudioController.OnSeekRequested   = pos => SeekTo(pos);
+            NativeAudioController.OnUpdateQueueRequested = videoIds =>
             {
                 _nativeQueue.Clear();
                 foreach (var id in videoIds) _nativeQueue.Enqueue(id);
@@ -84,217 +71,63 @@ namespace eMusicApp.Platforms.Android
             // ── Caché LRU 500 MB ──
             var cacheDir = new Java.IO.File(CacheDir, "emusic_audio_cache");
             _databaseProvider = new StandaloneDatabaseProvider(this);
-            var evictor = new LeastRecentlyUsedCacheEvictor(500 * 1024 * 1024);
-            _simpleCache = new SimpleCache(cacheDir, evictor, _databaseProvider);
+            _simpleCache = new SimpleCache(
+                cacheDir,
+                new LeastRecentlyUsedCacheEvictor(500 * 1024 * 1024),
+                _databaseProvider);
 
-            var httpDataSourceFactory = new DefaultHttpDataSource.Factory()
-                .SetAllowCrossProtocolRedirects(true);
             var cacheDataSourceFactory = new CacheDataSource.Factory()
                 .SetCache(_simpleCache)
-                .SetUpstreamDataSourceFactory(httpDataSourceFactory)
+                .SetUpstreamDataSourceFactory(
+                    new DefaultHttpDataSource.Factory().SetAllowCrossProtocolRedirects(true))
                 .SetFlags(CacheDataSource.FlagIgnoreCacheOnError);
-            var mediaSourceFactory = new DefaultMediaSourceFactory(this)
-                .SetDataSourceFactory(cacheDataSourceFactory);
 
-            // ── AudioAttributes para música + foco de audio correcto ──
             var audioAttributes = new AndroidX.Media3.Common.AudioAttributes.Builder()
                 .SetUsage(C.UsageMedia)
                 .SetContentType(C.AudioContentTypeMusic)
                 .Build();
 
-            // ── ExoPlayer ──
             _player = new ExoPlayerBuilder(this)
-                .SetMediaSourceFactory(mediaSourceFactory)
+                .SetMediaSourceFactory(new DefaultMediaSourceFactory(this).SetDataSourceFactory(cacheDataSourceFactory))
                 .SetWakeMode(C.WakeModeNetwork)
                 .SetHandleAudioBecomingNoisy(true)
-                .SetAudioAttributes(audioAttributes, /* handleAudioFocus= */ true)
+                .SetAudioAttributes(audioAttributes, true)
                 .Build();
 
-            // ── MediaSession — necesario para MediaStyle y botones de hardware/Bluetooth ──
-            _mediaSession = new MediaSession.Builder(this, _player)
-                .Build();
+            _mediaSession = new MediaSession.Builder(this, _player).Build();
 
-            // ── Handler de progreso en MainLooper (más fiable que System.Timers.Timer en servicios) ──
+            // ── Delegar notificación a Media3 con nuestro canal ──
+            // Media3 enlaza automáticamente la MediaSession → lock screen + botones + progreso funcionan
+            SetMediaNotificationProvider(
+                new DefaultMediaNotificationProvider.Builder(this)
+                    .SetChannelId(CHANNEL_ID)
+                    .SetChannelNameResourceId(Resource.String.app_name)
+                    .SetNotificationId(NOTIFICATION_ID)
+                    .Build());
+
             _progressHandler  = new global::Android.OS.Handler(global::Android.OS.Looper.MainLooper!);
             _progressRunnable = new global::Java.Lang.Runnable(OnProgressTick);
             _progressHandler.PostDelayed(_progressRunnable, 500);
         }
 
-        // ── Media3 delega la notificación a nuestra implementación manual ──
-        public override void OnUpdateNotification(MediaSession session, bool startInForeground)
-        {
-            // Ignoramos DefaultMediaNotificationProvider; gestionamos la notificación nosotros
-            if (_player?.CurrentMediaItem != null || startInForeground)
-                BuildAndShowNotification(startInForeground);
-        }
-
-        // ── Botones de la notificación reciben intents aquí ──
-        public override StartCommandResult OnStartCommand(global::Android.Content.Intent? intent, StartCommandFlags flags, int startId)
-        {
-            switch (intent?.Action)
-            {
-                case ACTION_PREV:
-                    if (_player != null)
-                    {
-                        if (_player.CurrentPosition > 3000)
-                            _player.SeekTo(0);
-                        else
-                            _player.SeekToPreviousMediaItem();
-                    }
-                    break;
-                case ACTION_PLAY_PAUSE:
-                    if (_player?.IsPlaying == true) Pause(); else Resume();
-                    break;
-                case ACTION_NEXT:
-                    if (_player != null)
-                    {
-                        if (_player.HasNextMediaItem)
-                            _player.SeekToNextMediaItem();
-                        else if (_nativeQueue.Count > 0)
-                            _ = FetchNextTrackNativelyAsync();
-                    }
-                    break;
-            }
-            return base.OnStartCommand(intent, flags, startId);
-        }
-
-        // ── Construye y muestra la notificación MediaStyle manualmente ──
-        private void BuildAndShowNotification(bool startInForeground = false)
-        {
-            if (_player == null) return;
-
-            var metadata  = _player.MediaMetadata;
-            string title  = metadata?.Title?.ToString()  ?? "eMusicApp";
-            string artist = metadata?.Artist?.ToString() ?? "";
-            bool isPlaying = _player.IsPlaying;
-
-            // Intent para abrir la app al tocar la notificación
-            var openIntent = PackageManager!.GetLaunchIntentForPackage(PackageName!)!;
-            var contentPi  = global::Android.App.PendingIntent.GetActivity(
-                this, 0, openIntent,
-                global::Android.App.PendingIntentFlags.Immutable |
-                global::Android.App.PendingIntentFlags.UpdateCurrent);
-
-            // PendingIntents para los botones
-            var prevPi   = MakeServicePi(ACTION_PREV, 10);
-            var togglePi = MakeServicePi(ACTION_PLAY_PAUSE, 11);
-            var nextPi   = MakeServicePi(ACTION_NEXT, 12);
-
-            // MediaStyle — enlazar con la MediaSession es OBLIGATORIO para que
-            // Samsung One UI muestre el widget en la pantalla apagada/bloqueada
-            var mediaStyle = new global::AndroidX.Media.App.NotificationCompat.MediaStyle()
-                .SetShowActionsInCompactView(0, 1, 2); // prev · play/pause · next
-
-            int  playPauseIcon  = isPlaying ? Resource.Drawable.pause : Resource.Drawable.play;
-            string playPauseLabel = isPlaying ? "Pausar" : "Reproducir";
-
-            var builder = new NotificationCompat.Builder(this, CHANNEL_ID)
-                .SetSmallIcon(Resource.Drawable.play)
-                .SetContentTitle(title)
-                .SetContentText(artist)
-                .SetContentIntent(contentPi)
-                .SetStyle(mediaStyle)
-                .SetVisibility(NotificationCompat.VisibilityPublic)
-                .SetOngoing(isPlaying)
-                .SetSilent(true)
-                .SetShowWhen(false)
-                .AddAction(Resource.Drawable.previous, "Anterior", prevPi)
-                .AddAction(playPauseIcon, playPauseLabel, togglePi)
-                .AddAction(Resource.Drawable.next, "Siguiente", nextPi);
-
-            // Artwork cacheado — solo lanzar descarga si no hay otra en curso
-            if (_artworkBitmap != null && _artworkBitmapUrl == metadata?.ArtworkUri?.ToString())
-                builder.SetLargeIcon(_artworkBitmap);
-            else if (!string.IsNullOrEmpty(metadata?.ArtworkUri?.ToString()) && !_isLoadingArtwork)
-                _ = LoadArtworkAndUpdateAsync(metadata!.ArtworkUri!.ToString()!);
-
-            var notification = builder.Build();
-
-            // Siempre StartForeground mientras hay media cargada
-            StartForeground(NOTIFICATION_ID, notification);
-        }
-
-        private global::Android.App.PendingIntent MakeServicePi(string action, int requestCode)
-        {
-            var intent = new global::Android.Content.Intent(this, typeof(AndroidMedia3Service))
-                .SetAction(action);
-            return global::Android.App.PendingIntent.GetService(
-                this, requestCode, intent,
-                global::Android.App.PendingIntentFlags.Immutable |
-                global::Android.App.PendingIntentFlags.UpdateCurrent)!;
-        }
-
-        private async Task LoadArtworkAndUpdateAsync(string url)
-        {
-            _isLoadingArtwork = true;
-            try
-            {
-                var bytes  = await _httpClient.GetByteArrayAsync(url);
-                var bitmap = global::Android.Graphics.BitmapFactory.DecodeByteArray(bytes, 0, bytes.Length);
-                if (bitmap == null) return;
-                _artworkBitmap    = bitmap;
-                _artworkBitmapUrl = url;
-                // Re-publicar notificación con la portada ya cargada
-                BuildAndShowNotification(false);
-            }
-            catch { /* artwork opcional */ }
-            finally
-            {
-                _isLoadingArtwork = false;
-            }
-        }
-
-        private void CreateNotificationChannel()
-        {
-            if (global::Android.OS.Build.VERSION.SdkInt >= global::Android.OS.BuildVersionCodes.O)
-            {
-                if (_notificationManager!.GetNotificationChannel(CHANNEL_ID) == null)
-                {
-                    var channel = new global::Android.App.NotificationChannel(
-                        CHANNEL_ID,
-                        "eMusicApp - Reproducción",
-                        global::Android.App.NotificationImportance.Default)
-                    {
-                        Description = "Controles de reproducción de música"
-                    };
-                    channel.SetShowBadge(false);
-                    channel.SetSound(null, null);           // Sin sonido al actualizar
-                    channel.EnableVibration(false);          // Sin vibración
-                    channel.LockscreenVisibility = global::Android.App.NotificationVisibility.Public;
-                    _notificationManager.CreateNotificationChannel(channel);
-                }
-            }
-        }
-
         public override MediaSession? OnGetSession(MediaSession.ControllerInfo controllerInfo)
             => _mediaSession;
 
-        // ── Tick de progreso — corre en MainLooper (Handler), acceso directo a ExoPlayer ──
+        // ── Tick de progreso — reporta a PlayerViewModel cada 500 ms ──
         private void OnProgressTick()
         {
-            // Programar el siguiente tick antes de hacer trabajo (evita skip si el trabajo tarda)
             _progressHandler?.PostDelayed(_progressRunnable!, 500);
-
             if (_player == null) return;
 
             var state        = _player.PlaybackState;
-            bool isBuffering = (state == 2); // STATE_BUFFERING
+            bool isBuffering = state == 2; // STATE_BUFFERING
             bool isPlaying   = _player.IsPlaying;
-            bool isEnded     = (state == 4); // STATE_ENDED
+            bool isEnded     = state == 4; // STATE_ENDED
 
             NativeAudioController.ReportBufferingState(isBuffering);
             if (!isBuffering)
-            {
                 NativeAudioController.ReportPlaybackState(isPlaying);
-                // Actualizar ícono play/pause en notificación cuando cambia el estado
-                if (isPlaying != _lastNotifIsPlaying && _player?.CurrentMediaItem != null)
-                {
-                    _lastNotifIsPlaying = isPlaying;
-                    BuildAndShowNotification(false);
-                }
-            }
 
-            // Detectar fin natural de reproducción
             if (isEnded && !_trackEndedReported)
             {
                 _trackEndedReported = true;
@@ -305,7 +138,6 @@ namespace eMusicApp.Platforms.Android
                 _trackEndedReported = false;
             }
 
-            // Progreso y detección de cambio de track (siempre, no solo cuando isPlaying=true)
             if (_player.CurrentMediaItem != null)
             {
                 long dur  = _player.Duration;
@@ -315,7 +147,7 @@ namespace eMusicApp.Platforms.Android
 
                 NativeAudioController.ReportProgress(posMs, durMs);
 
-                // Crossfade: fade-out volume as current track approaches end
+                // Crossfade: bajar volumen al final del track
                 int xfMs = NativeAudioController.CrossfadeDurationMs;
                 if (xfMs > 0 && durMs > 2000 && !_isFadingIn)
                 {
@@ -323,10 +155,10 @@ namespace eMusicApp.Platforms.Android
                     if (remaining < xfMs && remaining >= 0)
                         _player.Volume = Math.Max(0f, (float)remaining / xfMs);
                     else if (_player.Volume < 0.99f)
-                        _player.Volume = 1f; // restore if outside fade zone
+                        _player.Volume = 1f;
                 }
 
-                // Auto-avance nativo de ExoPlayer: detectar cambio de MediaId
+                // Detectar cambio de track (auto-avance nativo de ExoPlayer)
                 var playingId = _player.CurrentMediaItem?.MediaId;
                 if (!string.IsNullOrEmpty(playingId) && playingId != _currentMediaId)
                 {
@@ -339,7 +171,6 @@ namespace eMusicApp.Platforms.Android
                     _nextPrepared = false;
                     _trackEndedReported = false;
 
-                    // Crossfade: fade volume back in on new track
                     if (xfMs > 0)
                     {
                         _player.Volume = 0f;
@@ -378,10 +209,7 @@ namespace eMusicApp.Platforms.Android
                 }
                 if (_player != null) _player.Volume = 1f;
             }
-            finally
-            {
-                _isFadingIn = false;
-            }
+            finally { _isFadingIn = false; }
         }
 
         // ── Reproducir ──
@@ -393,19 +221,13 @@ namespace eMusicApp.Platforms.Android
             _trackEndedReported = false;
             _isFadingIn = false;
             _nativeQueue.Clear();
-            _artworkBitmap    = null;
-            _artworkBitmapUrl = null;
-            _isLoadingArtwork = false;
-            _player.Volume = 1f; // Reset volume for manual plays
+            _player.Volume = 1f;
 
             _player.ClearMediaItems();
             _player.SetMediaItem(CreateMediaItem(url, title, artist, thumbUrl, videoId));
             _player.Prepare();
             _player.Play();
 
-            BuildAndShowNotification(true);
-
-            // Pre-cargar siguiente track para autoplay sin interrupciones
             _ = FetchRelatedAndQueueNextAsync(videoId);
         }
 
@@ -423,8 +245,9 @@ namespace eMusicApp.Platforms.Android
                 {
                     foreach (var rel in related.EnumerateArray())
                     {
-                        var vId = rel.TryGetProperty("videoId", out var vIdEl) ? vIdEl.GetString() : null;
-                        if (!string.IsNullOrEmpty(vId)) _nativeQueue.Enqueue(vId);
+                        var vId = ExtractVideoId(rel);
+                        if (!string.IsNullOrEmpty(vId) && vId != videoId)
+                            _nativeQueue.Enqueue(vId);
                     }
                 }
 
@@ -437,6 +260,23 @@ namespace eMusicApp.Platforms.Android
             {
                 System.Diagnostics.Debug.WriteLine($"[Autoplay] Error related: {ex.Message}");
             }
+        }
+
+        // Lee videoId de "videoId" directamente, o lo extrae del campo "url" (/watch?v=XXX)
+        private static string? ExtractVideoId(JsonElement el)
+        {
+            if (el.TryGetProperty("videoId", out var idEl))
+            {
+                var v = idEl.GetString();
+                if (!string.IsNullOrEmpty(v)) return v;
+            }
+            if (el.TryGetProperty("url", out var urlEl))
+            {
+                var url = urlEl.GetString() ?? "";
+                var idx = url.IndexOf("?v=");
+                if (idx >= 0) return url.Substring(idx + 3);
+            }
+            return null;
         }
 
         public async Task FetchNextTrackNativelyAsync()
@@ -470,13 +310,12 @@ namespace eMusicApp.Platforms.Android
                     _nextPrepared = true;
                     System.Diagnostics.Debug.WriteLine($"[Autoplay] Siguiente pre-cargado: {title}");
 
-                    // Actualizar cola con los relacionados del siguiente
                     if (root.TryGetProperty("relatedStreams", out var related))
                     {
                         _nativeQueue.Clear();
                         foreach (var rel in related.EnumerateArray())
                         {
-                            var vId = rel.TryGetProperty("videoId", out var vIdEl) ? vIdEl.GetString() : null;
+                            var vId = ExtractVideoId(rel);
                             if (!string.IsNullOrEmpty(vId)) _nativeQueue.Enqueue(vId);
                         }
                     }
@@ -487,10 +326,7 @@ namespace eMusicApp.Platforms.Android
                 System.Diagnostics.Debug.WriteLine($"[Autoplay] Error: {ex.Message}");
                 _nextPrepared = false;
             }
-            finally
-            {
-                _isFetchingNext = false;
-            }
+            finally { _isFetchingNext = false; }
         }
 
         private MediaItem CreateMediaItem(string url, string title, string artist, string thumbUrl, string videoId)
@@ -509,22 +345,34 @@ namespace eMusicApp.Platforms.Android
                 .Build();
         }
 
-        public void Pause()
-        {
-            _player?.Pause();
-            BuildAndShowNotification(false);
-        }
-
-        public void Resume()
-        {
-            _player?.Play();
-            BuildAndShowNotification(false);
-        }
+        public void Pause()  => _player?.Pause();
+        public void Resume() => _player?.Play();
         public void SeekTo(long positionMs) => _player?.SeekTo(positionMs);
 
         public long CurrentPosition => _player?.CurrentPosition ?? 0;
         public long Duration        => _player?.Duration        ?? 0;
         public bool IsPlaying       => _player?.IsPlaying       ?? false;
+
+        private void CreateNotificationChannel()
+        {
+            if (global::Android.OS.Build.VERSION.SdkInt < global::Android.OS.BuildVersionCodes.O) return;
+
+            var nm = (global::Android.App.NotificationManager)GetSystemService(NotificationService)!;
+            if (nm.GetNotificationChannel(CHANNEL_ID) != null) return;
+
+            var channel = new global::Android.App.NotificationChannel(
+                CHANNEL_ID,
+                "eMusicApp - Reproducción",
+                global::Android.App.NotificationImportance.Low)
+            {
+                Description = "Controles de reproducción de música"
+            };
+            channel.SetShowBadge(false);
+            channel.SetSound(null, null);
+            channel.EnableVibration(false);
+            channel.LockscreenVisibility = global::Android.App.NotificationVisibility.Public;
+            nm.CreateNotificationChannel(channel);
+        }
 
         public override void OnDestroy()
         {

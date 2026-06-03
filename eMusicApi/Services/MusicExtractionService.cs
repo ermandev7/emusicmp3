@@ -713,6 +713,7 @@ public class MusicExtractionService
                     items.Add(new
                     {
                         url = $"/watch?v={id}",
+                        videoId = id,
                         type = "stream",
                         title,
                         thumbnail = thumb,

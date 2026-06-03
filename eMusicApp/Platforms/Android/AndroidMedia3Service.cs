@@ -39,6 +39,7 @@ namespace eMusicApp.Platforms.Android
         // Artwork cache para la notificación
         private global::Android.Graphics.Bitmap? _artworkBitmap;
         private string? _artworkBitmapUrl;
+        private bool _isLoadingArtwork;
 
         private static readonly HttpClient _httpClient = new HttpClient
         {
@@ -176,8 +177,10 @@ namespace eMusicApp.Platforms.Android
             var togglePi = MakeServicePi(ACTION_PLAY_PAUSE, 11);
             var nextPi   = MakeServicePi(ACTION_NEXT, 12);
 
-            // MediaStyle — da la forma visual de reproductor de música
+            // MediaStyle — enlazar con la MediaSession es OBLIGATORIO para que
+            // Samsung One UI muestre el widget en la pantalla apagada/bloqueada
             var mediaStyle = new global::AndroidX.Media.App.NotificationCompat.MediaStyle()
+                .SetMediaSession(_mediaSession?.SessionCompatToken)
                 .SetShowActionsInCompactView(0, 1, 2); // prev · play/pause · next
 
             int  playPauseIcon  = isPlaying ? Resource.Drawable.pause : Resource.Drawable.play;
@@ -197,10 +200,10 @@ namespace eMusicApp.Platforms.Android
                 .AddAction(playPauseIcon, playPauseLabel, togglePi)
                 .AddAction(Resource.Drawable.next, "Siguiente", nextPi);
 
-            // Artwork cacheado
+            // Artwork cacheado — solo lanzar descarga si no hay otra en curso
             if (_artworkBitmap != null && _artworkBitmapUrl == metadata?.ArtworkUri?.ToString())
                 builder.SetLargeIcon(_artworkBitmap);
-            else if (!string.IsNullOrEmpty(metadata?.ArtworkUri?.ToString()))
+            else if (!string.IsNullOrEmpty(metadata?.ArtworkUri?.ToString()) && !_isLoadingArtwork)
                 _ = LoadArtworkAndUpdateAsync(metadata!.ArtworkUri!.ToString()!);
 
             var notification = builder.Build();
@@ -221,6 +224,7 @@ namespace eMusicApp.Platforms.Android
 
         private async Task LoadArtworkAndUpdateAsync(string url)
         {
+            _isLoadingArtwork = true;
             try
             {
                 var bytes  = await _httpClient.GetByteArrayAsync(url);
@@ -228,10 +232,14 @@ namespace eMusicApp.Platforms.Android
                 if (bitmap == null) return;
                 _artworkBitmap    = bitmap;
                 _artworkBitmapUrl = url;
-                // Re-publicar notificación con artwork
+                // Re-publicar notificación con la portada ya cargada
                 BuildAndShowNotification(false);
             }
             catch { /* artwork opcional */ }
+            finally
+            {
+                _isLoadingArtwork = false;
+            }
         }
 
         private void CreateNotificationChannel()
@@ -340,6 +348,7 @@ namespace eMusicApp.Platforms.Android
             _nativeQueue.Clear();
             _artworkBitmap    = null;
             _artworkBitmapUrl = null;
+            _isLoadingArtwork = false;
 
             _player.ClearMediaItems();
             _player.SetMediaItem(CreateMediaItem(url, title, artist, thumbUrl, videoId));

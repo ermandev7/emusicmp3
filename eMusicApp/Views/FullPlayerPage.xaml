@@ -89,7 +89,7 @@
         </Grid>
 
         <!-- Controls -->
-        <Grid Grid.Row="3" RowDefinitions="Auto, Auto, Auto" Margin="0,0,0,30">
+        <Grid Grid.Row="3" RowDefinitions="Auto, Auto, Auto, Auto" Margin="0,0,0,30">
             <!-- Progress Section -->
             <StackLayout Grid.Row="0" Margin="0,0,0,20">
                 <Slider x:Name="AudioSlider" 
@@ -106,13 +106,33 @@
                 </Grid>
             </StackLayout>
             
+            <!-- Radio + Crossfade -->
+            <Grid Grid.Row="2" ColumnDefinitions="*, *" Margin="0,12,0,0">
+                <Button Grid.Column="0"
+                        Text="📻 Radio"
+                        TextColor="{Binding Player.RadioColor}"
+                        FontSize="13"
+                        BackgroundColor="Transparent" BorderColor="Transparent"
+                        Padding="0" HeightRequest="34"
+                        HorizontalOptions="Center"
+                        Command="{Binding Player.ToggleRadioCommand}" />
+                <Button Grid.Column="1"
+                        Text="{Binding Player.CrossfadeLabel}"
+                        TextColor="{Binding Player.CrossfadeColor}"
+                        FontSize="13"
+                        BackgroundColor="Transparent" BorderColor="Transparent"
+                        Padding="0" HeightRequest="34"
+                        HorizontalOptions="Center"
+                        Command="{Binding Player.CycleCrossfadeCommand}" />
+            </Grid>
+
             <!-- Sleep timer countdown -->
-            <Label Grid.Row="2"
+            <Label Grid.Row="3"
                    Text="{Binding Player.SleepTimerText}"
                    IsVisible="{Binding Player.IsSleepTimerActive}"
                    TextColor="#1DB954" FontSize="12"
                    HorizontalOptions="Center"
-                   Margin="0,8,0,0" />
+                   Margin="0,6,0,0" />
 
             <Grid Grid.Row="1" ColumnDefinitions="*, Auto, Auto, Auto, *" HorizontalOptions="FillAndExpand">
 

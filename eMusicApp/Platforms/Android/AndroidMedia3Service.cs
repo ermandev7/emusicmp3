@@ -41,6 +41,9 @@ namespace eMusicApp.Platforms.Android
         private string? _artworkBitmapUrl;
         private bool _isLoadingArtwork;
 
+        // Crossfade state
+        private bool _isFadingIn;
+
         private static readonly HttpClient _httpClient = new HttpClient
         {
             Timeout = System.TimeSpan.FromSeconds(30)
@@ -313,6 +316,17 @@ namespace eMusicApp.Platforms.Android
 
                 NativeAudioController.ReportProgress(posMs, durMs);
 
+                // Crossfade: fade-out volume as current track approaches end
+                int xfMs = NativeAudioController.CrossfadeDurationMs;
+                if (xfMs > 0 && durMs > 2000 && !_isFadingIn)
+                {
+                    int remaining = durMs - posMs;
+                    if (remaining < xfMs && remaining >= 0)
+                        _player.Volume = Math.Max(0f, (float)remaining / xfMs);
+                    else if (_player.Volume < 0.99f)
+                        _player.Volume = 1f; // restore if outside fade zone
+                }
+
                 // Auto-avance nativo de ExoPlayer: detectar cambio de MediaId
                 var playingId = _player.CurrentMediaItem?.MediaId;
                 if (!string.IsNullOrEmpty(playingId) && playingId != _currentMediaId)
@@ -325,6 +339,18 @@ namespace eMusicApp.Platforms.Android
 
                     _nextPrepared = false;
                     _trackEndedReported = false;
+
+                    // Crossfade: fade volume back in on new track
+                    if (xfMs > 0)
+                    {
+                        _player.Volume = 0f;
+                        _ = FadeInAsync(xfMs);
+                    }
+                    else
+                    {
+                        _player.Volume = 1f;
+                    }
+
                     if (_nativeQueue.Count > 0 && !_isFetchingNext)
                         _ = FetchNextTrackNativelyAsync();
                 }
@@ -338,6 +364,27 @@ namespace eMusicApp.Platforms.Android
             }
         }
 
+        private async Task FadeInAsync(int durationMs)
+        {
+            _isFadingIn = true;
+            try
+            {
+                const int steps = 20;
+                int delay = Math.Max(20, durationMs / steps);
+                for (int i = 1; i <= steps; i++)
+                {
+                    if (_player == null) break;
+                    _player.Volume = (float)i / steps;
+                    await Task.Delay(delay);
+                }
+                if (_player != null) _player.Volume = 1f;
+            }
+            finally
+            {
+                _isFadingIn = false;
+            }
+        }
+
         // ── Reproducir ──
         public void PlayStream(string url, string title, string artist, string thumbUrl, string videoId)
         {
@@ -345,10 +392,12 @@ namespace eMusicApp.Platforms.Android
 
             _nextPrepared = false;
             _trackEndedReported = false;
+            _isFadingIn = false;
             _nativeQueue.Clear();
             _artworkBitmap    = null;
             _artworkBitmapUrl = null;
             _isLoadingArtwork = false;
+            _player.Volume = 1f; // Reset volume for manual plays
 
             _player.ClearMediaItems();
             _player.SetMediaItem(CreateMediaItem(url, title, artist, thumbUrl, videoId));

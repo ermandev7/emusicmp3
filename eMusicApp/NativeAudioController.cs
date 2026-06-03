@@ -2,6 +2,9 @@ namespace eMusicApp;
 
 public static class NativeAudioController
 {
+    // Crossfade duration in ms; 0 = disabled. Set from PlayerViewModel, read from AndroidMedia3Service.
+    public static int CrossfadeDurationMs { get; set; } = 0;
+
     // Action that Android native code will subscribe to
     public static Action<string, string, string, string, string>? OnPlayRequested { get; set; } // url, title, artist, thumb, videoId
     public static Action<string, string, string, string>? OnPrepareNextRequested { get; set; }

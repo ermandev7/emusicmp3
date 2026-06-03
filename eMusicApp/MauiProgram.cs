@@ -31,12 +31,14 @@ public static class MauiProgram
 		builder.Services.AddTransient<HomeViewModel>();
 		builder.Services.AddTransient<SearchViewModel>();
 		builder.Services.AddTransient<LibraryViewModel>();
+		builder.Services.AddTransient<PlaylistDetailViewModel>();
 
 		// Pages
 		builder.Services.AddTransient<HomePage>();
 		builder.Services.AddTransient<SearchPage>();
 		builder.Services.AddTransient<LibraryPage>();
 		builder.Services.AddTransient<FullPlayerPage>();
+		builder.Services.AddTransient<PlaylistDetailPage>();
 
 		return builder.Build();
 	}

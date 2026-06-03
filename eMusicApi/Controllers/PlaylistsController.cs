@@ -1,6 +1,7 @@
 using Microsoft.AspNetCore.Mvc;
 using Microsoft.EntityFrameworkCore;
 using System.Threading.Tasks;
+using System.Text.Json.Nodes;
 using eMusicApi.Data;
 using eMusicApi.Models;
 
@@ -62,6 +63,49 @@ public class PlaylistsController : ControllerBase
         if (playlist == null) return NotFound();
 
         _context.Playlists.Remove(playlist);
+        await _context.SaveChangesAsync();
+        return NoContent();
+    }
+
+    [HttpPost("{id}/tracks")]
+    public async Task<IActionResult> AddTrack(int id, [FromBody] JsonNode? track)
+    {
+        if (track == null) return BadRequest();
+        var playlist = await _context.Playlists.FindAsync(id);
+        if (playlist == null) return NotFound();
+
+        var array = JsonNode.Parse(playlist.SongsJson ?? "[]")?.AsArray() ?? new JsonArray();
+
+        // Remove duplicate by videoId
+        var videoId = track["videoId"]?.GetValue<string>();
+        if (videoId != null)
+        {
+            for (int i = array.Count - 1; i >= 0; i--)
+            {
+                if (array[i]?["videoId"]?.GetValue<string>() == videoId)
+                    array.RemoveAt(i);
+            }
+        }
+
+        array.Insert(0, track.DeepClone());
+        playlist.SongsJson = array.ToJsonString();
+        await _context.SaveChangesAsync();
+        return Ok();
+    }
+
+    [HttpDelete("{id}/tracks/{videoId}")]
+    public async Task<IActionResult> RemoveTrack(int id, string videoId)
+    {
+        var playlist = await _context.Playlists.FindAsync(id);
+        if (playlist == null) return NotFound();
+
+        var array = JsonNode.Parse(playlist.SongsJson ?? "[]")?.AsArray() ?? new JsonArray();
+        for (int i = array.Count - 1; i >= 0; i--)
+        {
+            if (array[i]?["videoId"]?.GetValue<string>() == videoId)
+                array.RemoveAt(i);
+        }
+        playlist.SongsJson = array.ToJsonString();
         await _context.SaveChangesAsync();
         return NoContent();
     }

@@ -43,14 +43,20 @@ namespace eMusicApp.ViewModels
         private ObservableCollection<Track> _DownloadedSongs;
 
         [ObservableProperty]
+        private ObservableCollection<Playlist> _playlists = new ObservableCollection<Playlist>();
+
+        [ObservableProperty]
         [NotifyPropertyChangedFor(nameof(ShowFavorites))]
         [NotifyPropertyChangedFor(nameof(ShowDownloads))]
+        [NotifyPropertyChangedFor(nameof(ShowPlaylists))]
         [NotifyPropertyChangedFor(nameof(HasNoFavorites))]
         [NotifyPropertyChangedFor(nameof(HasNoDownloads))]
+        [NotifyPropertyChangedFor(nameof(HasNoPlaylists))]
         private string _selectedTab = "Favoritos";
 
         public bool ShowFavorites => SelectedTab == "Favoritos";
         public bool ShowDownloads => SelectedTab == "Descargas";
+        public bool ShowPlaylists => SelectedTab == "Playlists";
 
         [ObservableProperty]
         [NotifyPropertyChangedFor(nameof(IsDownloading))]
@@ -64,19 +70,24 @@ namespace eMusicApp.ViewModels
         public string DownloadProgressText => $"Descargando... {(int)(DownloadProgress * 100)}%";
         public bool IsDownloading => !string.IsNullOrEmpty(DownloadingId);
 
-        public bool HasNoFavorites        => ShowFavorites && !IsBusy && LikedSongs.Count == 0;
-        public bool HasFavorites          => LikedSongs.Count > 0;
-        public bool HasNoDownloads        => ShowDownloads && DownloadedSongs.Count == 0;
-        public bool HasDownloads          => DownloadedSongs.Count > 0;
+        public bool HasNoFavorites  => ShowFavorites && !IsBusy && LikedSongs.Count == 0;
+        public bool HasFavorites    => LikedSongs.Count > 0;
+        public bool HasNoDownloads  => ShowDownloads && DownloadedSongs.Count == 0;
+        public bool HasDownloads    => DownloadedSongs.Count > 0;
+        public bool HasNoPlaylists  => ShowPlaylists && !IsBusy && Playlists.Count == 0;
 
         [RelayCommand]
-        private void SetTab(string tab)
+        private async Task SetTab(string tab)
         {
             SelectedTab = tab;
             if (tab == "Descargas")
             {
                 LoadDownloadedSongs();
                 Player.SetQueue(DownloadedSongs);
+            }
+            else if (tab == "Playlists")
+            {
+                await LoadPlaylistsInternalAsync();
             }
             else
             {
@@ -186,6 +197,39 @@ namespace eMusicApp.ViewModels
         public bool IsTrackDownloaded(string videoId)
         {
             return DownloadManager.IsTrackDownloaded(videoId);
+        }
+
+        private async Task LoadPlaylistsInternalAsync()
+        {
+            IsBusy = true;
+            var lists = await _apiService.GetPlaylistsAsync();
+            Playlists.Clear();
+            foreach (var p in lists) Playlists.Add(p);
+            OnPropertyChanged(nameof(HasNoPlaylists));
+            IsBusy = false;
+        }
+
+        public void NotifyPlaylistsChanged() => OnPropertyChanged(nameof(HasNoPlaylists));
+
+        [RelayCommand]
+        public async Task CreatePlaylist(string name)
+        {
+            if (string.IsNullOrWhiteSpace(name)) return;
+            var playlist = await _apiService.CreatePlaylistAsync(name);
+            if (playlist != null)
+            {
+                Playlists.Insert(0, playlist);
+                OnPropertyChanged(nameof(HasNoPlaylists));
+            }
+        }
+
+        [RelayCommand]
+        public async Task DeletePlaylist(Playlist playlist)
+        {
+            if (playlist == null) return;
+            await _apiService.DeletePlaylistAsync(playlist.Id);
+            Playlists.Remove(playlist);
+            OnPropertyChanged(nameof(HasNoPlaylists));
         }
     }
 }

@@ -1,0 +1,114 @@
+<?xml version="1.0" encoding="utf-8" ?>
+<ContentPage xmlns="http://schemas.microsoft.com/dotnet/2021/maui"
+             xmlns:x="http://schemas.microsoft.com/winfx/2009/xaml"
+             xmlns:vm="clr-namespace:eMusicApp.ViewModels"
+             xmlns:models="clr-namespace:eMusicApp.Models"
+             xmlns:views="clr-namespace:eMusicApp.Views"
+             x:Class="eMusicApp.Views.PlaylistDetailPage"
+             BackgroundColor="#121212">
+
+    <Grid RowDefinitions="Auto, *, Auto">
+
+        <!-- Header -->
+        <Grid Grid.Row="0" ColumnDefinitions="Auto, *, Auto" Padding="16,16,16,8">
+            <ImageButton Grid.Column="0"
+                         Source="chevron_down.png"
+                         BackgroundColor="Transparent"
+                         WidthRequest="36" HeightRequest="36"
+                         Padding="8"
+                         Clicked="OnBackClicked" />
+
+            <StackLayout Grid.Column="1" VerticalOptions="Center" Margin="8,0">
+                <Label Text="{Binding PlaylistName}"
+                       TextColor="White" FontSize="20" FontAttributes="Bold"
+                       MaxLines="1" LineBreakMode="TailTruncation" />
+                <Label Text="{Binding Tracks.Count, StringFormat='{0} canciones'}"
+                       TextColor="#B3B3B3" FontSize="13" />
+            </StackLayout>
+
+            <!-- Play All -->
+            <Border Grid.Column="2"
+                    StrokeThickness="0"
+                    StrokeShape="RoundRectangle 22"
+                    BackgroundColor="#1DB954"
+                    Padding="16,10"
+                    VerticalOptions="Center">
+                <Border.GestureRecognizers>
+                    <TapGestureRecognizer Command="{Binding PlayAllCommand}" />
+                </Border.GestureRecognizers>
+                <Label Text="&#x25B6; Reproducir"
+                       TextColor="Black" FontSize="13" FontAttributes="Bold" />
+            </Border>
+        </Grid>
+
+        <!-- Empty state -->
+        <StackLayout Grid.Row="1"
+                     IsVisible="{Binding HasNoTracks}"
+                     VerticalOptions="Center" HorizontalOptions="Center"
+                     Spacing="10" Padding="40,0">
+            <Label Text="&#x1F3B5;" FontSize="48" HorizontalOptions="Center" TextColor="#535353" />
+            <Label Text="Playlist vacía"
+                   TextColor="#B3B3B3" FontSize="18" FontAttributes="Bold"
+                   HorizontalOptions="Center" />
+            <Label Text="Busca canciones y añádelas aquí"
+                   TextColor="#535353" FontSize="14"
+                   HorizontalOptions="Center" HorizontalTextAlignment="Center" />
+        </StackLayout>
+
+        <!-- Spinner -->
+        <ActivityIndicator Grid.Row="1"
+                           IsRunning="{Binding IsBusy}"
+                           IsVisible="{Binding IsBusy}"
+                           Color="#1DB954"
+                           WidthRequest="40" HeightRequest="40"
+                           HorizontalOptions="Center" VerticalOptions="Center" />
+
+        <!-- Track list -->
+        <CollectionView Grid.Row="1"
+                        ItemsSource="{Binding Tracks}"
+                        SelectionMode="None"
+                        Margin="10,0"
+                        IsVisible="{Binding HasTracks}">
+            <CollectionView.ItemTemplate>
+                <DataTemplate x:DataType="models:Track">
+                    <Grid Padding="5,4">
+                        <Grid.GestureRecognizers>
+                            <TapGestureRecognizer
+                                Command="{Binding Source={RelativeSource AncestorType={x:Type vm:PlaylistDetailViewModel}}, Path=Player.PlayTrackCommand}"
+                                CommandParameter="{Binding .}" />
+                        </Grid.GestureRecognizers>
+
+                        <Grid ColumnDefinitions="Auto, *, Auto" BackgroundColor="Transparent" Padding="10">
+                            <Border Grid.Column="0"
+                                    StrokeThickness="0" StrokeShape="RoundRectangle 6"
+                                    WidthRequest="52" HeightRequest="52" Margin="0,0,14,0">
+                                <Image Source="{Binding ThumbnailUrl}" Aspect="AspectFill" />
+                            </Border>
+
+                            <StackLayout Grid.Column="1" VerticalOptions="Center" Spacing="2">
+                                <Label Text="{Binding Title}"
+                                       TextColor="White" FontAttributes="Bold" FontSize="15"
+                                       MaxLines="1" LineBreakMode="TailTruncation" />
+                                <Label Text="{Binding Uploader}"
+                                       TextColor="#B3B3B3" FontSize="13"
+                                       MaxLines="1" LineBreakMode="TailTruncation" />
+                            </StackLayout>
+
+                            <!-- Remove from playlist -->
+                            <ImageButton Grid.Column="2"
+                                         Source="trash.png"
+                                         BackgroundColor="Transparent"
+                                         WidthRequest="30" HeightRequest="30" Padding="5"
+                                         VerticalOptions="Center"
+                                         Command="{Binding Source={RelativeSource AncestorType={x:Type vm:PlaylistDetailViewModel}}, Path=RemoveTrackCommand}"
+                                         CommandParameter="{Binding .}" />
+                        </Grid>
+                    </Grid>
+                </DataTemplate>
+            </CollectionView.ItemTemplate>
+        </CollectionView>
+
+        <views:MiniPlayerView Grid.Row="2" />
+    </Grid>
+
+</ContentPage>

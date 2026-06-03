@@ -323,6 +323,75 @@ namespace eMusicApp.Services
                 return new List<Playlist>();
             }
         }
+
+        public async Task<Playlist?> CreatePlaylistAsync(string name)
+        {
+            try
+            {
+                var payload = new { name };
+                var json = JsonSerializer.Serialize(payload);
+                var content = new StringContent(json, System.Text.Encoding.UTF8, "application/json");
+                var response = await _httpClient.PostAsync($"{BaseUrl}/playlists", content);
+                if (!response.IsSuccessStatusCode) return null;
+                var resJson = await response.Content.ReadAsStringAsync();
+                return JsonSerializer.Deserialize<Playlist>(resJson, JsonOpts);
+            }
+            catch (System.Exception ex)
+            {
+                System.Diagnostics.Debug.WriteLine($"[API] CreatePlaylistAsync ERROR: {ex.Message}");
+                return null;
+            }
+        }
+
+        public async Task<bool> DeletePlaylistAsync(int id)
+        {
+            try
+            {
+                var response = await _httpClient.DeleteAsync($"{BaseUrl}/playlists/{id}");
+                return response.IsSuccessStatusCode;
+            }
+            catch (System.Exception ex)
+            {
+                System.Diagnostics.Debug.WriteLine($"[API] DeletePlaylistAsync ERROR: {ex.Message}");
+                return false;
+            }
+        }
+
+        public async Task AddTrackToPlaylistAsync(int playlistId, Track track)
+        {
+            try
+            {
+                var payload = new
+                {
+                    videoId = track.VideoId,
+                    title = track.Title,
+                    uploaderName = track.Uploader,
+                    thumbnail = track.ThumbnailUrl,
+                    duration = track.Duration,
+                    url = track.Url,
+                    type = "stream"
+                };
+                var json = JsonSerializer.Serialize(payload);
+                var content = new StringContent(json, System.Text.Encoding.UTF8, "application/json");
+                await _httpClient.PostAsync($"{BaseUrl}/playlists/{playlistId}/tracks", content);
+            }
+            catch (System.Exception ex)
+            {
+                System.Diagnostics.Debug.WriteLine($"[API] AddTrackToPlaylistAsync ERROR: {ex.Message}");
+            }
+        }
+
+        public async Task RemoveTrackFromPlaylistAsync(int playlistId, string videoId)
+        {
+            try
+            {
+                await _httpClient.DeleteAsync($"{BaseUrl}/playlists/{playlistId}/tracks/{Uri.EscapeDataString(videoId)}");
+            }
+            catch (System.Exception ex)
+            {
+                System.Diagnostics.Debug.WriteLine($"[API] RemoveTrackFromPlaylistAsync ERROR: {ex.Message}");
+            }
+        }
     }
 
     // ─────────────────────────────────────────────

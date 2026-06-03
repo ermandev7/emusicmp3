@@ -194,6 +194,8 @@ namespace eMusicApp.ViewModels
             IsBuffering = false;
             Position = 0;
             IsFavorite = false; // reset optimista; se corrige con la llamada al API
+            if (!string.IsNullOrEmpty(track.VideoId))
+                _playedIds.Add(track.VideoId);
             _ = CheckIsFavoriteAsync(track.VideoId);
         }
 
@@ -290,6 +292,9 @@ namespace eMusicApp.ViewModels
 
         private static readonly Random _random = new Random();
 
+        // IDs ya reproducidos — evita loops en radio mode
+        private readonly HashSet<string> _playedIds = new HashSet<string>();
+
         [ObservableProperty]
         [NotifyPropertyChangedFor(nameof(PositionText))]
         [NotifyPropertyChangedFor(nameof(RemainingTimeText))]
@@ -382,6 +387,8 @@ namespace eMusicApp.ViewModels
             IsFavorite = false; // Se restablece; se puede verificar contra API si se quiere
             Position = 0;
             Duration = 0;
+            if (!string.IsNullOrEmpty(track.VideoId))
+                _playedIds.Add(track.VideoId);
             
             // Try playing local downloaded file first
             DownloadManager.Initialize();
@@ -481,30 +488,91 @@ namespace eMusicApp.ViewModels
         private async Task FetchAndPlayRelatedAsync()
         {
             if (CurrentTrack == null) return;
+
+            // 1) Intentar relatedStreams filtrando ya reproducidos
             var streamInfo = await _apiService.GetStreamAsync(CurrentTrack.VideoId);
-            if (streamInfo?.RelatedStreams?.Count > 0)
+            var next = streamInfo?.RelatedStreams?
+                .FirstOrDefault(r => !string.IsNullOrEmpty(r.VideoId) && !_playedIds.Contains(r.VideoId));
+            if (next != null)
             {
-                var next = streamInfo.RelatedStreams.FirstOrDefault(r => r.VideoId != CurrentTrack.VideoId);
-                if (next != null)
-                    await PlayTrack(next);
+                await PlayTrack(next);
+                return;
             }
+
+            // 2) Fallback: buscar por artista
+            var artist = CurrentTrack.Uploader;
+            if (!string.IsNullOrEmpty(artist))
+            {
+                var results = await _apiService.SearchTracksAsync(artist);
+                next = results.FirstOrDefault(r => !string.IsNullOrEmpty(r.VideoId) && !_playedIds.Contains(r.VideoId));
+                if (next != null)
+                {
+                    await PlayTrack(next);
+                    return;
+                }
+            }
+
+            // 3) Si todo falla, reproducir cualquier related (aunque sea repetida)
+            next = streamInfo?.RelatedStreams?.FirstOrDefault(r => !string.IsNullOrEmpty(r.VideoId) && r.VideoId != CurrentTrack.VideoId);
+            if (next != null) await PlayTrack(next);
         }
 
         private async Task ExtendQueueWithRelatedAsync()
         {
             if (CurrentTrack == null) return;
+
+            var newTracks = new List<Track>();
+
+            // 1) Intentar relatedStreams filtrando ya reproducidos y ya en cola
+            var queueIds = new HashSet<string>(PlayQueue.Select(t => t.VideoId));
             var streamInfo = await _apiService.GetStreamAsync(CurrentTrack.VideoId);
             if (streamInfo?.RelatedStreams?.Count > 0)
             {
-                var toAdd = streamInfo.RelatedStreams
-                    .Where(r => !string.IsNullOrEmpty(r.VideoId) && r.VideoId != CurrentTrack.VideoId)
+                newTracks = streamInfo.RelatedStreams
+                    .Where(r => !string.IsNullOrEmpty(r.VideoId)
+                             && !_playedIds.Contains(r.VideoId)
+                             && !queueIds.Contains(r.VideoId))
                     .Take(8)
                     .ToList();
-                foreach (var r in toAdd)
+            }
+
+            // 2) Fallback: buscar por artista si no hay suficientes nuevos
+            if (newTracks.Count < 3 && !string.IsNullOrEmpty(CurrentTrack.Uploader))
+            {
+                var results = await _apiService.SearchTracksAsync(CurrentTrack.Uploader);
+                var extraTracks = results
+                    .Where(r => !string.IsNullOrEmpty(r.VideoId)
+                             && !_playedIds.Contains(r.VideoId)
+                             && !queueIds.Contains(r.VideoId)
+                             && !newTracks.Any(n => n.VideoId == r.VideoId))
+                    .Take(8 - newTracks.Count)
+                    .ToList();
+                newTracks.AddRange(extraTracks);
+            }
+
+            if (newTracks.Count > 0)
+            {
+                foreach (var r in newTracks)
                     PlayQueue.Add(r);
                 _currentQueueIndex++;
                 RebuildQueueItems();
                 await PlayTrack(PlayQueue[_currentQueueIndex]);
+            }
+            else
+            {
+                // Último recurso: limpiar historial de reproducidos y reintentar con relatedStreams
+                _playedIds.Clear();
+                if (streamInfo?.RelatedStreams?.Count > 0)
+                {
+                    var fallback = streamInfo.RelatedStreams
+                        .Where(r => !string.IsNullOrEmpty(r.VideoId) && r.VideoId != CurrentTrack.VideoId)
+                        .Take(8).ToList();
+                    foreach (var r in fallback)
+                        PlayQueue.Add(r);
+                    _currentQueueIndex++;
+                    RebuildQueueItems();
+                    await PlayTrack(PlayQueue[_currentQueueIndex]);
+                }
             }
         }
 

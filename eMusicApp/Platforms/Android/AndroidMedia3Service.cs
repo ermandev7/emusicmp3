@@ -32,7 +32,11 @@ namespace eMusicApp.Platforms.Android
         private bool _isFetchingNext = false;
         private bool _nextPrepared = false;
         private string? _currentMediaId;
+        private string? _currentArtist;
         private bool _trackEndedReported = false;
+
+        // IDs ya reproducidos para evitar loops en radio mode
+        private readonly HashSet<string> _playedIds = new HashSet<string>();
 
         // Crossfade
         private bool _isFadingIn;
@@ -295,8 +299,10 @@ namespace eMusicApp.Platforms.Android
                 if (!string.IsNullOrEmpty(playingId) && playingId != _currentMediaId)
                 {
                     _currentMediaId = playingId;
+                    _playedIds.Add(playingId);
                     var title  = _player.CurrentMediaItem?.MediaMetadata?.Title?.ToString()      ?? "";
                     var artist = _player.CurrentMediaItem?.MediaMetadata?.Artist?.ToString()     ?? "";
+                    _currentArtist = artist;
                     var thumb  = _player.CurrentMediaItem?.MediaMetadata?.ArtworkUri?.ToString() ?? "";
                     NativeAudioController.ReportTrackStarted(playingId, title, artist, thumb, durMs);
                     PostMediaNotification();
@@ -356,6 +362,8 @@ namespace eMusicApp.Platforms.Android
             _isFadingIn = false;
             _nativeQueue.Clear();
             _player.Volume = 1f;
+            _currentArtist = artist;
+            _playedIds.Add(videoId);
 
             _player.ClearMediaItems();
             _player.SetMediaItem(CreateMediaItem(url, title, artist, thumbUrl, videoId));
@@ -382,9 +390,15 @@ namespace eMusicApp.Platforms.Android
                     foreach (var rel in related.EnumerateArray())
                     {
                         var vId = ExtractVideoId(rel);
-                        if (!string.IsNullOrEmpty(vId) && vId != videoId)
+                        if (!string.IsNullOrEmpty(vId) && vId != videoId && !_playedIds.Contains(vId))
                             _nativeQueue.Enqueue(vId);
                     }
+                }
+
+                // Fallback: si no hay tracks nuevos, buscar por artista
+                if (_nativeQueue.Count == 0 && !string.IsNullOrEmpty(_currentArtist))
+                {
+                    await EnqueueFromArtistSearchAsync(_currentArtist);
                 }
 
                 System.Diagnostics.Debug.WriteLine($"[Autoplay] Cola: {_nativeQueue.Count} canciones");
@@ -395,6 +409,45 @@ namespace eMusicApp.Platforms.Android
             catch (Exception ex)
             {
                 System.Diagnostics.Debug.WriteLine($"[Autoplay] Error related: {ex.Message}");
+            }
+        }
+
+        /// <summary>
+        /// Busca canciones por nombre de artista y las añade a la cola nativa,
+        /// filtrando las ya reproducidas. Fallback cuando relatedStreams se agota.
+        /// </summary>
+        private async Task EnqueueFromArtistSearchAsync(string artist)
+        {
+            try
+            {
+                var searchUrl = $"{AppConstants.ApiBaseUrl}/search?q={Uri.EscapeDataString(artist)}";
+                var response = await _httpClient.GetStringAsync(searchUrl);
+                using var doc = JsonDocument.Parse(response);
+
+                if (doc.RootElement.TryGetProperty("items", out var items))
+                {
+                    foreach (var item in items.EnumerateArray())
+                    {
+                        // Solo streams (no playlists ni canales)
+                        if (item.TryGetProperty("type", out var typeEl))
+                        {
+                            var type = typeEl.GetString();
+                            if (!string.IsNullOrEmpty(type) && type != "stream") continue;
+                        }
+
+                        var vId = ExtractVideoId(item);
+                        if (!string.IsNullOrEmpty(vId) && !_playedIds.Contains(vId))
+                            _nativeQueue.Enqueue(vId);
+
+                        if (_nativeQueue.Count >= 10) break;
+                    }
+                }
+
+                System.Diagnostics.Debug.WriteLine($"[Autoplay] Búsqueda artista '{artist}': {_nativeQueue.Count} tracks nuevos");
+            }
+            catch (Exception ex)
+            {
+                System.Diagnostics.Debug.WriteLine($"[Autoplay] Error búsqueda artista: {ex.Message}");
             }
         }
 
@@ -456,13 +509,36 @@ namespace eMusicApp.Platforms.Android
                         System.Diagnostics.Debug.WriteLine($"[Autoplay] Re-iniciando desde ENDED: {title}");
                     }
 
+                    // Rellenar cola con related filtrando ya reproducidos
+                    _nativeQueue.Clear();
                     if (root.TryGetProperty("relatedStreams", out var related))
                     {
-                        _nativeQueue.Clear();
                         foreach (var rel in related.EnumerateArray())
                         {
                             var vId = ExtractVideoId(rel);
-                            if (!string.IsNullOrEmpty(vId)) _nativeQueue.Enqueue(vId);
+                            if (!string.IsNullOrEmpty(vId) && !_playedIds.Contains(vId))
+                                _nativeQueue.Enqueue(vId);
+                        }
+                    }
+
+                    // Fallback: buscar por artista si related se agotó
+                    if (_nativeQueue.Count == 0 && !string.IsNullOrEmpty(uploader))
+                    {
+                        _currentArtist = uploader;
+                        await EnqueueFromArtistSearchAsync(uploader);
+                    }
+
+                    // Último recurso: limpiar historial y reintentar
+                    if (_nativeQueue.Count == 0)
+                    {
+                        _playedIds.Clear();
+                        if (root.TryGetProperty("relatedStreams", out var rel2))
+                        {
+                            foreach (var rel in rel2.EnumerateArray())
+                            {
+                                var vId = ExtractVideoId(rel);
+                                if (!string.IsNullOrEmpty(vId)) _nativeQueue.Enqueue(vId);
+                            }
                         }
                     }
                 }
@@ -501,8 +577,27 @@ namespace eMusicApp.Platforms.Android
                         foreach (var rel in related.EnumerateArray())
                         {
                             var vId = ExtractVideoId(rel);
-                            if (!string.IsNullOrEmpty(vId) && vId != _currentMediaId)
+                            if (!string.IsNullOrEmpty(vId) && vId != _currentMediaId && !_playedIds.Contains(vId))
                                 _nativeQueue.Enqueue(vId);
+                        }
+                    }
+
+                    // Fallback: buscar por artista
+                    if (_nativeQueue.Count == 0 && !string.IsNullOrEmpty(_currentArtist))
+                        await EnqueueFromArtistSearchAsync(_currentArtist);
+
+                    // Último recurso: limpiar historial
+                    if (_nativeQueue.Count == 0)
+                    {
+                        _playedIds.Clear();
+                        if (doc.RootElement.TryGetProperty("relatedStreams", out var rel2))
+                        {
+                            foreach (var rel in rel2.EnumerateArray())
+                            {
+                                var vId = ExtractVideoId(rel);
+                                if (!string.IsNullOrEmpty(vId) && vId != _currentMediaId)
+                                    _nativeQueue.Enqueue(vId);
+                            }
                         }
                     }
                 }
@@ -540,19 +635,25 @@ namespace eMusicApp.Platforms.Android
                     _player.Prepare();
                     _player.Play();
 
+                    _currentArtist = uploader;
+                    _playedIds.Add(nextVideoId);
                     System.Diagnostics.Debug.WriteLine($"[Autoplay Native] Continuando con: {title}");
 
-                    // Preparar cola con related del nuevo track
+                    // Preparar cola con related del nuevo track, filtrando ya reproducidos
+                    _nativeQueue.Clear();
                     if (root.TryGetProperty("relatedStreams", out var nextRelated))
                     {
-                        _nativeQueue.Clear();
                         foreach (var rel in nextRelated.EnumerateArray())
                         {
                             var vId = ExtractVideoId(rel);
-                            if (!string.IsNullOrEmpty(vId) && vId != nextVideoId)
+                            if (!string.IsNullOrEmpty(vId) && vId != nextVideoId && !_playedIds.Contains(vId))
                                 _nativeQueue.Enqueue(vId);
                         }
                     }
+
+                    // Fallback: buscar por artista
+                    if (_nativeQueue.Count == 0 && !string.IsNullOrEmpty(uploader))
+                        await EnqueueFromArtistSearchAsync(uploader);
                 }
             }
             catch (Exception ex)

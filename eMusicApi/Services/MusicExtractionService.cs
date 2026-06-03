@@ -685,18 +685,31 @@ public class MusicExtractionService
     {
         try
         {
-            using var doc = JsonDocument.Parse(json);
-            if (doc.RootElement.TryGetProperty("relatedStreams", out var rs) && rs.GetArrayLength() > 0)
-                return json; // Ya tiene, no hace falta enriquecer
+            string artist = "";
+            string title  = "";
+            using (var docCheck = JsonDocument.Parse(json))
+            {
+                if (docCheck.RootElement.TryGetProperty("relatedStreams", out var rs) && rs.GetArrayLength() > 0)
+                    return json; // Ya tiene, no hace falta enriquecer
+                artist = docCheck.RootElement.TryGetProperty("uploader", out var up) ? up.GetString() ?? "" : "";
+                title  = docCheck.RootElement.TryGetProperty("title",    out var t)  ? t.GetString()  ?? "" : "";
+            }
 
+            // Plan A: Invidious (rápido, pero instancias públicas a menudo caídas)
             var related = await GetRelatedStreamsFromInvidiousAsync(videoId);
+
+            // Plan B: búsqueda por artista usando la misma infraestructura de la API
+            if (related.Length == 0)
+                related = await GetRelatedStreamsFromSearchAsync(artist, title, videoId);
+
             if (related.Length == 0) return json;
 
-            // Re-serializar el objeto inyectando el campo relatedStreams
-            using var ms = new System.IO.MemoryStream();
+            // Re-serializar inyectando relatedStreams
+            using var docFull = JsonDocument.Parse(json);
+            using var ms     = new System.IO.MemoryStream();
             using var writer = new System.Text.Json.Utf8JsonWriter(ms);
             writer.WriteStartObject();
-            foreach (var prop in doc.RootElement.EnumerateObject())
+            foreach (var prop in docFull.RootElement.EnumerateObject())
             {
                 if (prop.Name == "relatedStreams")
                 {
@@ -716,8 +729,65 @@ public class MusicExtractionService
         }
         catch (Exception ex)
         {
-            Console.WriteLine($"[Enrich] Error enriqueciendo JSON: {ex.Message}");
+            Console.WriteLine($"[Enrich] Error: {ex.Message}");
             return json;
+        }
+    }
+
+    // Búsqueda por artista como fuente de "related streams" confiable
+    private async Task<object[]> GetRelatedStreamsFromSearchAsync(string artist, string title, string excludeVideoId)
+    {
+        try
+        {
+            var query = !string.IsNullOrEmpty(artist) ? $"{artist} music" : title;
+            if (string.IsNullOrEmpty(query)) return Array.Empty<object>();
+
+            var searchJson = await SearchAsync(query);
+            using var doc = JsonDocument.Parse(searchJson);
+            if (!doc.RootElement.TryGetProperty("items", out var items)) return Array.Empty<object>();
+
+            var result = new List<object>();
+            foreach (var item in items.EnumerateArray())
+            {
+                var url = item.TryGetProperty("url", out var urlEl) ? urlEl.GetString() ?? "" : "";
+                var idx = url.IndexOf("?v=");
+                var vId = idx >= 0 ? url.Substring(idx + 3) : "";
+                if (string.IsNullOrEmpty(vId) || vId == excludeVideoId) continue;
+
+                var t      = item.TryGetProperty("title",        out var tEl)   ? tEl.GetString()   ?? "" : "";
+                var thumb  = item.TryGetProperty("thumbnail",    out var thEl)  ? thEl.GetString()  ?? "" : "";
+                var upl    = item.TryGetProperty("uploaderName", out var upEl)  ? upEl.GetString()  ?? "" : "";
+                var dur    = item.TryGetProperty("duration",     out var durEl) && durEl.ValueKind == JsonValueKind.Number
+                             ? durEl.GetInt64() : 0L;
+
+                if (string.IsNullOrEmpty(t)) continue;
+
+                result.Add(new {
+                    url = $"/watch?v={vId}",
+                    videoId = vId,
+                    type = "stream",
+                    title = t,
+                    thumbnail = thumb,
+                    uploaderName = upl,
+                    uploaderUrl = "",
+                    uploaderAvatar = "",
+                    uploaderVerified = false,
+                    duration = dur,
+                    views = 0L,
+                    uploaded = 0L,
+                    shortDescription = "",
+                    isShort = false
+                });
+                if (result.Count >= 10) break;
+            }
+
+            Console.WriteLine($"[Related Search] ✅ {result.Count} resultados para '{query}'");
+            return result.ToArray();
+        }
+        catch (Exception ex)
+        {
+            Console.WriteLine($"[Related Search] Error: {ex.Message}");
+            return Array.Empty<object>();
         }
     }
 

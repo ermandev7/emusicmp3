@@ -1,0 +1,119 @@
+<?xml version="1.0" encoding="utf-8" ?>
+<ContentPage xmlns="http://schemas.microsoft.com/dotnet/2021/maui"
+             xmlns:x="http://schemas.microsoft.com/winfx/2009/xaml"
+             xmlns:vm="clr-namespace:eMusicApp.ViewModels"
+             xmlns:models="clr-namespace:eMusicApp.Models"
+             x:Class="eMusicApp.Views.QueuePage"
+             BackgroundColor="#121212">
+
+    <Grid RowDefinitions="Auto, *">
+
+        <!-- Header -->
+        <Grid Grid.Row="0" ColumnDefinitions="Auto, *, Auto" Padding="16,16,16,10">
+            <ImageButton Grid.Column="0"
+                         Source="chevron_down.png"
+                         BackgroundColor="Transparent"
+                         WidthRequest="36" HeightRequest="36"
+                         Padding="8"
+                         Clicked="OnBackClicked" />
+
+            <Label Grid.Column="1"
+                   Text="Cola de reproducción"
+                   TextColor="White" FontSize="18" FontAttributes="Bold"
+                   VerticalOptions="Center" HorizontalOptions="Center" />
+
+            <Label Grid.Column="2"
+                   Text="{Binding QueueItems.Count, StringFormat='{0} canciones'}"
+                   TextColor="#B3B3B3" FontSize="13"
+                   VerticalOptions="Center" />
+        </Grid>
+
+        <!-- Empty state -->
+        <StackLayout Grid.Row="1"
+                     IsVisible="{Binding IsQueueEmpty}"
+                     VerticalOptions="Center" HorizontalOptions="Center"
+                     Spacing="10" Padding="40,0">
+            <Label Text="&#x1F3B5;" FontSize="48" HorizontalOptions="Center" TextColor="#535353" />
+            <Label Text="Cola vacía"
+                   TextColor="#B3B3B3" FontSize="18" FontAttributes="Bold"
+                   HorizontalOptions="Center" />
+            <Label Text="Reproduce una canción para empezar"
+                   TextColor="#535353" FontSize="14"
+                   HorizontalOptions="Center" HorizontalTextAlignment="Center" />
+        </StackLayout>
+
+        <!-- Queue list -->
+        <CollectionView x:Name="QueueList"
+                        Grid.Row="1"
+                        ItemsSource="{Binding QueueItems}"
+                        SelectionMode="None">
+            <CollectionView.ItemTemplate>
+                <DataTemplate x:DataType="models:QueueItem">
+                    <Grid Padding="10,6">
+                        <Grid.GestureRecognizers>
+                            <TapGestureRecognizer
+                                Command="{Binding Source={RelativeSource AncestorType={x:Type vm:PlayerViewModel}}, Path=PlayTrackCommand}"
+                                CommandParameter="{Binding Track}" />
+                        </Grid.GestureRecognizers>
+
+                        <Grid ColumnDefinitions="12, Auto, *, Auto" ColumnSpacing="12">
+
+                            <!-- Playing indicator dot -->
+                            <BoxView Grid.Column="0"
+                                     WidthRequest="8" HeightRequest="8"
+                                     CornerRadius="4"
+                                     VerticalOptions="Center"
+                                     HorizontalOptions="Center">
+                                <BoxView.Triggers>
+                                    <DataTrigger TargetType="BoxView" Binding="{Binding IsNowPlaying}" Value="True">
+                                        <Setter Property="Color" Value="#1DB954" />
+                                    </DataTrigger>
+                                    <DataTrigger TargetType="BoxView" Binding="{Binding IsNowPlaying}" Value="False">
+                                        <Setter Property="Color" Value="Transparent" />
+                                    </DataTrigger>
+                                </BoxView.Triggers>
+                            </BoxView>
+
+                            <!-- Thumbnail -->
+                            <Border Grid.Column="1"
+                                    StrokeThickness="0" StrokeShape="RoundRectangle 6"
+                                    WidthRequest="50" HeightRequest="50">
+                                <Image Source="{Binding Track.ThumbnailUrl}" Aspect="AspectFill" />
+                            </Border>
+
+                            <!-- Title / Artist -->
+                            <StackLayout Grid.Column="2" VerticalOptions="Center" Spacing="2">
+                                <Label Text="{Binding Track.Title}"
+                                       FontSize="14" FontAttributes="Bold"
+                                       MaxLines="1" LineBreakMode="TailTruncation">
+                                    <Label.Triggers>
+                                        <DataTrigger TargetType="Label" Binding="{Binding IsNowPlaying}" Value="True">
+                                            <Setter Property="TextColor" Value="#1DB954" />
+                                        </DataTrigger>
+                                        <DataTrigger TargetType="Label" Binding="{Binding IsNowPlaying}" Value="False">
+                                            <Setter Property="TextColor" Value="White" />
+                                        </DataTrigger>
+                                    </Label.Triggers>
+                                </Label>
+                                <Label Text="{Binding Track.Uploader}"
+                                       TextColor="#B3B3B3" FontSize="12"
+                                       MaxLines="1" LineBreakMode="TailTruncation" />
+                            </StackLayout>
+
+                            <!-- Remove from queue -->
+                            <Button Grid.Column="3"
+                                    Text="✕"
+                                    TextColor="#535353" FontSize="16"
+                                    BackgroundColor="Transparent" BorderColor="Transparent"
+                                    WidthRequest="36" HeightRequest="36" Padding="0"
+                                    VerticalOptions="Center"
+                                    Command="{Binding Source={RelativeSource AncestorType={x:Type vm:PlayerViewModel}}, Path=RemoveFromQueueCommand}"
+                                    CommandParameter="{Binding Track}" />
+                        </Grid>
+                    </Grid>
+                </DataTemplate>
+            </CollectionView.ItemTemplate>
+        </CollectionView>
+
+    </Grid>
+</ContentPage>

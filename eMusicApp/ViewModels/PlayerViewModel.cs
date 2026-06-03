@@ -6,6 +6,7 @@ using Microsoft.Maui.ApplicationModel;
 using Microsoft.Maui.Graphics;
 using System;
 using System.Linq;
+using System.Threading;
 using System.Threading.Tasks;
 
 namespace eMusicApp.ViewModels
@@ -15,10 +16,12 @@ namespace eMusicApp.ViewModels
     public partial class PlayerViewModel : ObservableObject
     {
         private readonly ApiService _apiService;
+        private readonly IAlbumColorService? _colorService;
 
         public PlayerViewModel(ApiService apiService)
         {
             _apiService = apiService;
+            _colorService = IPlatformApplication.Current?.Services.GetService<IAlbumColorService>();
 
             NativeAudioController.OnProgressUpdated = (posMs, durMs) =>
             {
@@ -81,6 +84,98 @@ namespace eMusicApp.ViewModels
         [ObservableProperty]
         [NotifyPropertyChangedFor(nameof(HasCurrentTrack))]
         private Track _currentTrack;
+
+        partial void OnCurrentTrackChanged(Track? value)
+        {
+            RebuildQueueItems();
+            if (_colorService != null && !string.IsNullOrEmpty(value?.ThumbnailUrl))
+                _ = UpdateDominantColorAsync(value.ThumbnailUrl);
+        }
+
+        private async Task UpdateDominantColorAsync(string imageUrl)
+        {
+            var color = await _colorService!.GetDominantColorAsync(imageUrl);
+            if (color != null)
+                MainThread.BeginInvokeOnMainThread(() => DominantColor = color);
+        }
+
+        // ─── Dynamic album art color ───
+        [ObservableProperty]
+        private Color _dominantColor = Color.FromArgb("#282828");
+
+        // ─── Sleep timer ───
+        [ObservableProperty]
+        [NotifyPropertyChangedFor(nameof(IsSleepTimerActive))]
+        [NotifyPropertyChangedFor(nameof(SleepTimerColor))]
+        private string _sleepTimerText = "";
+
+        public bool IsSleepTimerActive => !string.IsNullOrEmpty(SleepTimerText);
+        public Color SleepTimerColor   => IsSleepTimerActive ? _colorActive : _colorInactive;
+
+        private CancellationTokenSource? _sleepCts;
+
+        public async Task SetSleepTimerAsync(int minutes)
+        {
+            _sleepCts?.Cancel();
+            _sleepCts = null;
+            SleepTimerText = "";
+
+            if (minutes <= 0) return;
+
+            var cts = new CancellationTokenSource();
+            _sleepCts = cts;
+            var endTime = DateTime.Now.AddMinutes(minutes);
+
+            await Task.Run(async () =>
+            {
+                while (!cts.Token.IsCancellationRequested)
+                {
+                    var remaining = endTime - DateTime.Now;
+                    if (remaining.TotalSeconds <= 0)
+                    {
+                        MainThread.BeginInvokeOnMainThread(() =>
+                        {
+                            NativeAudioController.RequestPause();
+                            SleepTimerText = "";
+                        });
+                        break;
+                    }
+                    int mins = (int)remaining.TotalMinutes;
+                    int secs = remaining.Seconds;
+                    MainThread.BeginInvokeOnMainThread(() =>
+                        SleepTimerText = $"⏱ {mins}:{secs:00}");
+                    try { await Task.Delay(1000, cts.Token); }
+                    catch (TaskCanceledException) { break; }
+                }
+            }, CancellationToken.None);
+        }
+
+        // ─── Queue items with IsNowPlaying flag ───
+        public System.Collections.ObjectModel.ObservableCollection<QueueItem> QueueItems { get; }
+            = new System.Collections.ObjectModel.ObservableCollection<QueueItem>();
+
+        public bool IsQueueEmpty => QueueItems.Count == 0;
+
+        private void RebuildQueueItems()
+        {
+            string? currentId = CurrentTrack?.VideoId;
+            QueueItems.Clear();
+            foreach (var t in PlayQueue)
+                QueueItems.Add(new QueueItem { Track = t, IsNowPlaying = t.VideoId == currentId });
+            OnPropertyChanged(nameof(IsQueueEmpty));
+        }
+
+        [RelayCommand]
+        private void RemoveFromQueue(Track track)
+        {
+            if (track == null) return;
+            var item = PlayQueue.FirstOrDefault(t => t.VideoId == track.VideoId);
+            if (item == null) return;
+            int idx = PlayQueue.IndexOf(item);
+            PlayQueue.Remove(item);
+            if (_currentQueueIndex > idx) _currentQueueIndex--;
+            RebuildQueueItems();
+        }
 
         // Actualizado por HomeViewModel cuando ExoPlayer auto-avanza al siguiente track
         public void NotifyTrackStarted(Track track)
@@ -220,9 +315,8 @@ namespace eMusicApp.ViewModels
         {
             PlayQueue.Clear();
             foreach (var t in tracks)
-            {
                 PlayQueue.Add(t);
-            }
+            RebuildQueueItems();
         }
 
         [RelayCommand]

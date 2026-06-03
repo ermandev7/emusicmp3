@@ -523,10 +523,7 @@ public class MusicExtractionService
                 ? (long)d : 0L;
             var thumbnail = metaLines.Length > 2 ? metaLines[2].Trim() : "";
 
-            // Obtener related streams via Invidious
-            var relatedStreams = await GetRelatedStreamsFromInvidiousAsync(videoId);
-
-            // Construir JSON compatible con formato Piped
+            // Construir JSON base con relatedStreams vacío
             var result = new
             {
                 title = title,
@@ -546,7 +543,7 @@ public class MusicExtractionService
                 proxyUrl = "",
                 chapters = Array.Empty<object>(),
                 subtitles = Array.Empty<object>(),
-                relatedStreams = relatedStreams,
+                relatedStreams = Array.Empty<object>(),
                 previewFrames = Array.Empty<object>(),
                 audioStreams = new[]
                 {
@@ -565,7 +562,9 @@ public class MusicExtractionService
                 videoStreams = Array.Empty<object>()
             };
 
+            // Enriquecer con related streams (Invidious → búsqueda por artista)
             var json = JsonSerializer.Serialize(result, new JsonSerializerOptions { PropertyNamingPolicy = JsonNamingPolicy.CamelCase });
+            json = await EnrichRelatedStreamsIfEmptyAsync(json, videoId);
             _cache.Set(cacheKey, json, TimeSpan.FromMinutes(50));
             Console.WriteLine($"[yt-dlp] ✅ Audio extraído exitosamente: {title}");
             return json;

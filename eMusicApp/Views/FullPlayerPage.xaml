@@ -5,12 +5,7 @@
              x:Class="eMusicApp.Views.FullPlayerPage"
              BackgroundColor="#121212">
 
-    <ContentPage.Background>
-        <LinearGradientBrush StartPoint="0,0" EndPoint="0,1">
-            <GradientStop Color="#282828" Offset="0.0" />
-            <GradientStop Color="#121212" Offset="0.5" />
-        </LinearGradientBrush>
-    </ContentPage.Background>
+    <!-- Background gradient set dynamically from album art in code-behind -->
 
     <Grid RowDefinitions="Auto, *, Auto, Auto" Padding="20">
         <Grid.GestureRecognizers>
@@ -34,7 +29,22 @@
                    HorizontalOptions="Center" 
                    VerticalOptions="Center" />
                    
-            <ContentView Grid.Column="2" WidthRequest="40" />
+            <HorizontalStackLayout Grid.Column="2" Spacing="0">
+                <!-- Sleep timer -->
+                <Button Text="⏱"
+                        TextColor="{Binding Player.SleepTimerColor}"
+                        FontSize="18"
+                        BackgroundColor="Transparent" BorderColor="Transparent"
+                        WidthRequest="40" HeightRequest="40" Padding="0"
+                        Clicked="OnSleepTimerClicked" />
+                <!-- Queue -->
+                <Button Text="☰"
+                        TextColor="#B3B3B3"
+                        FontSize="20"
+                        BackgroundColor="Transparent" BorderColor="Transparent"
+                        WidthRequest="40" HeightRequest="40" Padding="0"
+                        Clicked="OnQueueClicked" />
+            </HorizontalStackLayout>
         </Grid>
 
         <!-- Album Art -->
@@ -79,7 +89,7 @@
         </Grid>
 
         <!-- Controls -->
-        <Grid Grid.Row="3" RowDefinitions="Auto, Auto" Margin="0,0,0,30">
+        <Grid Grid.Row="3" RowDefinitions="Auto, Auto, Auto" Margin="0,0,0,30">
             <!-- Progress Section -->
             <StackLayout Grid.Row="0" Margin="0,0,0,20">
                 <Slider x:Name="AudioSlider" 
@@ -96,6 +106,14 @@
                 </Grid>
             </StackLayout>
             
+            <!-- Sleep timer countdown -->
+            <Label Grid.Row="2"
+                   Text="{Binding Player.SleepTimerText}"
+                   IsVisible="{Binding Player.IsSleepTimerActive}"
+                   TextColor="#1DB954" FontSize="12"
+                   HorizontalOptions="Center"
+                   Margin="0,8,0,0" />
+
             <Grid Grid.Row="1" ColumnDefinitions="*, Auto, Auto, Auto, *" HorizontalOptions="FillAndExpand">
 
                 <!-- Shuffle -->

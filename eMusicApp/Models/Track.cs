@@ -34,7 +34,8 @@ namespace eMusicApp.Models
             set => _url = value;
         }
 
-        // Para uso interno (ID de la base de datos local)
+        // Para uso interno (ID de la base de datos local) — ignorar al deserializar (la Pi devuelve int)
+        [JsonIgnore]
         public string Id { get; set; } = "";
 
         [JsonPropertyName("title")]

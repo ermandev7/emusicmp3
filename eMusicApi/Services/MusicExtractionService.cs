@@ -499,13 +499,13 @@ public class MusicExtractionService
                 return BuildErrorJson($"yt-dlp falló: {errorOut}");
             }
 
-            // Obtener título y duración con yt-dlp
+            // Obtener título, duración (en segundos) y thumbnail con yt-dlp
             var metaProcess = new System.Diagnostics.Process
             {
                 StartInfo = new System.Diagnostics.ProcessStartInfo
                 {
                     FileName = "yt-dlp",
-                    Arguments = $"--print title --print duration_string --print thumbnail --no-playlist --quiet https://www.youtube.com/watch?v={videoId}",
+                    Arguments = $"--print title --print duration --print thumbnail --no-playlist --quiet https://www.youtube.com/watch?v={videoId}",
                     RedirectStandardOutput = true,
                     UseShellExecute = false,
                     CreateNoWindow = true
@@ -516,8 +516,13 @@ public class MusicExtractionService
             await metaProcess.WaitForExitAsync();
 
             var title = metaLines.Length > 0 ? metaLines[0].Trim() : videoId;
-            var duration = metaLines.Length > 1 ? metaLines[1].Trim() : "0:00";
+            var durationSecs = metaLines.Length > 1 && double.TryParse(metaLines[1].Trim(),
+                System.Globalization.NumberStyles.Any, System.Globalization.CultureInfo.InvariantCulture, out var d)
+                ? (long)d : 0L;
             var thumbnail = metaLines.Length > 2 ? metaLines[2].Trim() : "";
+
+            // Obtener related streams via Invidious
+            var relatedStreams = await GetRelatedStreamsFromInvidiousAsync(videoId);
 
             // Construir JSON compatible con formato Piped
             var result = new
@@ -529,7 +534,7 @@ public class MusicExtractionService
                 uploaderAvatar = "",
                 uploaderVerified = false,
                 thumbnailUrl = thumbnail,
-                duration = 0L,
+                duration = durationSecs,
                 views = 0L,
                 likes = 0L,
                 dislikes = 0L,
@@ -539,7 +544,7 @@ public class MusicExtractionService
                 proxyUrl = "",
                 chapters = Array.Empty<object>(),
                 subtitles = Array.Empty<object>(),
-                relatedStreams = Array.Empty<object>(),
+                relatedStreams = relatedStreams,
                 previewFrames = Array.Empty<object>(),
                 audioStreams = new[]
                 {
@@ -669,5 +674,72 @@ public class MusicExtractionService
             audioStreams = Array.Empty<object>(),
             videoStreams = Array.Empty<object>()
         });
+    }
+
+    // ─────────────────────────────────────────────────────────────────
+    // RELATED STREAMS via Invidious /api/v1/videos/{id}
+    // ─────────────────────────────────────────────────────────────────
+    private async Task<object[]> GetRelatedStreamsFromInvidiousAsync(string videoId)
+    {
+        foreach (var instance in InvidiousInstances)
+        {
+            try
+            {
+                var client = _httpClientFactory.CreateClient();
+                client.Timeout = TimeSpan.FromSeconds(8);
+                var url = $"{instance}/api/v1/videos/{videoId}?fields=recommendedVideos";
+                var response = await client.GetAsync(url);
+                if (!response.IsSuccessStatusCode) continue;
+
+                var json = await response.Content.ReadAsStringAsync();
+                using var doc = JsonDocument.Parse(json);
+                if (!doc.RootElement.TryGetProperty("recommendedVideos", out var recommended)) continue;
+                if (recommended.ValueKind != JsonValueKind.Array) continue;
+
+                var items = new List<object>();
+                foreach (var v in recommended.EnumerateArray())
+                {
+                    var id = v.TryGetProperty("videoId", out var idEl) ? idEl.GetString() ?? "" : "";
+                    var title = v.TryGetProperty("title", out var titleEl) ? titleEl.GetString() ?? "" : "";
+                    var author = v.TryGetProperty("author", out var authEl) ? authEl.GetString() ?? "" : "";
+                    var length = v.TryGetProperty("lengthSeconds", out var lenEl) && lenEl.ValueKind == JsonValueKind.Number
+                        ? lenEl.GetInt64() : 0L;
+                    var views = v.TryGetProperty("viewCount", out var viewEl) && viewEl.ValueKind == JsonValueKind.Number
+                        ? viewEl.GetInt64() : 0L;
+
+                    if (string.IsNullOrEmpty(id) || string.IsNullOrEmpty(title)) continue;
+
+                    var thumb = $"https://i.ytimg.com/vi/{id}/mqdefault.jpg";
+                    items.Add(new
+                    {
+                        url = $"/watch?v={id}",
+                        type = "stream",
+                        title,
+                        thumbnail = thumb,
+                        uploaderName = author,
+                        uploaderUrl = "",
+                        uploaderAvatar = "",
+                        uploaderVerified = false,
+                        duration = length,
+                        views,
+                        uploaded = 0L,
+                        shortDescription = "",
+                        isShort = false
+                    });
+                }
+
+                if (items.Count > 0)
+                {
+                    Console.WriteLine($"[Invidious Related] ✅ {items.Count} related streams para {videoId} via {instance}");
+                    return items.ToArray();
+                }
+            }
+            catch (Exception ex)
+            {
+                Console.WriteLine($"[Invidious Related] Fallo en {instance}: {ex.Message}");
+            }
+        }
+        Console.WriteLine($"[Invidious Related] Sin resultados para {videoId}");
+        return Array.Empty<object>();
     }
 }

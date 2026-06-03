@@ -92,11 +92,11 @@
         <Grid Grid.Row="3" RowDefinitions="Auto, Auto, Auto, Auto" Margin="0,0,0,30">
             <!-- Progress Section -->
             <StackLayout Grid.Row="0" Margin="0,0,0,20">
-                <Slider x:Name="AudioSlider" 
-                        Value="{Binding Player.Position, Mode=OneWay}" 
-                        Maximum="{Binding Player.SliderMaximum, FallbackValue=100}" 
-                        MinimumTrackColor="#1DB954" 
-                        MaximumTrackColor="#4DFFFFFF" 
+                <Slider x:Name="AudioSlider"
+                        Value="{Binding Player.ProgressFraction, Mode=OneWay}"
+                        Maximum="1"
+                        MinimumTrackColor="#1DB954"
+                        MaximumTrackColor="#4DFFFFFF"
                         ThumbColor="White"
                         DragStarted="OnSliderDragStarted"
                         DragCompleted="OnSliderDragCompleted" />

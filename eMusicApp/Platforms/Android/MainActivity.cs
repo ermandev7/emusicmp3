@@ -35,10 +35,9 @@ public class MainActivity : MauiAppCompatActivity
         try
         {
             var intent = new Android.Content.Intent(this, typeof(Platforms.Android.AndroidMedia3Service));
-            // Usar StartService (no StartForegroundService) — MediaSessionService llama
-            // startForeground() automáticamente cuando empieza la reproducción.
-            // StartForegroundService causaría crash si no hay reproducción en los primeros 5 segundos.
-            StartService(intent);
+            // StartForegroundService + StartForeground() inmediato en OnCreate del servicio
+            // para que Samsung no mate el servicio cuando la app va a background.
+            StartForegroundService(intent);
             Logger.Log("AndroidMedia3Service started from MainActivity.");
         }
         catch (Exception ex)

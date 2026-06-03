@@ -147,7 +147,7 @@
                                 Tapped="OnTrackTapped"/>
                         </Grid.GestureRecognizers>
 
-                        <Grid ColumnDefinitions="Auto, *" BackgroundColor="Transparent" Padding="10">
+                        <Grid ColumnDefinitions="Auto, *, Auto" BackgroundColor="Transparent" Padding="10">
                             <!-- Thumbnail -->
                             <Border Grid.Column="0"
                                     StrokeThickness="0"
@@ -173,6 +173,16 @@
                                        skeleton:Skeleton.IsBusy="{Binding Source={RelativeSource AncestorType={x:Type vm:SearchViewModel}}, Path=IsBusy}"
                                        skeleton:Skeleton.BackgroundColor="#3E3E3E" />
                             </StackLayout>
+
+                            <!-- Añadir a playlist -->
+                            <Button Grid.Column="2"
+                                    Text="+"
+                                    TextColor="#B3B3B3" FontSize="22"
+                                    BackgroundColor="Transparent" BorderColor="Transparent"
+                                    WidthRequest="40" HeightRequest="40" Padding="0"
+                                    VerticalOptions="Center"
+                                    CommandParameter="{Binding .}"
+                                    Clicked="OnAddToPlaylistClicked" />
                         </Grid>
                     </Grid>
                 </DataTemplate>

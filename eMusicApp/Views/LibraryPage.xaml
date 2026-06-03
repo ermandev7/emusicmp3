@@ -13,7 +13,17 @@
 
         <!-- Header y tabs -->
         <StackLayout Grid.Row="0" Margin="16,20,16,0" Spacing="14">
-            <Label Text="Tu Biblioteca" TextColor="White" FontSize="24" FontAttributes="Bold"/>
+            <Grid ColumnDefinitions="*, Auto">
+                <Label Grid.Column="0" Text="Tu Biblioteca" TextColor="White" FontSize="24" FontAttributes="Bold" VerticalOptions="Center"/>
+                <!-- Botón Nueva Playlist: solo visible en tab Playlists -->
+                <Button Grid.Column="1"
+                        Text="+"
+                        TextColor="#1DB954" FontSize="26"
+                        BackgroundColor="Transparent" BorderColor="Transparent"
+                        WidthRequest="44" HeightRequest="44" Padding="0"
+                        IsVisible="{Binding ShowPlaylists}"
+                        Clicked="OnCreatePlaylistClicked" />
+            </Grid>
 
             <HorizontalStackLayout Spacing="10">
                 <!-- Tab Favoritos -->
@@ -73,6 +83,35 @@
                         </Label.Triggers>
                     </Label>
                 </Border>
+                <!-- Tab Playlists -->
+                <Border StrokeThickness="0"
+                        StrokeShape="RoundRectangle 18"
+                        Padding="0"
+                        HeightRequest="36" WidthRequest="110">
+                    <Border.Triggers>
+                        <DataTrigger TargetType="Border" Binding="{Binding ShowPlaylists}" Value="True">
+                            <Setter Property="BackgroundColor" Value="#1DB954" />
+                        </DataTrigger>
+                        <DataTrigger TargetType="Border" Binding="{Binding ShowPlaylists}" Value="False">
+                            <Setter Property="BackgroundColor" Value="#2A2A2A" />
+                        </DataTrigger>
+                    </Border.Triggers>
+                    <Border.GestureRecognizers>
+                        <TapGestureRecognizer Command="{Binding SetTabCommand}" CommandParameter="Playlists" />
+                    </Border.GestureRecognizers>
+                    <Label Text="Playlists" HorizontalOptions="Center" VerticalOptions="Center"
+                           FontSize="13" FontAttributes="Bold">
+                        <Label.Triggers>
+                            <DataTrigger TargetType="Label" Binding="{Binding ShowPlaylists}" Value="True">
+                                <Setter Property="TextColor" Value="Black" />
+                            </DataTrigger>
+                            <DataTrigger TargetType="Label" Binding="{Binding ShowPlaylists}" Value="False">
+                                <Setter Property="TextColor" Value="White" />
+                            </DataTrigger>
+                        </Label.Triggers>
+                    </Label>
+                </Border>
+
             </HorizontalStackLayout>
         </StackLayout>
 
@@ -122,7 +161,7 @@
                                     CommandParameter="{Binding .}"/>
                             </Grid.GestureRecognizers>
 
-                            <Grid ColumnDefinitions="Auto, *, Auto" BackgroundColor="Transparent" Padding="10">
+                            <Grid ColumnDefinitions="Auto, *, Auto, Auto" BackgroundColor="Transparent" Padding="10">
                                 <Border Grid.Column="0"
                                         StrokeThickness="0" StrokeShape="RoundRectangle 6"
                                         WidthRequest="52" HeightRequest="52" Margin="0,0,14,0">
@@ -142,8 +181,18 @@
                                            skeleton:Skeleton.BackgroundColor="#3E3E3E" />
                                 </StackLayout>
 
+                                <!-- Añadir a playlist -->
+                                <Button Grid.Column="2"
+                                        Text="+"
+                                        TextColor="#B3B3B3" FontSize="22"
+                                        BackgroundColor="Transparent" BorderColor="Transparent"
+                                        WidthRequest="36" HeightRequest="36" Padding="0"
+                                        VerticalOptions="Center"
+                                        CommandParameter="{Binding .}"
+                                        Clicked="OnAddToPlaylistClicked" />
+
                                 <!-- Quitar favorito -->
-                                <ImageButton Grid.Column="2"
+                                <ImageButton Grid.Column="3"
                                              Source="heart_filled.png"
                                              BackgroundColor="Transparent"
                                              WidthRequest="30" HeightRequest="30" Padding="5"
@@ -210,6 +259,75 @@
                                              Command="{Binding Source={RelativeSource AncestorType={x:Type vm:LibraryViewModel}}, Path=DeleteDownloadCommand}"
                                              CommandParameter="{Binding .}" />
                             </Grid>
+                        </Grid>
+                    </DataTemplate>
+                </CollectionView.ItemTemplate>
+            </CollectionView>
+
+            <!-- ── PLAYLISTS ── -->
+            <!-- Empty state -->
+            <StackLayout IsVisible="{Binding HasNoPlaylists}"
+                         VerticalOptions="Center" HorizontalOptions="Center"
+                         Spacing="10" Padding="40,0">
+                <Label Text="&#x1F3B6;" FontSize="48" HorizontalOptions="Center" TextColor="#535353" />
+                <Label Text="Sin playlists"
+                       TextColor="#B3B3B3" FontSize="18" FontAttributes="Bold"
+                       HorizontalOptions="Center" />
+                <Label Text="Toca + para crear tu primera playlist"
+                       TextColor="#535353" FontSize="14"
+                       HorizontalOptions="Center" HorizontalTextAlignment="Center" />
+            </StackLayout>
+
+            <!-- Grid de playlists -->
+            <CollectionView ItemsSource="{Binding Playlists}"
+                            SelectionMode="None"
+                            IsVisible="{Binding ShowPlaylists}">
+                <CollectionView.ItemsLayout>
+                    <GridItemsLayout Orientation="Vertical" Span="2"
+                                     HorizontalItemSpacing="10" VerticalItemSpacing="12" />
+                </CollectionView.ItemsLayout>
+                <CollectionView.ItemTemplate>
+                    <DataTemplate x:DataType="models:Playlist">
+                        <Grid Padding="4,0">
+                            <Grid.GestureRecognizers>
+                                <TapGestureRecognizer
+                                    Tapped="OnPlaylistTapped"
+                                    CommandParameter="{Binding .}" />
+                            </Grid.GestureRecognizers>
+
+                            <VerticalStackLayout Spacing="6">
+                                <!-- Cover art o placeholder -->
+                                <Border StrokeThickness="0"
+                                        StrokeShape="RoundRectangle 8"
+                                        HeightRequest="140"
+                                        BackgroundColor="#2A2A2A">
+                                    <Grid>
+                                        <Image Source="{Binding CoverUrl}" Aspect="AspectFill"
+                                               IsVisible="{Binding HasCover}" />
+                                        <Label Text="&#x1F3B5;"
+                                               FontSize="48"
+                                               HorizontalOptions="Center" VerticalOptions="Center"
+                                               TextColor="#535353"
+                                               IsVisible="{Binding HasNoCover}" />
+                                    </Grid>
+                                </Border>
+
+                                <StackLayout Padding="2,0" Spacing="2">
+                                    <Label Text="{Binding Name}"
+                                           TextColor="White" FontAttributes="Bold" FontSize="13"
+                                           MaxLines="1" LineBreakMode="TailTruncation" />
+                                    <Label Text="{Binding TrackCountText}"
+                                           TextColor="#B3B3B3" FontSize="11" />
+                                </StackLayout>
+
+                                <!-- Eliminar playlist -->
+                                <Button Text="Eliminar"
+                                        TextColor="#535353" FontSize="11"
+                                        BackgroundColor="Transparent" BorderColor="Transparent"
+                                        Padding="0" HeightRequest="28" HorizontalOptions="Start"
+                                        CommandParameter="{Binding .}"
+                                        Clicked="OnDeletePlaylistClicked" />
+                            </VerticalStackLayout>
                         </Grid>
                     </DataTemplate>
                 </CollectionView.ItemTemplate>

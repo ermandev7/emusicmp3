@@ -16,11 +16,13 @@ namespace eMusicApp.ViewModels
     public partial class PlayerViewModel : ObservableObject
     {
         private readonly ApiService _apiService;
+        private readonly RadioModeService _radioService;
         private readonly IAlbumColorService? _colorService;
 
-        public PlayerViewModel(ApiService apiService)
+        public PlayerViewModel(ApiService apiService, RadioModeService radioService)
         {
             _apiService = apiService;
+            _radioService = radioService;
             _colorService = IPlatformApplication.Current?.Services.GetService<IAlbumColorService>();
 
             NativeAudioController.OnProgressUpdated = (posMs, durMs) =>
@@ -29,10 +31,15 @@ namespace eMusicApp.ViewModels
                 {
                     if (!IsDraggingSlider)
                     {
-                        // IMPORTANTE: Primero actualizar la duración (SliderMaximum) para evitar que el control 
-                        // Slider de MAUI trunque la posición al valor máximo anterior (1).
                         Duration = durMs;
                         Position = posMs;
+                    }
+
+                    // Pre-fetch de Last.fm al 50% de la canción para tener resultados listos
+                    if (IsRadioMode && durMs > 0 && posMs >= durMs / 2 && CurrentTrack != null)
+                    {
+                        _ = _radioService.PrefetchSimilarAsync(
+                            CurrentTrack.VideoId, CurrentTrack.Uploader, CurrentTrack.Title, _playedIds);
                     }
                 });
             };
@@ -489,7 +496,18 @@ namespace eMusicApp.ViewModels
         {
             if (CurrentTrack == null) return;
 
-            // 1) Intentar relatedStreams filtrando ya reproducidos
+            // Tier 0: Last.fm — recomendaciones por similitud musical
+            var lastFmTracks = _radioService.ConsumePrefetched(CurrentTrack.VideoId, _playedIds);
+            if (lastFmTracks.Count == 0)
+                lastFmTracks = await _radioService.GetSimilarTracksAsync(
+                    CurrentTrack.Uploader, CurrentTrack.Title, _playedIds, 3);
+            if (lastFmTracks.Count > 0)
+            {
+                await PlayTrack(lastFmTracks[0]);
+                return;
+            }
+
+            // Tier 1: relatedStreams filtrando ya reproducidos
             var streamInfo = await _apiService.GetStreamAsync(CurrentTrack.VideoId);
             var next = streamInfo?.RelatedStreams?
                 .FirstOrDefault(r => !string.IsNullOrEmpty(r.VideoId) && !_playedIds.Contains(r.VideoId));
@@ -499,11 +517,10 @@ namespace eMusicApp.ViewModels
                 return;
             }
 
-            // 2) Fallback: buscar por artista
-            var artist = CurrentTrack.Uploader;
-            if (!string.IsNullOrEmpty(artist))
+            // Tier 2: buscar por artista
+            if (!string.IsNullOrEmpty(CurrentTrack.Uploader))
             {
-                var results = await _apiService.SearchTracksAsync(artist);
+                var results = await _apiService.SearchTracksAsync(CurrentTrack.Uploader);
                 next = results.FirstOrDefault(r => !string.IsNullOrEmpty(r.VideoId) && !_playedIds.Contains(r.VideoId));
                 if (next != null)
                 {
@@ -512,7 +529,7 @@ namespace eMusicApp.ViewModels
                 }
             }
 
-            // 3) Si todo falla, reproducir cualquier related (aunque sea repetida)
+            // Tier 3: cualquier related (aunque sea repetida)
             next = streamInfo?.RelatedStreams?.FirstOrDefault(r => !string.IsNullOrEmpty(r.VideoId) && r.VideoId != CurrentTrack.VideoId);
             if (next != null) await PlayTrack(next);
         }
@@ -522,21 +539,33 @@ namespace eMusicApp.ViewModels
             if (CurrentTrack == null) return;
 
             var newTracks = new List<Track>();
-
-            // 1) Intentar relatedStreams filtrando ya reproducidos y ya en cola
             var queueIds = new HashSet<string>(PlayQueue.Select(t => t.VideoId));
-            var streamInfo = await _apiService.GetStreamAsync(CurrentTrack.VideoId);
-            if (streamInfo?.RelatedStreams?.Count > 0)
+
+            // Tier 0: Last.fm — recomendaciones por similitud musical (pre-fetched o on-demand)
+            var lastFmTracks = _radioService.ConsumePrefetched(CurrentTrack.VideoId, _playedIds);
+            if (lastFmTracks.Count == 0)
+                lastFmTracks = await _radioService.GetSimilarTracksAsync(
+                    CurrentTrack.Uploader, CurrentTrack.Title, _playedIds, 5);
+            newTracks.AddRange(lastFmTracks.Where(t => !queueIds.Contains(t.VideoId)));
+
+            // Tier 1: relatedStreams filtrando ya reproducidos y ya en cola
+            if (newTracks.Count < 3)
             {
-                newTracks = streamInfo.RelatedStreams
-                    .Where(r => !string.IsNullOrEmpty(r.VideoId)
-                             && !_playedIds.Contains(r.VideoId)
-                             && !queueIds.Contains(r.VideoId))
-                    .Take(8)
-                    .ToList();
+                var streamInfo = await _apiService.GetStreamAsync(CurrentTrack.VideoId);
+                if (streamInfo?.RelatedStreams?.Count > 0)
+                {
+                    var related = streamInfo.RelatedStreams
+                        .Where(r => !string.IsNullOrEmpty(r.VideoId)
+                                 && !_playedIds.Contains(r.VideoId)
+                                 && !queueIds.Contains(r.VideoId)
+                                 && !newTracks.Any(n => n.VideoId == r.VideoId))
+                        .Take(8 - newTracks.Count)
+                        .ToList();
+                    newTracks.AddRange(related);
+                }
             }
 
-            // 2) Fallback: buscar por artista si no hay suficientes nuevos
+            // Tier 2: Búsqueda por artista
             if (newTracks.Count < 3 && !string.IsNullOrEmpty(CurrentTrack.Uploader))
             {
                 var results = await _apiService.SearchTracksAsync(CurrentTrack.Uploader);
@@ -560,8 +589,9 @@ namespace eMusicApp.ViewModels
             }
             else
             {
-                // Último recurso: limpiar historial de reproducidos y reintentar con relatedStreams
+                // Tier 3: limpiar historial y reintentar
                 _playedIds.Clear();
+                var streamInfo = await _apiService.GetStreamAsync(CurrentTrack.VideoId);
                 if (streamInfo?.RelatedStreams?.Count > 0)
                 {
                     var fallback = streamInfo.RelatedStreams

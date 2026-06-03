@@ -20,12 +20,12 @@ namespace eMusicApp.Views
             // Scroll to currently playing track
             var currentItem = _player.QueueItems.FirstOrDefault(q => q.IsNowPlaying);
             if (currentItem != null)
-                QueueList.ScrollTo(currentItem, ScrollToPosition.Center, animated: false);
+                QueueList.ScrollTo(currentItem, ScrollToPosition.Center, animate: false);
         }
 
         private async void OnBackClicked(object sender, System.EventArgs e)
         {
-            await Navigation.PopAsync();
+            await Navigation.PopModalAsync();
         }
     }
 }

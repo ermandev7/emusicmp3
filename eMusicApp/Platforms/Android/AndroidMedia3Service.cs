@@ -183,7 +183,6 @@ namespace eMusicApp.Platforms.Android
             // MediaStyle — enlazar con la MediaSession es OBLIGATORIO para que
             // Samsung One UI muestre el widget en la pantalla apagada/bloqueada
             var mediaStyle = new global::AndroidX.Media.App.NotificationCompat.MediaStyle()
-                .SetMediaSession(_mediaSession?.SessionCompatToken)
                 .SetShowActionsInCompactView(0, 1, 2); // prev · play/pause · next
 
             int  playPauseIcon  = isPlaying ? Resource.Drawable.pause : Resource.Drawable.play;

@@ -483,7 +483,11 @@ namespace eMusicApp.ViewModels
             if (CurrentTrack == null) return;
             var streamInfo = await _apiService.GetStreamAsync(CurrentTrack.VideoId);
             if (streamInfo?.RelatedStreams?.Count > 0)
-                await PlayTrack(streamInfo.RelatedStreams[0]);
+            {
+                var next = streamInfo.RelatedStreams.FirstOrDefault(r => r.VideoId != CurrentTrack.VideoId);
+                if (next != null)
+                    await PlayTrack(next);
+            }
         }
 
         private async Task ExtendQueueWithRelatedAsync()
@@ -493,7 +497,7 @@ namespace eMusicApp.ViewModels
             if (streamInfo?.RelatedStreams?.Count > 0)
             {
                 var toAdd = streamInfo.RelatedStreams
-                    .Where(r => !string.IsNullOrEmpty(r.VideoId))
+                    .Where(r => !string.IsNullOrEmpty(r.VideoId) && r.VideoId != CurrentTrack.VideoId)
                     .Take(8)
                     .ToList();
                 foreach (var r in toAdd)

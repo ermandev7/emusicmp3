@@ -257,6 +257,37 @@ namespace eMusicApp.ViewModels
             _               => RepeatMode.None
         };
 
+        // ─── Crossfade ───
+        [ObservableProperty]
+        [NotifyPropertyChangedFor(nameof(CrossfadeLabel))]
+        [NotifyPropertyChangedFor(nameof(CrossfadeColor))]
+        private int _crossfadeDuration = 0; // segundos: 0=off, 3, 5
+
+        public string CrossfadeLabel => CrossfadeDuration == 0 ? "X-Fade" : $"X-Fade {CrossfadeDuration}s";
+        public Color  CrossfadeColor => CrossfadeDuration > 0 ? _colorActive : _colorInactive;
+
+        [RelayCommand]
+        private void CycleCrossfade()
+        {
+            CrossfadeDuration = CrossfadeDuration switch
+            {
+                0 => 3,
+                3 => 5,
+                _ => 0
+            };
+            NativeAudioController.CrossfadeDurationMs = CrossfadeDuration * 1000;
+        }
+
+        // ─── Modo Radio ───
+        [ObservableProperty]
+        [NotifyPropertyChangedFor(nameof(RadioColor))]
+        private bool _isRadioMode;
+
+        public Color RadioColor => IsRadioMode ? _colorActive : _colorInactive;
+
+        [RelayCommand]
+        private void ToggleRadio() => IsRadioMode = !IsRadioMode;
+
         private static readonly Random _random = new Random();
 
         [ObservableProperty]
@@ -408,13 +439,7 @@ namespace eMusicApp.ViewModels
 
             if (PlayQueue.Count <= 1 || _currentQueueIndex == -1)
             {
-                // Sin cola: buscar relacionadas como siguiente
-                if (CurrentTrack != null)
-                {
-                    var streamInfo = await _apiService.GetStreamAsync(CurrentTrack.VideoId);
-                    if (streamInfo?.RelatedStreams?.Count > 0)
-                        await PlayTrack(streamInfo.RelatedStreams[0]);
-                }
+                await FetchAndPlayRelatedAsync();
                 return;
             }
 
@@ -435,15 +460,15 @@ namespace eMusicApp.ViewModels
                     {
                         next = 0;
                     }
+                    else if (IsRadioMode)
+                    {
+                        // Radio: añadir related tracks y continuar
+                        await ExtendQueueWithRelatedAsync();
+                        return;
+                    }
                     else
                     {
-                        // Fin de cola sin repeat: buscar relacionadas
-                        if (CurrentTrack != null)
-                        {
-                            var streamInfo = await _apiService.GetStreamAsync(CurrentTrack.VideoId);
-                            if (streamInfo?.RelatedStreams?.Count > 0)
-                                await PlayTrack(streamInfo.RelatedStreams[0]);
-                        }
+                        await FetchAndPlayRelatedAsync();
                         return;
                     }
                 }
@@ -451,6 +476,32 @@ namespace eMusicApp.ViewModels
             }
 
             await PlayTrack(PlayQueue[_currentQueueIndex]);
+        }
+
+        private async Task FetchAndPlayRelatedAsync()
+        {
+            if (CurrentTrack == null) return;
+            var streamInfo = await _apiService.GetStreamAsync(CurrentTrack.VideoId);
+            if (streamInfo?.RelatedStreams?.Count > 0)
+                await PlayTrack(streamInfo.RelatedStreams[0]);
+        }
+
+        private async Task ExtendQueueWithRelatedAsync()
+        {
+            if (CurrentTrack == null) return;
+            var streamInfo = await _apiService.GetStreamAsync(CurrentTrack.VideoId);
+            if (streamInfo?.RelatedStreams?.Count > 0)
+            {
+                var toAdd = streamInfo.RelatedStreams
+                    .Where(r => !string.IsNullOrEmpty(r.VideoId))
+                    .Take(8)
+                    .ToList();
+                foreach (var r in toAdd)
+                    PlayQueue.Add(r);
+                _currentQueueIndex++;
+                RebuildQueueItems();
+                await PlayTrack(PlayQueue[_currentQueueIndex]);
+            }
         }
 
         [RelayCommand]

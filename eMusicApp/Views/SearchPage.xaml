@@ -26,20 +26,72 @@
                        CancelButtonColor="White" />
         </Border>
 
-        <!-- Estado inicial: invitación a buscar -->
-        <StackLayout Grid.Row="1"
-                     IsVisible="{Binding ShowInitialPrompt}"
-                     VerticalOptions="Center"
-                     HorizontalOptions="Center"
-                     Spacing="10"
-                     Padding="40,0">
-            <Label Text="&#x1F50E;" FontSize="48" HorizontalOptions="Center" TextColor="#535353" />
-            <Label Text="Busca tu música favorita"
-                   TextColor="#B3B3B3"
-                   FontSize="18"
-                   FontAttributes="Bold"
-                   HorizontalOptions="Center" />
-        </StackLayout>
+        <!-- Estado inicial: búsquedas recientes O invitación a buscar -->
+        <Grid Grid.Row="1" IsVisible="{Binding ShowInitialPrompt}">
+
+            <!-- Sin búsquedas recientes: prompt genérico -->
+            <StackLayout IsVisible="{Binding HasNoRecentQueries}"
+                         VerticalOptions="Center"
+                         HorizontalOptions="Center"
+                         Spacing="10"
+                         Padding="40,0">
+                <Label Text="&#x1F50E;" FontSize="48" HorizontalOptions="Center" TextColor="#535353" />
+                <Label Text="Busca tu música favorita"
+                       TextColor="#B3B3B3"
+                       FontSize="18"
+                       FontAttributes="Bold"
+                       HorizontalOptions="Center" />
+            </StackLayout>
+
+            <!-- Con búsquedas recientes: lista de chips -->
+            <VerticalStackLayout IsVisible="{Binding HasRecentQueries}" Margin="15,16">
+
+                <Grid ColumnDefinitions="*, Auto" Margin="0,0,0,8">
+                    <Label Grid.Column="0"
+                           Text="Búsquedas recientes"
+                           TextColor="White" FontSize="16" FontAttributes="Bold"
+                           VerticalOptions="Center" />
+                    <Button Grid.Column="1"
+                            Text="Limpiar"
+                            TextColor="#B3B3B3" FontSize="13"
+                            BackgroundColor="Transparent"
+                            BorderColor="Transparent"
+                            Padding="0"
+                            Command="{Binding ClearRecentQueriesCommand}" />
+                </Grid>
+
+                <CollectionView ItemsSource="{Binding RecentQueries}" SelectionMode="None">
+                    <CollectionView.ItemTemplate>
+                        <DataTemplate x:DataType="x:String">
+                            <Grid Padding="0,4">
+                                <Grid.GestureRecognizers>
+                                    <TapGestureRecognizer
+                                        Command="{Binding Source={RelativeSource AncestorType={x:Type vm:SearchViewModel}}, Path=SelectRecentQueryCommand}"
+                                        CommandParameter="{Binding .}" />
+                                </Grid.GestureRecognizers>
+                                <Grid ColumnDefinitions="Auto, *, Auto" Padding="6,8">
+                                    <Label Grid.Column="0"
+                                           Text="&#x21BA;"
+                                           TextColor="#B3B3B3" FontSize="18"
+                                           VerticalOptions="Center"
+                                           Margin="0,0,14,0" />
+                                    <Label Grid.Column="1"
+                                           Text="{Binding .}"
+                                           TextColor="White" FontSize="15"
+                                           VerticalOptions="Center" />
+                                    <Label Grid.Column="2"
+                                           Text="&#x2197;"
+                                           TextColor="#535353" FontSize="16"
+                                           VerticalOptions="Center" />
+                                </Grid>
+                            </Grid>
+                        </DataTemplate>
+                    </CollectionView.ItemTemplate>
+                </CollectionView>
+
+            </VerticalStackLayout>
+
+        </Grid>
 
         <!-- Spinner de carga -->
         <StackLayout Grid.Row="1"

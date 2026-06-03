@@ -23,6 +23,13 @@ public class FavoritesController : ControllerBase
         return Ok(await _context.Favorites.AsNoTracking().ToListAsync());
     }
 
+    [HttpGet("{id}")]
+    public async Task<IActionResult> GetById(string id)
+    {
+        var exists = await _context.Favorites.AnyAsync(f => f.Id == id);
+        return exists ? Ok() : NotFound();
+    }
+
     [HttpPost]
     public async Task<IActionResult> Post([FromBody] FavoriteRequest req)
     {

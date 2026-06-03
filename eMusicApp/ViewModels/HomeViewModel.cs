@@ -63,25 +63,36 @@ namespace eMusicApp.ViewModels
         private ObservableCollection<Track> _recentTracks;
 
         [ObservableProperty]
+        private ObservableCollection<Track> _trendingTracks = new ObservableCollection<Track>();
+
+        [ObservableProperty]
         [NotifyPropertyChangedFor(nameof(HasNoHistory))]
         private bool _isBusy;
 
         public bool HasNoHistory => !IsBusy && RecentTracks.Count == 0;
-        public bool HasHistory   => !HasNoHistory;
+        public bool HasHistory   => RecentTracks.Count > 0;
+        public bool HasTrending  => TrendingTracks?.Count > 0;
 
         [RelayCommand]
         private async Task LoadRecentTracksAsync()
         {
             IsBusy = true;
 
-            var hist = await _apiService.GetHistoryAsync();
+            // Cargar historial y tendencias en paralelo
+            var histTask     = _apiService.GetHistoryAsync();
+            var trendingTask = _apiService.GetTrendingAsync();
 
+            var hist = await histTask;
             RecentTracks = new ObservableCollection<Track>(hist);
             Player.SetQueue(RecentTracks);
 
             IsBusy = false;
             OnPropertyChanged(nameof(HasNoHistory));
             OnPropertyChanged(nameof(HasHistory));
+
+            var trending = await trendingTask;
+            TrendingTracks = new ObservableCollection<Track>(trending.Take(20));
+            OnPropertyChanged(nameof(HasTrending));
         }
     }
 }

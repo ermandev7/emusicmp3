@@ -8,7 +8,8 @@
     Title="eMusicApp"
     Shell.NavBarIsVisible="False"
     Shell.TabBarBackgroundColor="#000000"
-    Shell.TabBarTitleColor="White"
+    Shell.TabBarForegroundColor="#1DB954"
+    Shell.TabBarTitleColor="#1DB954"
     Shell.TabBarUnselectedColor="#B3B3B3">
 
     <TabBar>

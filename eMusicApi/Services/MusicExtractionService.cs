@@ -210,7 +210,74 @@ public class MusicExtractionService
             }
         }
 
+        // Fallback: Invidious trending music
+        Console.WriteLine("[Trending] Piped fallaron. Intentando Invidious...");
+        var invidiousResult = await GetTrendingWithInvidiousAsync();
+        if (invidiousResult != null)
+        {
+            _cache.Set(cacheKey, invidiousResult, TimeSpan.FromHours(1));
+            return invidiousResult;
+        }
+
         return "[]";
+    }
+
+    private async Task<string?> GetTrendingWithInvidiousAsync()
+    {
+        foreach (var instance in InvidiousInstances)
+        {
+            try
+            {
+                var client = _httpClientFactory.CreateClient();
+                client.Timeout = TimeSpan.FromSeconds(6);
+                var response = await client.GetAsync($"{instance}/api/v1/trending?type=music&region=US");
+                if (!response.IsSuccessStatusCode) continue;
+
+                var json = await response.Content.ReadAsStringAsync();
+                using var doc = JsonDocument.Parse(json);
+                if (doc.RootElement.ValueKind != JsonValueKind.Array) continue;
+
+                var items = new List<object>();
+                foreach (var v in doc.RootElement.EnumerateArray())
+                {
+                    var id     = v.TryGetProperty("videoId", out var idEl)    ? idEl.GetString()    ?? "" : "";
+                    var title  = v.TryGetProperty("title",   out var titleEl) ? titleEl.GetString() ?? "" : "";
+                    var author = v.TryGetProperty("author",  out var authEl)  ? authEl.GetString()  ?? "" : "";
+                    var length = v.TryGetProperty("lengthSeconds", out var lenEl) && lenEl.ValueKind == JsonValueKind.Number
+                        ? lenEl.GetInt64() : 0L;
+
+                    if (string.IsNullOrEmpty(id) || string.IsNullOrEmpty(title)) continue;
+
+                    items.Add(new
+                    {
+                        url              = $"/watch?v={id}",
+                        type             = "stream",
+                        title,
+                        thumbnail        = $"https://i.ytimg.com/vi/{id}/mqdefault.jpg",
+                        uploaderName     = author,
+                        uploaderUrl      = "",
+                        uploaderAvatar   = "",
+                        uploaderVerified = false,
+                        duration         = length,
+                        views            = 0L,
+                        uploaded         = 0L,
+                        shortDescription = "",
+                        isShort          = false
+                    });
+                }
+
+                if (items.Count == 0) continue;
+
+                var result = BuildSearchJson(items);
+                Console.WriteLine($"[Invidious Trending] ✅ {items.Count} tendencias via {instance}");
+                return result;
+            }
+            catch (Exception ex)
+            {
+                Console.WriteLine($"[Invidious Trending] Fallo en {instance}: {ex.Message}");
+            }
+        }
+        return null;
     }
 
     // ─────────────────────────────────────────────────────────────────

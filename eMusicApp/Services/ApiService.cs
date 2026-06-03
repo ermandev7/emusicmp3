@@ -251,6 +251,19 @@ namespace eMusicApp.Services
             }
         }
 
+        public async Task<bool> IsFavoriteAsync(string videoId)
+        {
+            try
+            {
+                var response = await _httpClient.GetAsync($"{BaseUrl}/favorites/{Uri.EscapeDataString(videoId)}");
+                return response.IsSuccessStatusCode;
+            }
+            catch (System.Exception)
+            {
+                return false;
+            }
+        }
+
         // ─────────────────────────────────────────────
         // HISTORY — Guardado en SQLite de la Pi
         // ─────────────────────────────────────────────

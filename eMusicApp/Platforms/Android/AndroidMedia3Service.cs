@@ -284,6 +284,9 @@ namespace eMusicApp.Platforms.Android
 
                 NativeAudioController.ReportProgress(posMs, durMs);
 
+                // Sincronizar estado con Android Auto browser service
+                eMusicBrowserService.Instance?.UpdatePlaybackState(isPlaying, posMs, durMs);
+
                 // Crossfade: bajar volumen al final del track
                 int xfMs = NativeAudioController.CrossfadeDurationMs;
                 if (xfMs > 0 && durMs > 2000 && !_isFadingIn)
@@ -309,6 +312,9 @@ namespace eMusicApp.Platforms.Android
                     NativeAudioController.ReportTrackStarted(playingId, title, artist, thumb, durMs);
                     PostMediaNotification();
                     _ = LoadArtworkAsync(thumb);
+
+                    // Sincronizar metadata con Android Auto
+                    eMusicBrowserService.Instance?.UpdateMetadata(title, artist, thumb, durMs);
 
                     _nextPrepared = false;
                     _trackEndedReported = false;
@@ -374,6 +380,11 @@ namespace eMusicApp.Platforms.Android
 
             PostMediaNotification();
             _ = LoadArtworkAsync(thumbUrl);
+
+            // Sincronizar con Android Auto
+            eMusicBrowserService.Instance?.UpdateMetadata(title, artist, thumbUrl, 0);
+            eMusicBrowserService.Instance?.UpdatePlaybackState(true, 0, 0);
+
             _ = FetchRelatedAndQueueNextAsync(videoId);
         }
 
@@ -383,12 +394,7 @@ namespace eMusicApp.Platforms.Android
             {
                 _nativeQueue.Clear();
 
-                // Tier 0: Last.fm — recomendaciones por similitud musical
-                if (!string.IsNullOrEmpty(_currentArtist) && !string.IsNullOrEmpty(_currentTitle))
-                    await EnqueueFromLastFmAsync(_currentArtist, _currentTitle);
-
                 // Tier 1: relatedStreams
-                if (_nativeQueue.Count < 3)
                 {
                     var response = await _httpClient.GetStringAsync(
                         $"{AppConstants.ApiBaseUrl}/streams/{videoId}");
@@ -459,57 +465,6 @@ namespace eMusicApp.Platforms.Android
             catch (Exception ex)
             {
                 System.Diagnostics.Debug.WriteLine($"[Autoplay] Error búsqueda artista: {ex.Message}");
-            }
-        }
-
-        /// <summary>
-        /// Obtiene recomendaciones de Last.fm y las busca en nuestra API para obtener videoIds.
-        /// </summary>
-        private async Task EnqueueFromLastFmAsync(string artist, string title)
-        {
-            try
-            {
-                var pairs = await eMusicApp.Services.RadioModeService.GetSimilarFromLastFmRawAsync(
-                    _httpClient, artist, title, 5);
-
-                foreach (var (recArtist, recTrack) in pairs)
-                {
-                    try
-                    {
-                        var searchUrl = $"{AppConstants.ApiBaseUrl}/search?q={Uri.EscapeDataString($"{recArtist} {recTrack}")}";
-                        using var cts = new System.Threading.CancellationTokenSource(System.TimeSpan.FromSeconds(7));
-                        var response = await _httpClient.GetStringAsync(searchUrl, cts.Token);
-                        using var doc = JsonDocument.Parse(response);
-
-                        if (doc.RootElement.TryGetProperty("items", out var items))
-                        {
-                            foreach (var item in items.EnumerateArray())
-                            {
-                                if (item.TryGetProperty("type", out var typeEl))
-                                {
-                                    var type = typeEl.GetString();
-                                    if (!string.IsNullOrEmpty(type) && type != "stream") continue;
-                                }
-                                var vId = ExtractVideoId(item);
-                                if (!string.IsNullOrEmpty(vId) && !_playedIds.Contains(vId))
-                                {
-                                    _nativeQueue.Enqueue(vId);
-                                    break;
-                                }
-                            }
-                        }
-                    }
-                    catch { }
-
-                    if (_nativeQueue.Count >= 5) break;
-                }
-
-                System.Diagnostics.Debug.WriteLine(
-                    $"[Autoplay Last.fm] '{artist} - {title}' → {pairs.Count} sugerencias, {_nativeQueue.Count} en cola");
-            }
-            catch (Exception ex)
-            {
-                System.Diagnostics.Debug.WriteLine($"[Autoplay Last.fm] Error: {ex.Message}");
             }
         }
 
@@ -631,12 +586,7 @@ namespace eMusicApp.Platforms.Android
                 // Rellenar la cola nativa si está vacía
                 if (_nativeQueue.Count == 0 && !string.IsNullOrEmpty(_currentMediaId))
                 {
-                    // Tier 0: Last.fm
-                    if (!string.IsNullOrEmpty(_currentArtist) && !string.IsNullOrEmpty(_currentTitle))
-                        await EnqueueFromLastFmAsync(_currentArtist, _currentTitle);
-
                     // Tier 1: relatedStreams
-                    if (_nativeQueue.Count < 3)
                     {
                         var response = await _httpClient.GetStringAsync(
                             $"{AppConstants.ApiBaseUrl}/streams/{_currentMediaId}");

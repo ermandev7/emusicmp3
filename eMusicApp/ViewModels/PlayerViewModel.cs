@@ -16,13 +16,11 @@ namespace eMusicApp.ViewModels
     public partial class PlayerViewModel : ObservableObject
     {
         private readonly ApiService _apiService;
-        private readonly RadioModeService _radioService;
         private readonly IAlbumColorService? _colorService;
 
-        public PlayerViewModel(ApiService apiService, RadioModeService radioService)
+        public PlayerViewModel(ApiService apiService)
         {
             _apiService = apiService;
-            _radioService = radioService;
             _colorService = IPlatformApplication.Current?.Services.GetService<IAlbumColorService>();
 
             NativeAudioController.OnProgressUpdated = (posMs, durMs) =>
@@ -33,13 +31,6 @@ namespace eMusicApp.ViewModels
                     {
                         Duration = durMs;
                         Position = posMs;
-                    }
-
-                    // Pre-fetch de Last.fm al 50% de la canción para tener resultados listos
-                    if (IsRadioMode && durMs > 0 && posMs >= durMs / 2 && CurrentTrack != null)
-                    {
-                        _ = _radioService.PrefetchSimilarAsync(
-                            CurrentTrack.VideoId, CurrentTrack.Uploader, CurrentTrack.Title, _playedIds);
                     }
                 });
             };
@@ -492,20 +483,21 @@ namespace eMusicApp.ViewModels
             await PlayTrack(PlayQueue[_currentQueueIndex]);
         }
 
+        // Queries de búsqueda que mantienen el género/estilo del artista
+        private static string[] BuildArtistQueries(string artist)
+        {
+            if (string.IsNullOrEmpty(artist)) return Array.Empty<string>();
+            return new[]
+            {
+                $"{artist} mix",
+                $"{artist} éxitos",
+                $"{artist} mejores canciones"
+            };
+        }
+
         private async Task FetchAndPlayRelatedAsync()
         {
             if (CurrentTrack == null) return;
-
-            // Tier 0: Last.fm — recomendaciones por similitud musical
-            var lastFmTracks = _radioService.ConsumePrefetched(CurrentTrack.VideoId, _playedIds);
-            if (lastFmTracks.Count == 0)
-                lastFmTracks = await _radioService.GetSimilarTracksAsync(
-                    CurrentTrack.Uploader, CurrentTrack.Title, _playedIds, 3);
-            if (lastFmTracks.Count > 0)
-            {
-                await PlayTrack(lastFmTracks[0]);
-                return;
-            }
 
             // Tier 1: relatedStreams filtrando ya reproducidos
             var streamInfo = await _apiService.GetStreamAsync(CurrentTrack.VideoId);
@@ -517,10 +509,11 @@ namespace eMusicApp.ViewModels
                 return;
             }
 
-            // Tier 2: buscar por artista
-            if (!string.IsNullOrEmpty(CurrentTrack.Uploader))
+            // Tier 2: buscar por artista con queries variadas (mantiene el género)
+            var queries = BuildArtistQueries(CurrentTrack.Uploader);
+            foreach (var query in queries)
             {
-                var results = await _apiService.SearchTracksAsync(CurrentTrack.Uploader);
+                var results = await _apiService.SearchTracksAsync(query);
                 next = results.FirstOrDefault(r => !string.IsNullOrEmpty(r.VideoId) && !_playedIds.Contains(r.VideoId));
                 if (next != null)
                 {
@@ -541,13 +534,6 @@ namespace eMusicApp.ViewModels
             var newTracks = new List<Track>();
             var queueIds = new HashSet<string>(PlayQueue.Select(t => t.VideoId));
 
-            // Tier 0: Last.fm — recomendaciones por similitud musical (pre-fetched o on-demand)
-            var lastFmTracks = _radioService.ConsumePrefetched(CurrentTrack.VideoId, _playedIds);
-            if (lastFmTracks.Count == 0)
-                lastFmTracks = await _radioService.GetSimilarTracksAsync(
-                    CurrentTrack.Uploader, CurrentTrack.Title, _playedIds, 5);
-            newTracks.AddRange(lastFmTracks.Where(t => !queueIds.Contains(t.VideoId)));
-
             // Tier 1: relatedStreams filtrando ya reproducidos y ya en cola
             if (newTracks.Count < 3)
             {
@@ -565,18 +551,24 @@ namespace eMusicApp.ViewModels
                 }
             }
 
-            // Tier 2: Búsqueda por artista
-            if (newTracks.Count < 3 && !string.IsNullOrEmpty(CurrentTrack.Uploader))
+            // Tier 2: Búsqueda por artista con queries variadas (mantiene el género)
+            if (newTracks.Count < 3)
             {
-                var results = await _apiService.SearchTracksAsync(CurrentTrack.Uploader);
-                var extraTracks = results
-                    .Where(r => !string.IsNullOrEmpty(r.VideoId)
-                             && !_playedIds.Contains(r.VideoId)
-                             && !queueIds.Contains(r.VideoId)
-                             && !newTracks.Any(n => n.VideoId == r.VideoId))
-                    .Take(8 - newTracks.Count)
-                    .ToList();
-                newTracks.AddRange(extraTracks);
+                var queries = BuildArtistQueries(CurrentTrack.Uploader);
+                foreach (var query in queries)
+                {
+                    if (newTracks.Count >= 8) break;
+                    var results = await _apiService.SearchTracksAsync(query);
+                    var extraTracks = results
+                        .Where(r => !string.IsNullOrEmpty(r.VideoId)
+                                 && !_playedIds.Contains(r.VideoId)
+                                 && !queueIds.Contains(r.VideoId)
+                                 && !newTracks.Any(n => n.VideoId == r.VideoId))
+                        .Take(8 - newTracks.Count)
+                        .ToList();
+                    newTracks.AddRange(extraTracks);
+                    if (newTracks.Count >= 3) break; // suficientes tracks
+                }
             }
 
             if (newTracks.Count > 0)

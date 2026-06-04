@@ -28,7 +28,6 @@ public static class MauiProgram
 
 		// Services
 		builder.Services.AddSingleton<ApiService>();
-		builder.Services.AddSingleton<RadioModeService>();
 		builder.Services.AddSingleton<PlayerViewModel>();
 #if ANDROID
 		builder.Services.AddSingleton<IAlbumColorService, AlbumColorService>();

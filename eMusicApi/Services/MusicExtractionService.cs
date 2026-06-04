@@ -738,8 +738,11 @@ public class MusicExtractionService
     {
         try
         {
-            var query = !string.IsNullOrEmpty(artist) ? $"{artist} music" : title;
-            if (string.IsNullOrEmpty(query)) return Array.Empty<object>();
+            // Nunca buscar solo por título (ej: "Me Gustas" trae canciones random).
+            // Siempre incluir artista para mantener el género/estilo.
+            if (string.IsNullOrEmpty(artist))
+                return Array.Empty<object>();
+            var query = $"{artist} mix";
 
             var searchJson = await SearchAsync(query);
             using var doc = JsonDocument.Parse(searchJson);

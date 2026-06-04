@@ -20,53 +20,10 @@
                         skeleton:Skeleton.IsBusy="{Binding IsBusy}">
 
             <CollectionView.Header>
-                <VerticalStackLayout>
-
-                    <!-- ── Sección Tendencias ── -->
-                    <Label Text="Tendencias"
-                           IsVisible="{Binding HasTrending}"
-                           TextColor="White" FontSize="18" FontAttributes="Bold"
-                           Margin="6,24,6,12" />
-
-                    <CollectionView ItemsSource="{Binding TrendingTracks}"
-                                    HeightRequest="165"
-                                    IsVisible="{Binding HasTrending}"
-                                    SelectionMode="None"
-                                    Margin="0,0,0,4">
-                        <CollectionView.ItemsLayout>
-                            <LinearItemsLayout Orientation="Horizontal" ItemSpacing="8" />
-                        </CollectionView.ItemsLayout>
-                        <CollectionView.ItemTemplate>
-                            <DataTemplate x:DataType="models:Track">
-                                <Grid Padding="4,0">
-                                    <Grid.GestureRecognizers>
-                                        <TapGestureRecognizer
-                                            Command="{Binding Source={RelativeSource AncestorType={x:Type vm:HomeViewModel}}, Path=Player.PlayTrackCommand}"
-                                            CommandParameter="{Binding .}" />
-                                    </Grid.GestureRecognizers>
-                                    <VerticalStackLayout WidthRequest="115">
-                                        <Border StrokeThickness="0"
-                                                StrokeShape="RoundRectangle 8"
-                                                HeightRequest="110" WidthRequest="110">
-                                            <Image Source="{Binding ThumbnailUrl}" Aspect="AspectFill" />
-                                        </Border>
-                                        <Label Text="{Binding Title}"
-                                               TextColor="White" FontSize="11"
-                                               MaxLines="2" LineBreakMode="TailTruncation"
-                                               Margin="0,4,0,0" />
-                                    </VerticalStackLayout>
-                                </Grid>
-                            </DataTemplate>
-                        </CollectionView.ItemTemplate>
-                    </CollectionView>
-
-                    <!-- ── Header historial ── -->
-                    <Label Text="Escuchados Recientemente"
-                           IsVisible="{Binding HasHistory}"
-                           TextColor="White" FontSize="22" FontAttributes="Bold"
-                           Margin="6,20,6,12" />
-
-                </VerticalStackLayout>
+                <Label Text="Escuchados Recientemente"
+                       IsVisible="{Binding HasHistory}"
+                       TextColor="White" FontSize="22" FontAttributes="Bold"
+                       Margin="6,20,6,12" />
             </CollectionView.Header>
 
             <!-- Empty state cuando no hay historial -->

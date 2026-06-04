@@ -28,9 +28,10 @@ namespace eMusicApp.Models
         private string _url = "";
         // URL relativa del video, ej: /watch?v=hLQl3WQQoQ0
         [JsonPropertyName("url")]
-        public string Url 
-        { 
-            get => !string.IsNullOrEmpty(_url) ? _url : (!string.IsNullOrEmpty(VideoId) ? $"/watch?v={VideoId}" : string.Empty);
+        public string Url
+        {
+            // Usar VideoIdFromJson directamente para evitar recursión circular con VideoId.get
+            get => !string.IsNullOrEmpty(_url) ? _url : (!string.IsNullOrEmpty(VideoIdFromJson) ? $"/watch?v={VideoIdFromJson}" : string.Empty);
             set => _url = value;
         }
 
@@ -72,9 +73,10 @@ namespace eMusicApp.Models
             get
             {
                 if (!string.IsNullOrEmpty(VideoIdFromJson)) return VideoIdFromJson;
-                if (string.IsNullOrEmpty(Url)) return string.Empty;
-                var idx = Url.IndexOf("?v=");
-                return idx >= 0 ? Url.Substring(idx + 3) : Url.TrimStart('/');
+                // Usar _url directamente para evitar recursión circular con Url.get
+                if (string.IsNullOrEmpty(_url)) return string.Empty;
+                var idx = _url.IndexOf("?v=");
+                return idx >= 0 ? _url.Substring(idx + 3) : _url.TrimStart('/');
             }
         }
     }

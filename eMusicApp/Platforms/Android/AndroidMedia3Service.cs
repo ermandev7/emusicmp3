@@ -126,8 +126,9 @@ namespace eMusicApp.Platforms.Android
         // Suprimir la notificación automática de Media3 y usar la nuestra propia.
         public override void OnUpdateNotification(MediaSession session, bool startInForegroundRequired)
         {
-            // NO llamar a base — nosotros controlamos la notificación manualmente.
-            PostMediaNotification();
+            // NO llamar a base ni a PostMediaNotification aquí.
+            // PostMediaNotification ya llama StartForeground, que re-dispara OnUpdateNotification.
+            // Dejar vacío para romper el ciclo.
         }
 
         public override StartCommandResult OnStartCommand(Intent? intent, global::Android.App.StartCommandFlags flags, int startId)
@@ -169,8 +170,12 @@ namespace eMusicApp.Platforms.Android
                 PendingIntentFlags.UpdateCurrent | PendingIntentFlags.Immutable)!;
         }
 
+        private bool _isPostingNotification;
         private void PostMediaNotification()
         {
+            if (_isPostingNotification) return; // Guard contra recursión de StartForeground → OnUpdateNotification
+            _isPostingNotification = true;
+            try {
             bool isPlaying = _player?.IsPlaying ?? false;
             string title  = _player?.CurrentMediaItem?.MediaMetadata?.Title?.ToString()  ?? "eMusicApp";
             string artist = _player?.CurrentMediaItem?.MediaMetadata?.Artist?.ToString() ?? "";
@@ -230,6 +235,8 @@ namespace eMusicApp.Platforms.Android
                     global::Android.Content.PM.ForegroundService.TypeMediaPlayback);
             else
                 StartForeground(NOTIFICATION_ID, notification);
+            }
+            finally { _isPostingNotification = false; }
         }
 
         private async Task LoadArtworkAsync(string? url)
@@ -284,9 +291,6 @@ namespace eMusicApp.Platforms.Android
 
                 NativeAudioController.ReportProgress(posMs, durMs);
 
-                // Sincronizar estado con Android Auto browser service
-                eMusicBrowserService.Instance?.UpdatePlaybackState(isPlaying, posMs, durMs);
-
                 // Crossfade: bajar volumen al final del track
                 int xfMs = NativeAudioController.CrossfadeDurationMs;
                 if (xfMs > 0 && durMs > 2000 && !_isFadingIn)
@@ -312,9 +316,6 @@ namespace eMusicApp.Platforms.Android
                     NativeAudioController.ReportTrackStarted(playingId, title, artist, thumb, durMs);
                     PostMediaNotification();
                     _ = LoadArtworkAsync(thumb);
-
-                    // Sincronizar metadata con Android Auto
-                    eMusicBrowserService.Instance?.UpdateMetadata(title, artist, thumb, durMs);
 
                     _nextPrepared = false;
                     _trackEndedReported = false;
@@ -380,10 +381,6 @@ namespace eMusicApp.Platforms.Android
 
             PostMediaNotification();
             _ = LoadArtworkAsync(thumbUrl);
-
-            // Sincronizar con Android Auto
-            eMusicBrowserService.Instance?.UpdateMetadata(title, artist, thumbUrl, 0);
-            eMusicBrowserService.Instance?.UpdatePlaybackState(true, 0, 0);
 
             _ = FetchRelatedAndQueueNextAsync(videoId);
         }

@@ -48,28 +48,42 @@
         </Grid>
 
         <!-- Album Art -->
-        <Border Grid.Row="1" 
-                StrokeThickness="0" 
-                StrokeShape="RoundRectangle 8"
-                Margin="0,0,0,30"
-                BackgroundColor="#2A2A2A"
-                Shadow="{Shadow Brush=Black, Offset='0,10', Radius=20, Opacity=0.5}">
-            <Image Source="{Binding Player.CurrentTrack.ThumbnailUrl}" Aspect="AspectFill" />
-        </Border>
+        <Grid Grid.Row="1" Margin="0,0,0,30">
+            <Border StrokeThickness="0"
+                    StrokeShape="RoundRectangle 8"
+                    BackgroundColor="#2A2A2A"
+                    Shadow="{Shadow Brush=Black, Offset='0,10', Radius=20, Opacity=0.5}">
+                <Image Source="{Binding Player.CurrentTrack.ThumbnailUrl}" Aspect="AspectFill" />
+            </Border>
+            <!-- Overlay de carga sobre la portada -->
+            <Border StrokeThickness="0"
+                    StrokeShape="RoundRectangle 8"
+                    BackgroundColor="#99000000"
+                    IsVisible="{Binding Player.IsBuffering}">
+                <VerticalStackLayout VerticalOptions="Center" HorizontalOptions="Center" Spacing="12">
+                    <ActivityIndicator IsRunning="{Binding Player.IsBuffering}"
+                                       Color="#1DB954"
+                                       WidthRequest="48" HeightRequest="48" />
+                    <Label Text="Cargando..."
+                           TextColor="#B3B3B3" FontSize="14"
+                           HorizontalOptions="Center" />
+                </VerticalStackLayout>
+            </Border>
+        </Grid>
 
         <!-- Track Info -->
         <Grid Grid.Row="2" ColumnDefinitions="*, Auto, Auto" Margin="0,0,0,20">
             <StackLayout Grid.Column="0" VerticalOptions="Center">
-                <Label Text="{Binding Player.CurrentTrack.Title}" 
-                       TextColor="White" 
-                       FontSize="24" 
-                       FontAttributes="Bold" 
-                       MaxLines="1" 
+                <Label Text="{Binding Player.CurrentTrack.Title}"
+                       TextColor="White"
+                       FontSize="24"
+                       FontAttributes="Bold"
+                       MaxLines="1"
                        LineBreakMode="TailTruncation" />
-                <Label Text="{Binding Player.CurrentTrack.Uploader}" 
-                       TextColor="#B3B3B3" 
-                       FontSize="16" 
-                       MaxLines="1" 
+                <Label Text="{Binding Player.CurrentTrack.Uploader}"
+                       TextColor="#B3B3B3"
+                       FontSize="16"
+                       MaxLines="1"
                        LineBreakMode="TailTruncation" />
             </StackLayout>
             <ImageButton Grid.Column="1" 

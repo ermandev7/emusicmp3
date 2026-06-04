@@ -4,7 +4,6 @@ using CommunityToolkit.Mvvm.ComponentModel;
 using CommunityToolkit.Mvvm.Input;
 using eMusicApp.Models;
 using eMusicApp.Services;
-using System.Collections.Generic;
 
 namespace eMusicApp.ViewModels
 {
@@ -40,29 +39,22 @@ namespace eMusicApp.ViewModels
         private ObservableCollection<Track> _likedSongs;
 
         [ObservableProperty]
-        private ObservableCollection<Track> _DownloadedSongs;
-
-        [ObservableProperty]
-        private ObservableCollection<Playlist> _playlists = new ObservableCollection<Playlist>();
+        private ObservableCollection<Track> _downloadedSongs;
 
         [ObservableProperty]
         [NotifyPropertyChangedFor(nameof(ShowFavorites))]
         [NotifyPropertyChangedFor(nameof(ShowDownloads))]
-        [NotifyPropertyChangedFor(nameof(ShowPlaylists))]
         [NotifyPropertyChangedFor(nameof(HasNoFavorites))]
         [NotifyPropertyChangedFor(nameof(HasNoDownloads))]
-        [NotifyPropertyChangedFor(nameof(HasNoPlaylists))]
         private string _selectedTab = "Favoritos";
 
         public bool ShowFavorites => SelectedTab == "Favoritos";
         public bool ShowDownloads => SelectedTab == "Descargas";
-        public bool ShowPlaylists => SelectedTab == "Playlists";
 
         [ObservableProperty]
         [NotifyPropertyChangedFor(nameof(IsDownloading))]
         private string _downloadingId = string.Empty;
 
-        // 0.0-1.0 para ProgressBar; texto calculado con DownloadProgressText
         [ObservableProperty]
         [NotifyPropertyChangedFor(nameof(DownloadProgressText))]
         private double _downloadProgress;
@@ -70,14 +62,14 @@ namespace eMusicApp.ViewModels
         public string DownloadProgressText => $"Descargando... {(int)(DownloadProgress * 100)}%";
         public bool IsDownloading => !string.IsNullOrEmpty(DownloadingId);
 
-        public bool HasNoFavorites  => ShowFavorites && !IsBusy && LikedSongs.Count == 0;
-        public bool HasFavorites    => LikedSongs.Count > 0;
-        public bool HasNoDownloads  => ShowDownloads && DownloadedSongs.Count == 0;
-        public bool HasDownloads    => DownloadedSongs.Count > 0;
-        public bool HasNoPlaylists  => ShowPlaylists && !IsBusy && Playlists.Count == 0;
+        public bool HasNoFavorites => ShowFavorites && !IsBusy && LikedSongs.Count == 0;
+        public bool HasNoDownloads => ShowDownloads && DownloadedSongs.Count == 0;
+
+        [ObservableProperty]
+        private bool _isBusy;
 
         [RelayCommand]
-        private async Task SetTab(string tab)
+        private void SetTab(string tab)
         {
             SelectedTab = tab;
             if (tab == "Descargas")
@@ -85,34 +77,19 @@ namespace eMusicApp.ViewModels
                 LoadDownloadedSongs();
                 Player.SetQueue(DownloadedSongs);
             }
-            else if (tab == "Playlists")
-            {
-                await LoadPlaylistsInternalAsync();
-            }
             else
             {
                 Player.SetQueue(LikedSongs);
             }
         }
 
-        [ObservableProperty]
-        private bool _isBusy;
-
         [RelayCommand]
         private async Task LoadLibraryAsync()
         {
             IsBusy = true;
-            
-            // Liked songs skeleton
-            LikedSongs.Clear();
-            for(int i=0; i<4; i++) LikedSongs.Add(new Track()); 
 
             var favs = await _apiService.GetFavoritesAsync();
-            
-            LikedSongs.Clear();
-            foreach (var f in favs)
-                LikedSongs.Add(f);
-
+            LikedSongs = new ObservableCollection<Track>(favs);
             OnPropertyChanged(nameof(HasNoFavorites));
 
             LoadDownloadedSongs();
@@ -131,48 +108,15 @@ namespace eMusicApp.ViewModels
             if (track == null || string.IsNullOrEmpty(track.Id)) return;
             await _apiService.RemoveFavoriteAsync(track.Id);
             LikedSongs.Remove(track);
-        }
-
-        [RelayCommand]
-        private async Task DownloadTrackAsync(Track track)
-        {
-            if (track == null) return;
-
-            string streamUrl = track.Url;
-            if (string.IsNullOrEmpty(streamUrl) || !streamUrl.StartsWith("http") || streamUrl.Contains("youtube.com") || streamUrl.Contains("watch?v="))
-            {
-                var streamInfo = await _apiService.GetStreamAsync(track.VideoId);
-                if (streamInfo != null && streamInfo.AudioStreams != null && streamInfo.AudioStreams.Count > 0)
-                {
-                    streamUrl = streamInfo.AudioStreams[0].Url;
-                }
-            }
-
-            if (string.IsNullOrEmpty(streamUrl) || !streamUrl.StartsWith("http")) return;
-
-            bool success = await DownloadManager.DownloadTrackAsync(
-                track.VideoId, 
-                streamUrl, 
-                track.Title, 
-                track.Uploader, 
-                track.ThumbnailUrl
-            );
-
-            if (success)
-            {
-                LoadDownloadedSongs();
-            }
+            OnPropertyChanged(nameof(HasNoFavorites));
         }
 
         [RelayCommand]
         private void DeleteDownload(Track track)
         {
             if (track == null) return;
-            bool deleted = DownloadManager.DeleteTrack(track.VideoId);
-            if (deleted)
-            {
+            if (DownloadManager.DeleteTrack(track.VideoId))
                 LoadDownloadedSongs();
-            }
         }
 
         public void LoadDownloadedSongs()
@@ -192,44 +136,6 @@ namespace eMusicApp.ViewModels
                 });
             }
             OnPropertyChanged(nameof(HasNoDownloads));
-        }
-
-        public bool IsTrackDownloaded(string videoId)
-        {
-            return DownloadManager.IsTrackDownloaded(videoId);
-        }
-
-        private async Task LoadPlaylistsInternalAsync()
-        {
-            IsBusy = true;
-            var lists = await _apiService.GetPlaylistsAsync();
-            Playlists.Clear();
-            foreach (var p in lists) Playlists.Add(p);
-            OnPropertyChanged(nameof(HasNoPlaylists));
-            IsBusy = false;
-        }
-
-        public void NotifyPlaylistsChanged() => OnPropertyChanged(nameof(HasNoPlaylists));
-
-        [RelayCommand]
-        public async Task CreatePlaylist(string name)
-        {
-            if (string.IsNullOrWhiteSpace(name)) return;
-            var playlist = await _apiService.CreatePlaylistAsync(name);
-            if (playlist != null)
-            {
-                Playlists.Insert(0, playlist);
-                OnPropertyChanged(nameof(HasNoPlaylists));
-            }
-        }
-
-        [RelayCommand]
-        public async Task DeletePlaylist(Playlist playlist)
-        {
-            if (playlist == null) return;
-            await _apiService.DeletePlaylistAsync(playlist.Id);
-            Playlists.Remove(playlist);
-            OnPropertyChanged(nameof(HasNoPlaylists));
         }
     }
 }

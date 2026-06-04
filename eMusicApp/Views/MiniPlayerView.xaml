@@ -40,7 +40,12 @@
                            TextColor="#B3B3B3"
                            FontSize="12"
                            MaxLines="1"
-                           LineBreakMode="TailTruncation" />
+                           LineBreakMode="TailTruncation"
+                           IsVisible="{Binding Player.ShowPlayButton}" />
+                    <Label Text="Cargando..."
+                           TextColor="#1DB954"
+                           FontSize="12"
+                           IsVisible="{Binding Player.ShowLoadingSpinner}" />
                 </StackLayout>
 
                 <!-- Spinner de buffering / Play-Pause -->

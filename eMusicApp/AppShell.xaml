@@ -13,13 +13,13 @@
     Shell.TabBarUnselectedColor="#B3B3B3">
 
     <TabBar>
-        <Tab Title="Home" Icon="home.png">
+        <Tab Title="Inicio" Icon="home.png">
             <ShellContent ContentTemplate="{DataTemplate views:HomePage}" Route="HomePage" />
         </Tab>
-        <Tab Title="Search" Icon="search.png">
+        <Tab Title="Buscar" Icon="search.png">
             <ShellContent ContentTemplate="{DataTemplate views:SearchPage}" Route="SearchPage" />
         </Tab>
-        <Tab Title="Library" Icon="library_music.png">
+        <Tab Title="Biblioteca" Icon="library_music.png">
             <ShellContent ContentTemplate="{DataTemplate views:LibraryPage}" Route="LibraryPage" />
         </Tab>
     </TabBar>

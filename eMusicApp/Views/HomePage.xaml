@@ -6,82 +6,94 @@
              xmlns:views="clr-namespace:eMusicApp.Views"
              xmlns:skeleton="clr-namespace:Maui.Skeleton;assembly=Maui.Skeleton"
              x:Class="eMusicApp.Views.HomePage"
-             Title="Home"
+             Title="Inicio"
              BackgroundColor="#121212">
 
-    <Grid RowDefinitions="*, Auto">
+    <RefreshView Command="{Binding LoadRecentTracksCommand}"
+                 IsRefreshing="{Binding IsBusy}"
+                 RefreshColor="#1DB954">
 
-        <!-- CollectionView principal: trending en header + historial en grid 2 col -->
-        <CollectionView Grid.Row="0"
-                        ItemsSource="{Binding RecentTracks}"
-                        SelectionMode="None"
-                        Margin="10,0"
-                        skeleton:Skeleton.IsParent="True"
-                        skeleton:Skeleton.IsBusy="{Binding IsBusy}">
+        <Grid RowDefinitions="*, Auto">
 
-            <CollectionView.Header>
-                <Label Text="Escuchados Recientemente"
-                       IsVisible="{Binding HasHistory}"
-                       TextColor="White" FontSize="22" FontAttributes="Bold"
-                       Margin="6,20,6,12" />
-            </CollectionView.Header>
+            <CollectionView Grid.Row="0"
+                            ItemsSource="{Binding RecentTracks}"
+                            SelectionMode="None"
+                            Margin="10,0"
+                            skeleton:Skeleton.IsParent="True"
+                            skeleton:Skeleton.IsBusy="{Binding IsBusy}">
 
-            <!-- Empty state cuando no hay historial -->
-            <CollectionView.EmptyView>
-                <StackLayout IsVisible="{Binding HasNoHistory}"
-                             VerticalOptions="Center" HorizontalOptions="Center"
-                             Spacing="12" Padding="40,20">
-                    <Label Text="&#x266A;" FontSize="48" HorizontalOptions="Center" TextColor="#535353" />
-                    <Label Text="Sin historial aún"
-                           TextColor="#B3B3B3" FontSize="18" FontAttributes="Bold"
-                           HorizontalOptions="Center" />
-                    <Label Text="Busca una canción y empieza a escuchar"
-                           TextColor="#535353" FontSize="14"
-                           HorizontalOptions="Center" HorizontalTextAlignment="Center" />
-                </StackLayout>
-            </CollectionView.EmptyView>
+                <CollectionView.Header>
+                    <StackLayout Spacing="4" Margin="6,20,6,16">
+                        <Label Text="{Binding Greeting}"
+                               TextColor="White" FontSize="26" FontAttributes="Bold" />
+                        <Label Text="Escuchados Recientemente"
+                               IsVisible="{Binding HasHistory}"
+                               TextColor="#B3B3B3" FontSize="14"
+                               Margin="0,8,0,0" />
+                    </StackLayout>
+                </CollectionView.Header>
 
-            <CollectionView.ItemsLayout>
-                <GridItemsLayout Orientation="Vertical" Span="2"
-                                 HorizontalItemSpacing="10" VerticalItemSpacing="10" />
-            </CollectionView.ItemsLayout>
+                <CollectionView.EmptyView>
+                    <StackLayout IsVisible="{Binding HasNoHistory}"
+                                 VerticalOptions="Center" HorizontalOptions="Center"
+                                 Spacing="12" Padding="40,20">
+                        <Label Text="&#x266A;" FontSize="48" HorizontalOptions="Center" TextColor="#535353" />
+                        <Label Text="Sin historial aun"
+                               TextColor="#B3B3B3" FontSize="18" FontAttributes="Bold"
+                               HorizontalOptions="Center" />
+                        <Label Text="Busca una cancion y empieza a escuchar"
+                               TextColor="#535353" FontSize="14"
+                               HorizontalOptions="Center" HorizontalTextAlignment="Center" />
+                    </StackLayout>
+                </CollectionView.EmptyView>
 
-            <CollectionView.ItemTemplate>
-                <DataTemplate x:DataType="models:Track">
-                    <Grid>
-                        <Grid.GestureRecognizers>
-                            <TapGestureRecognizer
-                                Command="{Binding Source={RelativeSource AncestorType={x:Type vm:HomeViewModel}}, Path=Player.PlayTrackCommand}"
-                                CommandParameter="{Binding .}" />
-                        </Grid.GestureRecognizers>
+                <CollectionView.ItemsLayout>
+                    <GridItemsLayout Orientation="Vertical" Span="2"
+                                     HorizontalItemSpacing="10" VerticalItemSpacing="10" />
+                </CollectionView.ItemsLayout>
 
-                        <Border StrokeThickness="0"
-                                StrokeShape="RoundRectangle 8"
-                                BackgroundColor="#282828"
-                                HeightRequest="60">
-                            <Grid ColumnDefinitions="60, *">
-                                <Border Grid.Column="0"
-                                        StrokeThickness="0"
-                                        StrokeShape="RoundRectangle 8 0 0 8"
-                                        skeleton:Skeleton.IsBusy="{Binding Source={RelativeSource AncestorType={x:Type vm:HomeViewModel}}, Path=IsBusy}"
-                                        skeleton:Skeleton.BackgroundColor="#3E3E3E">
-                                    <Image Source="{Binding ThumbnailUrl}" Aspect="AspectFill" />
-                                </Border>
+                <CollectionView.ItemTemplate>
+                    <DataTemplate x:DataType="models:Track">
+                        <Grid>
+                            <Grid.GestureRecognizers>
+                                <TapGestureRecognizer
+                                    Command="{Binding Source={RelativeSource AncestorType={x:Type vm:HomeViewModel}}, Path=Player.PlayTrackCommand}"
+                                    CommandParameter="{Binding .}" />
+                            </Grid.GestureRecognizers>
 
-                                <Label Grid.Column="1"
-                                       Text="{Binding Title}"
-                                       TextColor="White" FontAttributes="Bold" FontSize="12"
-                                       VerticalOptions="Center" Margin="10,0,6,0"
-                                       MaxLines="2" LineBreakMode="TailTruncation"
-                                       skeleton:Skeleton.IsBusy="{Binding Source={RelativeSource AncestorType={x:Type vm:HomeViewModel}}, Path=IsBusy}"
-                                       skeleton:Skeleton.BackgroundColor="#3E3E3E" />
-                            </Grid>
-                        </Border>
-                    </Grid>
-                </DataTemplate>
-            </CollectionView.ItemTemplate>
-        </CollectionView>
+                            <Border StrokeThickness="0"
+                                    StrokeShape="RoundRectangle 8"
+                                    BackgroundColor="#282828"
+                                    HeightRequest="64">
+                                <Grid ColumnDefinitions="64, *">
+                                    <Border Grid.Column="0"
+                                            StrokeThickness="0"
+                                            StrokeShape="RoundRectangle 8 0 0 8"
+                                            skeleton:Skeleton.IsBusy="{Binding Source={RelativeSource AncestorType={x:Type vm:HomeViewModel}}, Path=IsBusy}"
+                                            skeleton:Skeleton.BackgroundColor="#3E3E3E">
+                                        <Image Source="{Binding ThumbnailUrl}" Aspect="AspectFill" />
+                                    </Border>
 
-        <views:MiniPlayerView Grid.Row="1" />
-    </Grid>
+                                    <StackLayout Grid.Column="1" VerticalOptions="Center"
+                                                 Spacing="1" Margin="10,0,6,0">
+                                        <Label Text="{Binding Title}"
+                                               TextColor="White" FontAttributes="Bold" FontSize="12"
+                                               MaxLines="1" LineBreakMode="TailTruncation"
+                                               skeleton:Skeleton.IsBusy="{Binding Source={RelativeSource AncestorType={x:Type vm:HomeViewModel}}, Path=IsBusy}"
+                                               skeleton:Skeleton.BackgroundColor="#3E3E3E" />
+                                        <Label Text="{Binding Uploader}"
+                                               TextColor="#808080" FontSize="10"
+                                               MaxLines="1" LineBreakMode="TailTruncation" />
+                                    </StackLayout>
+                                </Grid>
+                            </Border>
+                        </Grid>
+                    </DataTemplate>
+                </CollectionView.ItemTemplate>
+            </CollectionView>
+
+            <views:MiniPlayerView Grid.Row="1" />
+        </Grid>
+
+    </RefreshView>
 </ContentPage>

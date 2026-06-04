@@ -174,15 +174,15 @@
                                        skeleton:Skeleton.BackgroundColor="#3E3E3E" />
                             </StackLayout>
 
-                            <!-- Añadir a playlist -->
-                            <Button Grid.Column="2"
-                                    Text="+"
-                                    TextColor="#B3B3B3" FontSize="22"
-                                    BackgroundColor="Transparent" BorderColor="Transparent"
-                                    WidthRequest="40" HeightRequest="40" Padding="0"
-                                    VerticalOptions="Center"
-                                    CommandParameter="{Binding .}"
-                                    Clicked="OnAddToPlaylistClicked" />
+                            <!-- Agregar a favoritos -->
+                            <ImageButton Grid.Column="2"
+                                         Source="heart_outline.png"
+                                         BackgroundColor="Transparent"
+                                         WidthRequest="30" HeightRequest="30"
+                                         Padding="5"
+                                         VerticalOptions="Center"
+                                         Command="{Binding Source={RelativeSource AncestorType={x:Type vm:SearchViewModel}}, Path=ToggleFavoriteCommand}"
+                                         CommandParameter="{Binding .}" />
                         </Grid>
                     </Grid>
                 </DataTemplate>

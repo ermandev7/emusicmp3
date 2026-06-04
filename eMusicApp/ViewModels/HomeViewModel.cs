@@ -69,6 +69,17 @@ namespace eMusicApp.ViewModels
                 MainThread.BeginInvokeOnMainThread(async () => await Player.PreviousTrackCommand.ExecuteAsync(null));
         }
 
+        public string Greeting
+        {
+            get
+            {
+                int hour = DateTime.Now.Hour;
+                if (hour < 12) return "Buenos dias";
+                if (hour < 19) return "Buenas tardes";
+                return "Buenas noches";
+            }
+        }
+
         [ObservableProperty]
         private ObservableCollection<Track> _recentTracks;
 

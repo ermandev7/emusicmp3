@@ -74,6 +74,8 @@ namespace eMusicApp.ViewModels
             {
                 MainThread.BeginInvokeOnMainThread(() =>
                 {
+                    // No dejar que el nativo quite el buffering mientras estamos obteniendo la URL
+                    if (_isFetchingStream && !isBuffering) return;
                     IsBuffering = isBuffering;
                 });
             };
@@ -189,7 +191,8 @@ namespace eMusicApp.ViewModels
             }
             CurrentTrack = track;
             IsPlaying = true;
-            IsBuffering = false;
+            // No forzar IsBuffering=false aquí; dejar que el nativo lo reporte
+            // cuando realmente empiece a sonar (STATE_READY)
             Position = 0;
             IsFavorite = false; // reset optimista; se corrige con la llamada al API
             if (!string.IsNullOrEmpty(track.VideoId))
@@ -206,6 +209,9 @@ namespace eMusicApp.ViewModels
 
         [ObservableProperty]
         private bool _isDraggingSlider;
+
+        // Flag: estamos obteniendo la URL del stream → no dejar que el nativo quite IsBuffering
+        private bool _isFetchingStream;
 
         [ObservableProperty]
         [NotifyPropertyChangedFor(nameof(PlayPauseIcon))]
@@ -381,48 +387,57 @@ namespace eMusicApp.ViewModels
             
             CurrentTrack = track;
             IsPlaying = true;
-            IsBuffering = true; // Mostrar spinner mientras se obtiene la URL
-            IsFavorite = false; // Se restablece; se puede verificar contra API si se quiere
+            IsBuffering = true;
+            _isFetchingStream = true; // Bloquear que el nativo quite IsBuffering
+            IsFavorite = false;
             Position = 0;
             Duration = 0;
             if (!string.IsNullOrEmpty(track.VideoId))
                 _playedIds.Add(track.VideoId);
-            
-            // Try playing local downloaded file first
-            DownloadManager.Initialize();
-            string? localPath = DownloadManager.GetLocalPath(track.VideoId);
-            if (!string.IsNullOrEmpty(localPath))
-            {
-                NativeAudioController.RequestPlay(localPath, track.Title, track.Uploader, track.ThumbnailUrl, track.VideoId);
-                return;
-            }
 
-            // Otherwise, get stream URL
-            string streamUrl = track.Url;
-            if (string.IsNullOrEmpty(streamUrl) || !streamUrl.StartsWith("http") || streamUrl.Contains("youtube.com") || streamUrl.Contains("watch?v="))
+            try
             {
-                var streamInfo = await _apiService.GetStreamAsync(track.VideoId);
-                if (streamInfo != null && streamInfo.AudioStreams != null && streamInfo.AudioStreams.Count > 0)
+                // Try playing local downloaded file first
+                DownloadManager.Initialize();
+                string? localPath = DownloadManager.GetLocalPath(track.VideoId);
+                if (!string.IsNullOrEmpty(localPath))
                 {
-                    streamUrl = streamInfo.AudioStreams.OrderByDescending(s => s.Bitrate).First().Url;
+                    NativeAudioController.RequestPlay(localPath, track.Title, track.Uploader, track.ThumbnailUrl, track.VideoId);
+                    return;
+                }
+
+                // Otherwise, get stream URL
+                string streamUrl = track.Url;
+                if (string.IsNullOrEmpty(streamUrl) || !streamUrl.StartsWith("http") || streamUrl.Contains("youtube.com") || streamUrl.Contains("watch?v="))
+                {
+                    var streamInfo = await _apiService.GetStreamAsync(track.VideoId);
+                    if (streamInfo != null && streamInfo.AudioStreams != null && streamInfo.AudioStreams.Count > 0)
+                    {
+                        streamUrl = streamInfo.AudioStreams.OrderByDescending(s => s.Bitrate).First().Url;
+                    }
+                }
+
+                if (!string.IsNullOrEmpty(streamUrl) && streamUrl.StartsWith("http") && !streamUrl.Contains("watch?v="))
+                {
+                    NativeAudioController.RequestPlay(streamUrl, track.Title, track.Uploader, track.ThumbnailUrl, track.VideoId);
+                }
+                else
+                {
+                    IsPlaying = false;
+                    IsBuffering = false;
+                    MainThread.BeginInvokeOnMainThread(async () =>
+                    {
+                        if (Application.Current?.MainPage != null)
+                        {
+                            await Application.Current.MainPage.DisplayAlert("Stream no disponible", "Los servidores de extracción han bloqueado temporalmente esta canción por copyright. Intenta con otra.", "OK");
+                        }
+                        await NextTrack();
+                    });
                 }
             }
-
-            if (!string.IsNullOrEmpty(streamUrl) && streamUrl.StartsWith("http") && !streamUrl.Contains("watch?v="))
+            finally
             {
-                NativeAudioController.RequestPlay(streamUrl, track.Title, track.Uploader, track.ThumbnailUrl, track.VideoId);
-            }
-            else
-            {
-                IsPlaying = false;
-                MainThread.BeginInvokeOnMainThread(async () =>
-                {
-                    if (Application.Current?.MainPage != null)
-                    {
-                        await Application.Current.MainPage.DisplayAlert("Stream no disponible", "Los servidores de extracción han bloqueado temporalmente esta canción por copyright. Intenta con otra.", "OK");
-                    }
-                    await NextTrack(); // Saltar a la siguiente si esta falla
-                });
+                _isFetchingStream = false;
             }
         }
 

@@ -379,9 +379,14 @@ namespace eMusicApp.Platforms.Android
 
             if (_player.PlayerError != null)
             {
+                System.Diagnostics.Debug.WriteLine($"[Player] ExoPlayer error: {_player.PlayerError.Message}");
                 NativeAudioController.ReportPlaybackState(false);
-                NativeAudioController.ReportTrackEnded();
                 _player.ClearMediaItems();
+                // Intentar continuar con la siguiente canción si hay cola
+                if (!_isFetchingNext && _nativeQueue.Count > 0)
+                    _ = FetchNextTrackNativelyAsync();
+                else if (!_isFetchingNext && !string.IsNullOrEmpty(_currentMediaId))
+                    _ = AutoContinuePlaybackAsync();
             }
         }
 
@@ -540,8 +545,7 @@ namespace eMusicApp.Platforms.Android
                 if (combined.Contains(kv.Key))
                 {
                     genre = kv.Key;
-                    var rng = new Random();
-                    queries.AddRange(kv.Value.OrderBy(_ => rng.Next()).Take(2));
+                    queries.AddRange(kv.Value.OrderBy(_ => Random.Shared.Next()).Take(2));
                     break;
                 }
             }
@@ -583,7 +587,12 @@ namespace eMusicApp.Platforms.Android
             {
                 var url = urlEl.GetString() ?? "";
                 var idx = url.IndexOf("?v=");
-                if (idx >= 0) return url.Substring(idx + 3);
+                if (idx >= 0)
+                {
+                    var id = url.Substring(idx + 3);
+                    var ampIdx = id.IndexOf('&');
+                    return ampIdx >= 0 ? id.Substring(0, ampIdx) : id;
+                }
             }
             return null;
         }

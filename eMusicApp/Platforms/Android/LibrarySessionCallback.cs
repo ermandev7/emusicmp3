@@ -20,7 +20,7 @@ namespace eMusicApp.Platforms.Android
     {
         private static readonly HttpClient _http = new HttpClient
         {
-            Timeout = System.TimeSpan.FromSeconds(20)
+            Timeout = System.TimeSpan.FromSeconds(15) // Cada llamada API tarda ~5-7s, y hacemos 2 secuenciales
         };
 
         // ── Aceptar conexiones de Android Auto y otros controladores ──
@@ -60,17 +60,35 @@ namespace eMusicApp.Platforms.Android
 
         public IListenableFuture OnPlaybackResumption(MediaSession mediaSession, MediaSession.ControllerInfo controller)
         {
-            // Devolver la canción actual si hay una, para que Android Auto pueda reanudar
-            return CreateAsyncFuture(async () =>
+            // Capturar datos del player en el main thread ANTES de ir a background
+            MediaItem? currentItem = null;
+            int currentIndex = 0;
+            long currentPosition = 0;
+            try
             {
                 var player = mediaSession.Player;
                 if (player?.CurrentMediaItem != null)
                 {
-                    var list = new List<MediaItem> { player.CurrentMediaItem };
-                    return new MediaSession.MediaItemsWithStartPosition(
-                        list, player.CurrentMediaItemIndex, player.CurrentPosition);
+                    currentItem = player.CurrentMediaItem;
+                    currentIndex = player.CurrentMediaItemIndex;
+                    currentPosition = player.CurrentPosition;
                 }
-                // Sin canción actual — buscar algo popular como fallback
+            }
+            catch (System.Exception ex)
+            {
+                System.Diagnostics.Debug.WriteLine($"[SessionCallback] Error reading player state: {ex.Message}");
+            }
+
+            if (currentItem != null)
+            {
+                var list = new List<MediaItem> { currentItem };
+                return CreateImmediateFuture(new MediaSession.MediaItemsWithStartPosition(
+                    list, currentIndex, currentPosition));
+            }
+
+            // Sin canción actual — buscar algo popular como fallback (en background)
+            return CreateAsyncFuture(async () =>
+            {
                 var track = await SearchAndResolveAsync("música popular mix");
                 if (track != null)
                 {
@@ -148,8 +166,24 @@ namespace eMusicApp.Platforms.Android
                 }
 
                 System.Diagnostics.Debug.WriteLine($"[SessionCallback] Resolved {resolved.Count} items");
+                // Media3 espera IList<MediaItem> — usar List<MediaItem> directamente
+                // wrapeado en Java.Util.ArrayList para compatibilidad con IListenableFuture
                 var javaList = new Java.Util.ArrayList();
                 foreach (var r in resolved) javaList.Add(r);
+
+                // Si no se resolvió nada, intentar fallback con el texto completo del primer item
+                if (resolved.Count == 0 && mediaItems.Count > 0)
+                {
+                    System.Diagnostics.Debug.WriteLine("[SessionCallback] All items failed, trying generic fallback");
+                    var fallback = await SearchAndResolveAsync("música popular");
+                    if (fallback != null)
+                    {
+                        javaList.Add(BuildResolvedItem(
+                            fallback.Value.videoId, fallback.Value.title,
+                            fallback.Value.artist, fallback.Value.thumb, fallback.Value.streamUrl));
+                    }
+                }
+
                 return (Java.Lang.Object)javaList;
             });
         }
@@ -160,22 +194,55 @@ namespace eMusicApp.Platforms.Android
         /// </summary>
         private static string? GetSearchQuery(MediaItem item)
         {
+            // Intento 1: JNI — acceder a requestMetadata.searchQuery
             try
             {
                 var itemClass = Java.Lang.Class.FromType(typeof(MediaItem));
                 var field = itemClass.GetField("requestMetadata");
                 var reqMeta = field?.Get(item);
-                if (reqMeta == null) return null;
-
-                var reqMetaClass = reqMeta.Class;
-                var searchField = reqMetaClass.GetField("searchQuery");
-                var searchQuery = searchField?.Get(reqMeta)?.ToString();
-                return string.IsNullOrEmpty(searchQuery) ? null : searchQuery;
+                if (reqMeta != null)
+                {
+                    var reqMetaClass = reqMeta.Class;
+                    var searchField = reqMetaClass.GetField("searchQuery");
+                    var searchQuery = searchField?.Get(reqMeta)?.ToString();
+                    if (!string.IsNullOrEmpty(searchQuery))
+                    {
+                        System.Diagnostics.Debug.WriteLine($"[SessionCallback] JNI searchQuery: '{searchQuery}'");
+                        return searchQuery;
+                    }
+                }
             }
-            catch
+            catch (System.Exception ex)
             {
-                return null;
+                System.Diagnostics.Debug.WriteLine($"[SessionCallback] JNI failed: {ex.Message}");
             }
+
+            // Intento 2: título del metadata como query de búsqueda
+            try
+            {
+                var title = item.MediaMetadata?.Title?.ToString();
+                if (!string.IsNullOrEmpty(title))
+                {
+                    System.Diagnostics.Debug.WriteLine($"[SessionCallback] Using metadata title as query: '{title}'");
+                    return title;
+                }
+            }
+            catch { }
+
+            // Intento 3: mediaId como query (a veces contiene el nombre de la canción)
+            try
+            {
+                var mediaId = item.MediaId;
+                if (!string.IsNullOrEmpty(mediaId) && mediaId.Length > 15)
+                {
+                    // Solo si parece texto, no un videoId corto
+                    System.Diagnostics.Debug.WriteLine($"[SessionCallback] Using mediaId as query: '{mediaId}'");
+                    return mediaId;
+                }
+            }
+            catch { }
+
+            return null;
         }
 
         // ── Future helpers ──
@@ -211,8 +278,24 @@ namespace eMusicApp.Platforms.Android
                 {
                     try
                     {
-                        var result = await _func();
-                        completer.Set(result);
+                        // Timeout global de 25s — la API tarda ~5-7s por llamada, hacemos 2 secuenciales
+                        using var cts = new System.Threading.CancellationTokenSource(System.TimeSpan.FromSeconds(25));
+                        var task = _func();
+                        var completed = await Task.WhenAny(task, Task.Delay(-1, cts.Token));
+                        if (completed == task)
+                        {
+                            completer.Set(await task);
+                        }
+                        else
+                        {
+                            System.Diagnostics.Debug.WriteLine("[SessionCallback] Global timeout (25s) reached");
+                            completer.Set(new Java.Util.ArrayList());
+                        }
+                    }
+                    catch (System.OperationCanceledException)
+                    {
+                        System.Diagnostics.Debug.WriteLine("[SessionCallback] Operation cancelled (timeout)");
+                        completer.Set(new Java.Util.ArrayList());
                     }
                     catch (System.Exception ex)
                     {
@@ -238,16 +321,22 @@ namespace eMusicApp.Platforms.Android
 
         private static async Task<List<(string videoId, string title, string artist, string thumb)>> SearchTracksAsync(string query)
         {
-            var url = $"{AppConstants.ApiBaseUrl}/search?q={System.Uri.EscapeDataString(query)}";
-            var json = await _http.GetStringAsync(url);
             var result = new List<(string, string, string, string)>();
             try
             {
+                var url = $"{AppConstants.ApiBaseUrl}/search?q={System.Uri.EscapeDataString(query)}";
+                System.Diagnostics.Debug.WriteLine($"[SessionCallback] Searching: {url}");
+                var json = await _http.GetStringAsync(url);
+
                 using var doc = JsonDocument.Parse(json);
                 JsonElement items;
                 if (doc.RootElement.TryGetProperty("items", out items)) { }
                 else if (doc.RootElement.ValueKind == JsonValueKind.Array) items = doc.RootElement;
-                else return result;
+                else
+                {
+                    System.Diagnostics.Debug.WriteLine("[SessionCallback] Search response has no 'items' and is not array");
+                    return result;
+                }
 
                 foreach (var el in items.EnumerateArray())
                 {
@@ -265,8 +354,12 @@ namespace eMusicApp.Platforms.Android
                               : el.TryGetProperty("thumbnail", out var thp2) ? thp2.GetString() ?? "" : "";
                     result.Add((vid, title, artist, thumb));
                 }
+                System.Diagnostics.Debug.WriteLine($"[SessionCallback] Search found {result.Count} tracks");
             }
-            catch { }
+            catch (System.Exception ex)
+            {
+                System.Diagnostics.Debug.WriteLine($"[SessionCallback] Search error for '{query}': {ex.Message}");
+            }
             return result;
         }
 
@@ -324,7 +417,12 @@ namespace eMusicApp.Platforms.Android
             {
                 var u = urlP.GetString() ?? "";
                 var idx = u.IndexOf("?v=");
-                if (idx >= 0) return u.Substring(idx + 3);
+                if (idx >= 0)
+                {
+                    var id = u.Substring(idx + 3);
+                    var ampIdx = id.IndexOf('&');
+                    return ampIdx >= 0 ? id.Substring(0, ampIdx) : id;
+                }
             }
             return null;
         }

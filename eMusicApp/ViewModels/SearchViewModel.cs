@@ -77,8 +77,6 @@ namespace eMusicApp.ViewModels
             OnPropertyChanged(nameof(HasNoRecentQueries));
         }
 
-        private System.Threading.CancellationTokenSource _searchCts;
-
         [ObservableProperty]
         [NotifyPropertyChangedFor(nameof(HasNoResults))]
         private bool _isBusy;
@@ -100,8 +98,10 @@ namespace eMusicApp.ViewModels
 
             var results = await _apiService.SearchTracksAsync(SearchQuery);
 
-            SearchResults = new ObservableCollection<Track>(results);
-            Player.SetQueue(SearchResults);
+            SearchResults.Clear();
+            foreach (var t in results)
+                SearchResults.Add(t);
+            Player.SetQueue(results);
 
             SaveRecentQuery(SearchQuery.Trim());
 
@@ -111,11 +111,5 @@ namespace eMusicApp.ViewModels
             OnPropertyChanged(nameof(ShowInitialPrompt));
         }
 
-        [RelayCommand]
-        private async Task ToggleFavorite(Track track)
-        {
-            if (track == null || string.IsNullOrEmpty(track.Title)) return;
-            await _apiService.AddFavoriteAsync(track);
-        }
     }
 }

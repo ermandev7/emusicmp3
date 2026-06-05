@@ -66,7 +66,8 @@ namespace eMusicApp.ViewModels
             {
                 MainThread.BeginInvokeOnMainThread(async () =>
                 {
-                    await NextTrack();
+                    try { await NextTrack(); }
+                    catch (Exception ex) { System.Diagnostics.Debug.WriteLine($"[Player] OnTrackEnded error: {ex.Message}"); }
                 });
             };
 
@@ -94,9 +95,16 @@ namespace eMusicApp.ViewModels
 
         private async Task UpdateDominantColorAsync(string imageUrl)
         {
-            var color = await _colorService!.GetDominantColorAsync(imageUrl);
-            if (color != null)
-                MainThread.BeginInvokeOnMainThread(() => DominantColor = color);
+            try
+            {
+                var color = await _colorService?.GetDominantColorAsync(imageUrl);
+                if (color != null)
+                    MainThread.BeginInvokeOnMainThread(() => DominantColor = color);
+            }
+            catch (Exception ex)
+            {
+                System.Diagnostics.Debug.WriteLine($"[Player] Error getting dominant color: {ex.Message}");
+            }
         }
 
         // ─── Modo radio por género ───
@@ -137,6 +145,7 @@ namespace eMusicApp.ViewModels
         public async Task SetSleepTimerAsync(int minutes)
         {
             _sleepCts?.Cancel();
+            _sleepCts?.Dispose();
             _sleepCts = null;
             SleepTimerText = "";
 
@@ -214,15 +223,8 @@ namespace eMusicApp.ViewModels
             // No forzar IsBuffering=false aquí; dejar que el nativo lo reporte
             // cuando realmente empiece a sonar (STATE_READY)
             Position = 0;
-            IsFavorite = false; // reset optimista; se corrige con la llamada al API
             if (!string.IsNullOrEmpty(track.VideoId))
                 MarkAsPlayed(track);
-            _ = CheckIsFavoriteAsync(track.VideoId);
-        }
-
-        private async Task CheckIsFavoriteAsync(string videoId)
-        {
-            IsFavorite = await _apiService.IsFavoriteAsync(videoId);
         }
 
         public bool HasCurrentTrack => CurrentTrack != null;
@@ -250,11 +252,7 @@ namespace eMusicApp.ViewModels
         public string PlayPauseIcon => IsPlaying ? "⏸️" : "▶️";
         public string PlayPauseImage => IsPlaying ? "pause.png" : "play.png";
 
-        [ObservableProperty]
-        [NotifyPropertyChangedFor(nameof(FavoriteIcon))]
-        private bool _isFavorite;
-
-        public string FavoriteIcon => IsFavorite ? "heart_filled.png" : "heart_outline.png";
+        // Favoritos eliminados — solo se mantiene descargas locales
 
         // ─── Shuffle ───
         [ObservableProperty]
@@ -404,16 +402,15 @@ namespace eMusicApp.ViewModels
             }
             else
             {
-                PlayQueue.Clear();
+                // Añadir al final en vez de borrar toda la cola
                 PlayQueue.Add(track);
-                _currentQueueIndex = 0;
+                _currentQueueIndex = PlayQueue.Count - 1;
             }
             
             CurrentTrack = track;
             IsPlaying = true;
             IsBuffering = true;
             _isFetchingStream = true; // Bloquear que el nativo quite IsBuffering
-            IsFavorite = false;
             Position = 0;
             Duration = 0;
             if (!string.IsNullOrEmpty(track.VideoId))
@@ -451,11 +448,13 @@ namespace eMusicApp.ViewModels
                     IsBuffering = false;
                     MainThread.BeginInvokeOnMainThread(async () =>
                     {
-                        if (Application.Current?.MainPage != null)
+                        try
                         {
-                            await Application.Current.MainPage.DisplayAlert("Stream no disponible", "Los servidores de extracción han bloqueado temporalmente esta canción por copyright. Intenta con otra.", "OK");
+                            if (Application.Current?.MainPage != null)
+                                await Application.Current.MainPage.DisplayAlert("Stream no disponible", "Los servidores de extracción han bloqueado temporalmente esta canción por copyright. Intenta con otra.", "OK");
+                            await NextTrack();
                         }
-                        await NextTrack();
+                        catch (Exception ex) { System.Diagnostics.Debug.WriteLine($"[Player] Error handling failed stream: {ex.Message}"); }
                     });
                 }
             }
@@ -637,8 +636,7 @@ namespace eMusicApp.ViewModels
             if (genre != null && _genreKeywords.TryGetValue(genre, out var genreQueries))
             {
                 // Tomar 2 queries aleatorias del género
-                var rng = new Random();
-                var shuffled = genreQueries.OrderBy(_ => rng.Next()).Take(2);
+                var shuffled = genreQueries.OrderBy(_ => _random.Next()).Take(2);
                 queries.AddRange(shuffled);
             }
 
@@ -666,8 +664,7 @@ namespace eMusicApp.ViewModels
         {
             if (_activeGenre != null && _genreKeywords.TryGetValue(_activeGenre, out var gq))
             {
-                var rng = new Random();
-                return gq.OrderBy(_ => rng.Next()).ToArray();
+                return gq.OrderBy(_ => _random.Next()).ToArray();
             }
             if (CurrentTrack != null)
                 return BuildSmartQueries(CurrentTrack.Title, CurrentTrack.Uploader);
@@ -688,8 +685,7 @@ namespace eMusicApp.ViewModels
             _currentQueueIndex = -1;
 
             // Buscar con queries aleatorias del género
-            var rng = new Random();
-            var shuffled = genreQueries.OrderBy(_ => rng.Next()).ToArray();
+            var shuffled = genreQueries.OrderBy(_ => _random.Next()).ToArray();
             var tracks = new List<Track>();
 
             foreach (var query in shuffled)
@@ -909,20 +905,5 @@ namespace eMusicApp.ViewModels
             );
         }
 
-        [RelayCommand]
-        private async Task ToggleFavorite()
-        {
-            if (CurrentTrack == null) return;
-            if (IsFavorite)
-            {
-                IsFavorite = false;
-                await _apiService.RemoveFavoriteAsync(CurrentTrack.VideoId);
-            }
-            else
-            {
-                IsFavorite = true;
-                await _apiService.AddFavoriteAsync(CurrentTrack);
-            }
-        }
     }
 }

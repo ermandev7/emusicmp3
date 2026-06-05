@@ -30,12 +30,14 @@ namespace eMusicApp
         // Notifica cuando una descarga termina (éxito o fallo)
         public static Action<string, bool>? OnDownloadCompleted { get; set; }
 
+        private static bool _initialized;
+
         public static void Initialize()
         {
+            if (_initialized) return;
+
             if (!Directory.Exists(BasePath))
-            {
                 Directory.CreateDirectory(BasePath);
-            }
 
             if (File.Exists(MetadataPath))
             {
@@ -50,6 +52,8 @@ namespace eMusicApp
                     _tracks = new List<DownloadedTrack>();
                 }
             }
+
+            _initialized = true;
         }
 
         private static void SaveMetadata()

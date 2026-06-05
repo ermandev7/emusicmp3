@@ -14,5 +14,6 @@ public class History
     public string Artist { get; set; } = string.Empty;
     public string ThumbnailUrl { get; set; } = string.Empty;
     public long Duration { get; set; }
+    public int PlayCount { get; set; } = 1;
     public DateTime PlayedAt { get; set; } = DateTime.UtcNow;
 }

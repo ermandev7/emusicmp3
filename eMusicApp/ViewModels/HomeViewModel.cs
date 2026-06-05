@@ -47,7 +47,7 @@ namespace eMusicApp.ViewModels
                     }
 
                     RecentTracks.Insert(0, newTrack);
-                    while (RecentTracks.Count > 6)
+                    while (RecentTracks.Count > 12)
                         RecentTracks.RemoveAt(RecentTracks.Count - 1);
 
                     OnPropertyChanged(nameof(HasNoHistory));
@@ -84,7 +84,7 @@ namespace eMusicApp.ViewModels
 
         // ── Géneros (radio por género) ──
         // 4 géneros fijos + hasta 4 detectados del historial = 8 max
-        private static readonly string[] _defaultGenres = { "salsa", "rock", "reggae", "balada" };
+        private static readonly string[] _defaultGenres = { "salsa", "rock", "reggae", "balada", "bachata", "merengue" };
 
         [ObservableProperty]
         private ObservableCollection<string> _genres = new(_defaultGenres);
@@ -98,28 +98,34 @@ namespace eMusicApp.ViewModels
             OnPropertyChanged(nameof(ActiveGenre));
         }
 
-        private void UpdateGenresFromHistory(IEnumerable<Track> history)
+        private async Task UpdateGenresFromApiAsync()
         {
-            // Contar géneros detectados en el historial
-            var counts = new Dictionary<string, int>();
-            foreach (var t in history)
-            {
-                var g = PlayerViewModel.DetectGenre(t.Title, t.Uploader);
-                if (g != null)
-                    counts[g] = counts.TryGetValue(g, out var c) ? c + 1 : 1;
-            }
+            var topGenres = await _apiService.GetTopGenresAsync();
 
-            // Top géneros del historial que no están en los defaults
-            var detected = counts
-                .Where(kv => !_defaultGenres.Contains(kv.Key))
-                .OrderByDescending(kv => kv.Value)
-                .Select(kv => kv.Key)
-                .Take(4)
+            // Empezar con los géneros más escuchados del API
+            var fromApi = topGenres
+                .Select(g => g.Genre)
+                .Where(g => PlayerViewModel.AvailableGenres.Contains(g))
+                .Take(12)
                 .ToList();
 
+            // Completar con defaults si no llegamos a 12
+            var result = new List<string>(fromApi);
+            foreach (var g in _defaultGenres)
+            {
+                if (result.Count >= 12) break;
+                if (!result.Contains(g)) result.Add(g);
+            }
+
+            // Rellenar con otros disponibles si aún faltan
+            foreach (var g in PlayerViewModel.AvailableGenres)
+            {
+                if (result.Count >= 12) break;
+                if (!result.Contains(g)) result.Add(g);
+            }
+
             Genres.Clear();
-            foreach (var g in _defaultGenres) Genres.Add(g);
-            foreach (var g in detected) Genres.Add(g);
+            foreach (var g in result) Genres.Add(g);
         }
 
         [ObservableProperty]
@@ -138,9 +144,9 @@ namespace eMusicApp.ViewModels
             IsBusy = true;
 
             var hist = await _apiService.GetHistoryAsync();
-            UpdateGenresFromHistory(hist);
-            // Solo mostrar los 6 más recientes en el Home
-            var recent = hist.Take(6).ToList();
+            await UpdateGenresFromApiAsync();
+            // Solo mostrar los 12 más recientes en el Home
+            var recent = hist.Take(12).ToList();
             RecentTracks = new ObservableCollection<Track>(recent);
             Player.SetQueue(new ObservableCollection<Track>(hist));
 

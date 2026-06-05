@@ -31,7 +31,10 @@ namespace eMusicApp.ViewModels
             var saved = Preferences.Default.Get(RecentQueriesKey, string.Empty);
             if (string.IsNullOrEmpty(saved)) return;
             foreach (var q in saved.Split('|'))
-                if (!string.IsNullOrEmpty(q)) RecentQueries.Add(q);
+            {
+                if (!string.IsNullOrEmpty(q) && RecentQueries.Count < MaxRecentQueries)
+                    RecentQueries.Add(q);
+            }
         }
 
         private void SaveRecentQuery(string query)

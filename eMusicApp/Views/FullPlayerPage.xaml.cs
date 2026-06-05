@@ -19,21 +19,21 @@ namespace eMusicApp.Views
 
             // Dynamic background from album art
             playerViewModel.PropertyChanged += OnPlayerPropertyChanged;
+            playerViewModel.PropertyChanged += OnSliderPropertyChanged;
             ApplyDynamicBackground(playerViewModel.DominantColor);
-
-            // MAUI Slider en Android no actualiza el thumb con OneWay bindings.
-            // Forzar la actualización directamente desde code-behind.
-            playerViewModel.PropertyChanged += (s, e) =>
-            {
-                if (e.PropertyName == nameof(PlayerViewModel.ProgressFraction) && !playerViewModel.IsDraggingSlider)
-                    AudioSlider.Value = playerViewModel.ProgressFraction;
-            };
         }
 
         protected override void OnDisappearing()
         {
             base.OnDisappearing();
             _player.PropertyChanged -= OnPlayerPropertyChanged;
+            _player.PropertyChanged -= OnSliderPropertyChanged;
+        }
+
+        private void OnSliderPropertyChanged(object? sender, PropertyChangedEventArgs e)
+        {
+            if (e.PropertyName == nameof(PlayerViewModel.ProgressFraction) && !_player.IsDraggingSlider)
+                AudioSlider.Value = _player.ProgressFraction;
         }
 
         private void OnPlayerPropertyChanged(object? sender, PropertyChangedEventArgs e)

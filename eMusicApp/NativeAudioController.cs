@@ -7,8 +7,6 @@ public static class NativeAudioController
 
     // Action that Android native code will subscribe to
     public static Action<string, string, string, string, string>? OnPlayRequested { get; set; } // url, title, artist, thumb, videoId
-    public static Action<string, string, string, string>? OnPrepareNextRequested { get; set; }
-    public static Action? OnStartCrossfadeRequested { get; set; }
     public static Action? OnPauseRequested { get; set; }
     public static Action? OnResumeRequested { get; set; }
     public static Action<int>? OnSeekRequested { get; set; }
@@ -19,10 +17,8 @@ public static class NativeAudioController
     public static Action<string, string, string, string, int>? OnTrackStarted { get; set; }
     public static Action? OnTrackEnded { get; set; }
     public static Action<string, string, string>? OnCrossfadeCompleted { get; set; }
-    public static Action<string[]>? OnNativeQueueUpdated { get; set; }
     public static Action? OnSkipToNext { get; set; }
     public static Action? OnSkipToPrevious { get; set; }
-    public static Action<string>? OnSearchRequested { get; set; }
     public static Action<bool>? OnPlaybackStateChanged { get; set; }
     public static Action<bool>? OnBufferingChanged { get; set; } // true = cargando/buffering
 
@@ -30,16 +26,6 @@ public static class NativeAudioController
     public static void RequestPlay(string url, string title, string artist, string thumb, string videoId)
     {
         OnPlayRequested?.Invoke(url, title, artist, thumb, videoId);
-    }
-
-    public static void RequestPrepareNext(string url, string title, string artist, string thumb)
-    {
-        OnPrepareNextRequested?.Invoke(url, title, artist, thumb);
-    }
-
-    public static void RequestStartCrossfade()
-    {
-        OnStartCrossfadeRequested?.Invoke();
     }
 
     public static void RequestPause()
@@ -81,11 +67,6 @@ public static class NativeAudioController
     public static void ReportCrossfadeCompleted(string title, string artist, string thumb)
     {
         OnCrossfadeCompleted?.Invoke(title, artist, thumb);
-    }
-
-    public static void ReportNativeQueueUpdated(string[] ids)
-    {
-        OnNativeQueueUpdated?.Invoke(ids);
     }
 
     public static void ReportPlaybackState(bool isPlaying)

@@ -27,6 +27,8 @@ namespace eMusicApp.ViewModels
             {
                 MainThread.BeginInvokeOnMainThread(async () =>
                 {
+                    try
+                    {
                     var newTrack = new Track
                     {
                         VideoIdFromJson = videoId,
@@ -56,19 +58,29 @@ namespace eMusicApp.ViewModels
                     // No sobreescribir la cola si el modo radio está activo o si ya hay
                     // tracks en cola (auto-avance nativo de ExoPlayer). Sobreescribir destruye
                     // los tracks que ExtendQueueWithRelatedAsync() añadió.
-                    if (!Player.IsRadioMode && Player.PlayQueue.Count <= 1)
+                    if (!Player.IsRadioMode && !Player.IsGenreRadioActive && Player.PlayQueue.Count <= 1)
                         Player.SetQueue(RecentTracks);
 
                     // Persistir en la Pi en background
                     await _apiService.AddHistoryAsync(newTrack);
+                    }
+                    catch (Exception ex) { System.Diagnostics.Debug.WriteLine($"[Home] OnTrackStarted error: {ex.Message}"); }
                 });
             };
 
             // Botones prev/next de la notificación MediaStyle
             NativeAudioController.OnSkipToNext = () =>
-                MainThread.BeginInvokeOnMainThread(async () => await Player.NextTrackCommand.ExecuteAsync(null));
+                MainThread.BeginInvokeOnMainThread(async () =>
+                {
+                    try { await Player.NextTrackCommand.ExecuteAsync(null); }
+                    catch (Exception ex) { System.Diagnostics.Debug.WriteLine($"[Home] SkipNext error: {ex.Message}"); }
+                });
             NativeAudioController.OnSkipToPrevious = () =>
-                MainThread.BeginInvokeOnMainThread(async () => await Player.PreviousTrackCommand.ExecuteAsync(null));
+                MainThread.BeginInvokeOnMainThread(async () =>
+                {
+                    try { await Player.PreviousTrackCommand.ExecuteAsync(null); }
+                    catch (Exception ex) { System.Diagnostics.Debug.WriteLine($"[Home] SkipPrev error: {ex.Message}"); }
+                });
         }
 
         public string Greeting
@@ -149,9 +161,10 @@ namespace eMusicApp.ViewModels
             var hist = await _apiService.GetHistoryAsync();
             await UpdateGenresFromApiAsync();
             // Solo mostrar los 12 más recientes en el Home
-            var recent = hist.Take(12).ToList();
-            RecentTracks = new ObservableCollection<Track>(recent);
-            Player.SetQueue(new ObservableCollection<Track>(hist));
+            RecentTracks.Clear();
+            foreach (var t in hist.Take(12))
+                RecentTracks.Add(t);
+            Player.SetQueue(hist);
 
             IsBusy = false;
             OnPropertyChanged(nameof(HasNoHistory));

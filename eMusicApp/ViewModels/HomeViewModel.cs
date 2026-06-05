@@ -133,7 +133,10 @@ namespace eMusicApp.ViewModels
 
         [ObservableProperty]
         [NotifyPropertyChangedFor(nameof(HasNoHistory))]
+        [NotifyPropertyChangedFor(nameof(IsNotBusy))]
         private bool _isBusy;
+
+        public bool IsNotBusy => !IsBusy;
 
         public bool HasNoHistory => !IsBusy && RecentTracks.Count == 0;
         public bool HasHistory   => RecentTracks.Count > 0;

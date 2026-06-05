@@ -27,7 +27,9 @@
         </Border>
 
         <!-- Estado inicial: búsquedas recientes O invitación a buscar -->
-        <Grid Grid.Row="1" IsVisible="{Binding ShowInitialPrompt}">
+        <Grid Grid.Row="1" IsVisible="{Binding ShowInitialPrompt}"
+              BackgroundColor="#121212"
+              ZIndex="10">
 
             <!-- Sin búsquedas recientes: prompt genérico -->
             <StackLayout IsVisible="{Binding HasNoRecentQueries}"

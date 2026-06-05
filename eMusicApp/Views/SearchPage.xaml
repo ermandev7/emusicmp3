@@ -149,7 +149,7 @@
                                 Tapped="OnTrackTapped"/>
                         </Grid.GestureRecognizers>
 
-                        <Grid ColumnDefinitions="Auto, *, Auto" BackgroundColor="Transparent" Padding="10">
+                        <Grid ColumnDefinitions="Auto, *" BackgroundColor="Transparent" Padding="10">
                             <!-- Thumbnail -->
                             <Border Grid.Column="0"
                                     StrokeThickness="0"
@@ -175,16 +175,6 @@
                                        skeleton:Skeleton.IsBusy="{Binding Source={RelativeSource AncestorType={x:Type vm:SearchViewModel}}, Path=IsBusy}"
                                        skeleton:Skeleton.BackgroundColor="#3E3E3E" />
                             </StackLayout>
-
-                            <!-- Agregar a favoritos -->
-                            <ImageButton Grid.Column="2"
-                                         Source="heart_outline.png"
-                                         BackgroundColor="Transparent"
-                                         WidthRequest="30" HeightRequest="30"
-                                         Padding="5"
-                                         VerticalOptions="Center"
-                                         Command="{Binding Source={RelativeSource AncestorType={x:Type vm:SearchViewModel}}, Path=ToggleFavoriteCommand}"
-                                         CommandParameter="{Binding .}" />
                         </Grid>
                     </Grid>
                 </DataTemplate>

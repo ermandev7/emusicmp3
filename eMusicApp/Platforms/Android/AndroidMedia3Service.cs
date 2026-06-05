@@ -36,8 +36,48 @@ namespace eMusicApp.Platforms.Android
         private string? _currentTitle;
         private bool _trackEndedReported = false;
 
-        // IDs ya reproducidos para evitar loops en radio mode
+        // IDs y títulos ya reproducidos para evitar loops y duplicados
         private readonly HashSet<string> _playedIds = new HashSet<string>();
+        private readonly HashSet<string> _playedTitles = new HashSet<string>();
+
+        private static string NormalizeTitle(string title)
+        {
+            if (string.IsNullOrEmpty(title)) return "";
+            var t = title.ToLowerInvariant();
+            t = System.Text.RegularExpressions.Regex.Replace(t, @"\([^)]*\)", "");
+            t = System.Text.RegularExpressions.Regex.Replace(t, @"\[[^\]]*\]", "");
+            var dashIdx = t.IndexOf(" - ");
+            if (dashIdx > 3) t = t.Substring(0, dashIdx);
+            foreach (var kw in new[] { "official", "video", "audio", "lyric", "lyrics", "live",
+                "cover", "karaoke", "remix", "acoustic", "version", "hd", "4k", "ft.", "feat." })
+                t = t.Replace(kw, "");
+            t = t.Replace("á", "a").Replace("é", "e").Replace("í", "i").Replace("ó", "o").Replace("ú", "u");
+            t = System.Text.RegularExpressions.Regex.Replace(t, @"[^a-z0-9]", "");
+            return t;
+        }
+
+        private bool IsGoodNativeTrack(string? videoId, string? title)
+        {
+            if (string.IsNullOrEmpty(videoId)) return false;
+            if (_playedIds.Contains(videoId)) return false;
+            if (!string.IsNullOrEmpty(title))
+            {
+                var norm = NormalizeTitle(title);
+                if (!string.IsNullOrEmpty(norm) && _playedTitles.Contains(norm)) return false;
+                var lower = title.ToLowerInvariant();
+                if (lower.Contains("karaoke") || lower.Contains("instrumental")
+                    || lower.Contains("cover") || lower.Contains("tribute"))
+                    return false;
+            }
+            return true;
+        }
+
+        private void MarkNativeAsPlayed(string videoId, string title)
+        {
+            _playedIds.Add(videoId);
+            var norm = NormalizeTitle(title);
+            if (!string.IsNullOrEmpty(norm)) _playedTitles.Add(norm);
+        }
 
         // Crossfade
         private bool _isFadingIn;
@@ -309,9 +349,9 @@ namespace eMusicApp.Platforms.Android
                 if (!string.IsNullOrEmpty(playingId) && playingId != _currentMediaId)
                 {
                     _currentMediaId = playingId;
-                    _playedIds.Add(playingId);
                     var title  = _player.CurrentMediaItem?.MediaMetadata?.Title?.ToString()      ?? "";
                     var artist = _player.CurrentMediaItem?.MediaMetadata?.Artist?.ToString()     ?? "";
+                    MarkNativeAsPlayed(playingId, title);
                     _currentArtist = artist;
                     _currentTitle = title;
                     var thumb  = _player.CurrentMediaItem?.MediaMetadata?.ArtworkUri?.ToString() ?? "";
@@ -374,7 +414,8 @@ namespace eMusicApp.Platforms.Android
             _nativeQueue.Clear();
             _player.Volume = 1f;
             _currentArtist = artist;
-            _playedIds.Add(videoId);
+            _currentTitle = title;
+            MarkNativeAsPlayed(videoId, title);
 
             _player.ClearMediaItems();
             _player.SetMediaItem(CreateMediaItem(url, title, artist, thumbUrl, videoId));
@@ -393,7 +434,7 @@ namespace eMusicApp.Platforms.Android
             {
                 _nativeQueue.Clear();
 
-                // Tier 1: relatedStreams
+                // Tier 1: relatedStreams filtrados (sin covers/karaoke/duplicados)
                 {
                     var response = await _httpClient.GetStringAsync(
                         $"{AppConstants.ApiBaseUrl}/streams/{videoId}");
@@ -405,17 +446,16 @@ namespace eMusicApp.Platforms.Android
                         foreach (var rel in related.EnumerateArray())
                         {
                             var vId = ExtractVideoId(rel);
-                            if (!string.IsNullOrEmpty(vId) && vId != videoId
-                                && !_playedIds.Contains(vId)
-                                && !_nativeQueue.Contains(vId))
+                            var title = rel.TryGetProperty("title", out var tp) ? tp.GetString() : null;
+                            if (vId != videoId && IsGoodNativeTrack(vId, title) && !_nativeQueue.Contains(vId))
                                 _nativeQueue.Enqueue(vId);
                         }
                     }
                 }
 
-                // Tier 2: búsqueda por artista
-                if (_nativeQueue.Count == 0 && !string.IsNullOrEmpty(_currentArtist))
-                    await EnqueueFromArtistSearchAsync(_currentArtist);
+                // Tier 2: búsqueda por género + artista
+                if (_nativeQueue.Count == 0)
+                    await EnqueueSmartSearchAsync();
 
                 System.Diagnostics.Debug.WriteLine($"[Autoplay] Cola: {_nativeQueue.Count} canciones");
 
@@ -429,42 +469,106 @@ namespace eMusicApp.Platforms.Android
         }
 
         /// <summary>
-        /// Busca canciones por nombre de artista y las añade a la cola nativa,
-        /// filtrando las ya reproducidas. Fallback cuando relatedStreams se agota.
+        /// Detecta el género y busca canciones variadas por género + artista.
         /// </summary>
-        private async Task EnqueueFromArtistSearchAsync(string artist)
+        private async Task EnqueueSmartSearchAsync()
         {
-            try
+            var queries = BuildNativeSmartQueries(_currentTitle, _currentArtist);
+            foreach (var query in queries)
             {
-                var searchUrl = $"{AppConstants.ApiBaseUrl}/search?q={Uri.EscapeDataString(artist)}";
-                var response = await _httpClient.GetStringAsync(searchUrl);
-                using var doc = JsonDocument.Parse(response);
-
-                if (doc.RootElement.TryGetProperty("items", out var items))
+                if (_nativeQueue.Count >= 8) break;
+                try
                 {
-                    foreach (var item in items.EnumerateArray())
+                    var searchUrl = $"{AppConstants.ApiBaseUrl}/search?q={Uri.EscapeDataString(query)}";
+                    var response = await _httpClient.GetStringAsync(searchUrl);
+                    using var doc = JsonDocument.Parse(response);
+
+                    if (doc.RootElement.TryGetProperty("items", out var items))
                     {
-                        // Solo streams (no playlists ni canales)
-                        if (item.TryGetProperty("type", out var typeEl))
+                        foreach (var item in items.EnumerateArray())
                         {
-                            var type = typeEl.GetString();
-                            if (!string.IsNullOrEmpty(type) && type != "stream") continue;
+                            if (item.TryGetProperty("type", out var typeEl))
+                            {
+                                var type = typeEl.GetString();
+                                if (!string.IsNullOrEmpty(type) && type != "stream") continue;
+                            }
+
+                            var vId = ExtractVideoId(item);
+                            var title = item.TryGetProperty("title", out var tp) ? tp.GetString() : null;
+                            if (IsGoodNativeTrack(vId, title) && !_nativeQueue.Contains(vId))
+                                _nativeQueue.Enqueue(vId!);
+
+                            if (_nativeQueue.Count >= 8) break;
                         }
-
-                        var vId = ExtractVideoId(item);
-                        if (!string.IsNullOrEmpty(vId) && !_playedIds.Contains(vId))
-                            _nativeQueue.Enqueue(vId);
-
-                        if (_nativeQueue.Count >= 10) break;
                     }
                 }
+                catch (Exception ex)
+                {
+                    System.Diagnostics.Debug.WriteLine($"[Autoplay] Error búsqueda '{query}': {ex.Message}");
+                }
+            }
+            System.Diagnostics.Debug.WriteLine($"[Autoplay] Smart search: {_nativeQueue.Count} tracks");
+        }
 
-                System.Diagnostics.Debug.WriteLine($"[Autoplay] Búsqueda artista '{artist}': {_nativeQueue.Count} tracks nuevos");
-            }
-            catch (Exception ex)
+        private static string[] BuildNativeSmartQueries(string? title, string? artist)
+        {
+            var queries = new List<string>();
+            var combined = $"{title} {artist}".ToLowerInvariant();
+
+            // Detección de género por keywords
+            string? genre = null;
+            var genreMap = new Dictionary<string, string[]>
             {
-                System.Diagnostics.Debug.WriteLine($"[Autoplay] Error búsqueda artista: {ex.Message}");
+                ["salsa"] = new[] { "salsa éxitos", "salsa romántica mix", "lo mejor de la salsa" },
+                ["bachata"] = new[] { "bachata éxitos", "bachata romántica mix" },
+                ["reggaeton"] = new[] { "reggaeton éxitos 2024", "reggaeton mix", "perreo mix" },
+                ["cumbia"] = new[] { "cumbia éxitos", "cumbia mix bailable" },
+                ["merengue"] = new[] { "merengue éxitos", "merengue mix bailable" },
+                ["vallenato"] = new[] { "vallenato éxitos", "vallenato romántico" },
+                ["rock"] = new[] { "rock en español éxitos", "rock clásico mix", "classic rock hits" },
+                ["pop"] = new[] { "pop éxitos 2024", "pop latino mix" },
+                ["rap"] = new[] { "rap éxitos", "hip hop mix" },
+                ["trap"] = new[] { "trap latino mix", "trap éxitos 2024" },
+                ["balada"] = new[] { "baladas románticas mix", "baladas en español" },
+                ["ranchera"] = new[] { "rancheras éxitos", "música mexicana mix" },
+                ["corrido"] = new[] { "corridos tumbados mix", "corridos éxitos" },
+                ["reggae"] = new[] { "reggae éxitos", "reggae mix" },
+            };
+
+            foreach (var kv in genreMap)
+            {
+                if (combined.Contains(kv.Key))
+                {
+                    genre = kv.Key;
+                    var rng = new Random();
+                    queries.AddRange(kv.Value.OrderBy(_ => rng.Next()).Take(2));
+                    break;
+                }
             }
+
+            // Heurísticas
+            if (genre == null)
+            {
+                if (combined.Contains("reggaet") || combined.Contains("perreo")) genre = "reggaeton";
+                else if (combined.Contains("bachi")) genre = "bachata";
+                else if (combined.Contains("ranchera") || combined.Contains("mariachi")) genre = "ranchera";
+                else if (combined.Contains("corrido") || combined.Contains("tumbado")) genre = "corrido";
+                else if (combined.Contains("romántic") || combined.Contains("amor")) genre = "balada";
+
+                if (genre != null && genreMap.TryGetValue(genre, out var gq))
+                    queries.AddRange(gq.Take(2));
+            }
+
+            if (!string.IsNullOrEmpty(artist))
+            {
+                queries.Add($"{artist} éxitos");
+                queries.Add($"{artist} mix");
+            }
+
+            if (queries.Count == 0 && !string.IsNullOrEmpty(artist))
+                queries.Add($"música similar a {artist}");
+
+            return queries.ToArray();
         }
 
         // Lee videoId de "videoId" directamente, o lo extrae del campo "url" (/watch?v=XXX)
@@ -511,12 +615,11 @@ namespace eMusicApp.Platforms.Android
 
                 if (!string.IsNullOrEmpty(bestUrl) && _player != null)
                 {
+                    MarkNativeAsPlayed(nextVideoId, title);
                     _player.AddMediaItem(CreateMediaItem(bestUrl, title, uploader, thumb, nextVideoId));
                     _nextPrepared = true;
                     System.Diagnostics.Debug.WriteLine($"[Autoplay] Siguiente pre-cargado: {title}");
 
-                    // Si ExoPlayer ya terminó (STATE_ENDED), la pre-carga llegó tarde.
-                    // Hay que re-iniciar la reproducción manualmente.
                     if (_player.PlaybackState == 4) // STATE_ENDED
                     {
                         _player.SeekToNextMediaItem();
@@ -525,29 +628,32 @@ namespace eMusicApp.Platforms.Android
                         System.Diagnostics.Debug.WriteLine($"[Autoplay] Re-iniciando desde ENDED: {title}");
                     }
 
-                    // Rellenar cola con related filtrando ya reproducidos
+                    // Rellenar cola con related filtrados inteligentemente
                     _nativeQueue.Clear();
                     if (root.TryGetProperty("relatedStreams", out var related))
                     {
                         foreach (var rel in related.EnumerateArray())
                         {
                             var vId = ExtractVideoId(rel);
-                            if (!string.IsNullOrEmpty(vId) && !_playedIds.Contains(vId))
-                                _nativeQueue.Enqueue(vId);
+                            var relTitle = rel.TryGetProperty("title", out var rtp) ? rtp.GetString() : null;
+                            if (IsGoodNativeTrack(vId, relTitle) && !_nativeQueue.Contains(vId!))
+                                _nativeQueue.Enqueue(vId!);
                         }
                     }
 
-                    // Fallback: buscar por artista si related se agotó
-                    if (_nativeQueue.Count == 0 && !string.IsNullOrEmpty(uploader))
+                    // Fallback: búsqueda inteligente por género + artista
+                    if (_nativeQueue.Count == 0)
                     {
                         _currentArtist = uploader;
-                        await EnqueueFromArtistSearchAsync(uploader);
+                        _currentTitle = title;
+                        await EnqueueSmartSearchAsync();
                     }
 
                     // Último recurso: limpiar historial y reintentar
                     if (_nativeQueue.Count == 0)
                     {
                         _playedIds.Clear();
+                        _playedTitles.Clear();
                         if (root.TryGetProperty("relatedStreams", out var rel2))
                         {
                             foreach (var rel in rel2.EnumerateArray())
@@ -585,7 +691,7 @@ namespace eMusicApp.Platforms.Android
                 // Rellenar la cola nativa si está vacía
                 if (_nativeQueue.Count == 0 && !string.IsNullOrEmpty(_currentMediaId))
                 {
-                    // Tier 1: relatedStreams
+                    // Tier 1: relatedStreams filtrados
                     {
                         var response = await _httpClient.GetStringAsync(
                             $"{AppConstants.ApiBaseUrl}/streams/{_currentMediaId}");
@@ -595,21 +701,22 @@ namespace eMusicApp.Platforms.Android
                             foreach (var rel in related.EnumerateArray())
                             {
                                 var vId = ExtractVideoId(rel);
-                                if (!string.IsNullOrEmpty(vId) && vId != _currentMediaId
-                                    && !_playedIds.Contains(vId) && !_nativeQueue.Contains(vId))
-                                    _nativeQueue.Enqueue(vId);
+                                var relTitle = rel.TryGetProperty("title", out var rtp) ? rtp.GetString() : null;
+                                if (vId != _currentMediaId && IsGoodNativeTrack(vId, relTitle) && !_nativeQueue.Contains(vId!))
+                                    _nativeQueue.Enqueue(vId!);
                             }
                         }
                     }
 
-                    // Tier 2: buscar por artista
-                    if (_nativeQueue.Count == 0 && !string.IsNullOrEmpty(_currentArtist))
-                        await EnqueueFromArtistSearchAsync(_currentArtist);
+                    // Tier 2: búsqueda inteligente
+                    if (_nativeQueue.Count == 0)
+                        await EnqueueSmartSearchAsync();
 
                     // Tier 3: limpiar historial
                     if (_nativeQueue.Count == 0)
                     {
                         _playedIds.Clear();
+                        _playedTitles.Clear();
                         var fallbackResp = await _httpClient.GetStringAsync(
                             $"{AppConstants.ApiBaseUrl}/streams/{_currentMediaId}");
                         using var doc2 = JsonDocument.Parse(fallbackResp);
@@ -659,7 +766,8 @@ namespace eMusicApp.Platforms.Android
                     _player.Play();
 
                     _currentArtist = uploader;
-                    _playedIds.Add(nextVideoId);
+                    _currentTitle = title;
+                    MarkNativeAsPlayed(nextVideoId, title);
                     System.Diagnostics.Debug.WriteLine($"[Autoplay Native] Continuando con: {title}");
 
                     // Preparar cola con related del nuevo track, filtrando ya reproducidos
@@ -669,14 +777,15 @@ namespace eMusicApp.Platforms.Android
                         foreach (var rel in nextRelated.EnumerateArray())
                         {
                             var vId = ExtractVideoId(rel);
-                            if (!string.IsNullOrEmpty(vId) && vId != nextVideoId && !_playedIds.Contains(vId))
-                                _nativeQueue.Enqueue(vId);
+                            var relTitle = rel.TryGetProperty("title", out var rtp2) ? rtp2.GetString() : null;
+                            if (vId != nextVideoId && IsGoodNativeTrack(vId, relTitle) && !_nativeQueue.Contains(vId!))
+                                _nativeQueue.Enqueue(vId!);
                         }
                     }
 
-                    // Fallback: buscar por artista
-                    if (_nativeQueue.Count == 0 && !string.IsNullOrEmpty(uploader))
-                        await EnqueueFromArtistSearchAsync(uploader);
+                    // Fallback: búsqueda inteligente por género
+                    if (_nativeQueue.Count == 0)
+                        await EnqueueSmartSearchAsync();
                 }
             }
             catch (Exception ex)

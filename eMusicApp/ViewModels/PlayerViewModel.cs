@@ -99,6 +99,26 @@ namespace eMusicApp.ViewModels
                 MainThread.BeginInvokeOnMainThread(() => DominantColor = color);
         }
 
+        // ─── Modo radio por género ───
+        private bool _isPlayingFromGenre;
+        private string? _activeGenre;
+        public string? ActiveGenre
+        {
+            get => _activeGenre;
+            private set { if (SetProperty(ref _activeGenre, value)) OnPropertyChanged(nameof(IsGenreRadioActive)); }
+        }
+        public bool IsGenreRadioActive => _activeGenre != null;
+
+        /// <summary>
+        /// Lista de géneros disponibles (keys del diccionario _genreKeywords).
+        /// </summary>
+        public static IReadOnlyList<string> AvailableGenres { get; } = new[]
+        {
+            "salsa", "bachata", "reggaeton", "cumbia", "merengue", "vallenato",
+            "rock", "pop", "rap", "trap", "balada", "ranchera", "corrido",
+            "electronic", "jazz", "blues", "reggae", "clasica", "kpop", "r&b"
+        };
+
         // ─── Dynamic album art color ───
         [ObservableProperty]
         private Color _dominantColor = Color.FromArgb("#282828");
@@ -196,7 +216,7 @@ namespace eMusicApp.ViewModels
             Position = 0;
             IsFavorite = false; // reset optimista; se corrige con la llamada al API
             if (!string.IsNullOrEmpty(track.VideoId))
-                _playedIds.Add(track.VideoId);
+                MarkAsPlayed(track);
             _ = CheckIsFavoriteAsync(track.VideoId);
         }
 
@@ -364,6 +384,10 @@ namespace eMusicApp.ViewModels
         {
             if (track == null) return;
 
+            // Si el usuario elige un track manualmente (no viene del género radio), desactivar modo género
+            if (_activeGenre != null && !_isPlayingFromGenre)
+                ActiveGenre = null;
+
             int idx = -1;
             for (int i = 0; i < PlayQueue.Count; i++)
             {
@@ -393,7 +417,7 @@ namespace eMusicApp.ViewModels
             Position = 0;
             Duration = 0;
             if (!string.IsNullOrEmpty(track.VideoId))
-                _playedIds.Add(track.VideoId);
+                MarkAsPlayed(track);
 
             try
             {
@@ -498,48 +522,285 @@ namespace eMusicApp.ViewModels
             await PlayTrack(PlayQueue[_currentQueueIndex]);
         }
 
-        // Queries de búsqueda que mantienen el género/estilo del artista
-        private static string[] BuildArtistQueries(string artist)
+        // ── Filtro inteligente de tracks ──
+
+        // Títulos ya reproducidos (normalizados) para evitar covers/remixes
+        private readonly HashSet<string> _playedTitles = new HashSet<string>();
+
+        /// <summary>
+        /// Normaliza un título para comparar duplicados: quita paréntesis, "official video",
+        /// "live", "cover", "karaoke", "remix", "lyrics", etc.
+        /// "Devuélveme La Vida (Official Video)" y "Devuélveme La Vida - Cover" → "devuelveme la vida"
+        /// </summary>
+        private static string NormalizeTitle(string title)
         {
-            if (string.IsNullOrEmpty(artist)) return Array.Empty<string>();
-            return new[]
+            if (string.IsNullOrEmpty(title)) return "";
+            var t = title.ToLowerInvariant();
+            // Quitar contenido entre paréntesis y corchetes
+            t = System.Text.RegularExpressions.Regex.Replace(t, @"\([^)]*\)", "");
+            t = System.Text.RegularExpressions.Regex.Replace(t, @"\[[^\]]*\]", "");
+            // Quitar sufijos comunes después de " - "
+            var dashIdx = t.IndexOf(" - ");
+            if (dashIdx > 3) t = t.Substring(0, dashIdx);
+            // Quitar keywords de versiones
+            foreach (var kw in new[] { "official", "video", "audio", "lyric", "lyrics", "live",
+                "cover", "karaoke", "remix", "acoustic", "version", "hd", "4k", "ft.", "feat." })
+                t = t.Replace(kw, "");
+            // Quitar acentos básicos y caracteres especiales
+            t = t.Replace("á", "a").Replace("é", "e").Replace("í", "i").Replace("ó", "o").Replace("ú", "u");
+            // Solo letras y números
+            t = System.Text.RegularExpressions.Regex.Replace(t, @"[^a-z0-9]", "");
+            return t;
+        }
+
+        /// <summary>
+        /// Verifica si un track es válido para la cola: no duplicado por ID ni por título,
+        /// y no es un cover/karaoke/remix.
+        /// </summary>
+        private bool IsGoodTrack(Track r, HashSet<string>? extraIds = null)
+        {
+            if (string.IsNullOrEmpty(r.VideoId)) return false;
+            if (_playedIds.Contains(r.VideoId)) return false;
+            if (extraIds != null && extraIds.Contains(r.VideoId)) return false;
+            var norm = NormalizeTitle(r.Title);
+            if (string.IsNullOrEmpty(norm)) return false;
+            if (_playedTitles.Contains(norm)) return false;
+            // Rechazar explícitamente karaoke, cover, instrumental
+            var lower = r.Title.ToLowerInvariant();
+            if (lower.Contains("karaoke") || lower.Contains("instrumental")
+                || lower.Contains("cover") || lower.Contains("tribute"))
+                return false;
+            return true;
+        }
+
+        private void MarkAsPlayed(Track track)
+        {
+            _playedIds.Add(track.VideoId);
+            _playedTitles.Add(NormalizeTitle(track.Title));
+        }
+
+        // ── Detección de género y queries inteligentes ──
+
+        private static readonly Dictionary<string, string[]> _genreKeywords = new()
+        {
+            ["salsa"] = new[] { "salsa éxitos", "salsa romántica mix", "salsa clásica", "salsa brava mix", "lo mejor de la salsa" },
+            ["bachata"] = new[] { "bachata éxitos", "bachata romántica mix", "bachata sensual", "lo mejor de la bachata" },
+            ["reggaeton"] = new[] { "reggaeton éxitos 2024", "reggaeton mix", "perreo mix", "reggaeton viejo mix" },
+            ["cumbia"] = new[] { "cumbia éxitos", "cumbia mix bailable", "cumbia clásica", "lo mejor de la cumbia" },
+            ["merengue"] = new[] { "merengue éxitos", "merengue mix bailable", "merengue clásico" },
+            ["vallenato"] = new[] { "vallenato éxitos", "vallenato romántico", "vallenato clásico mix" },
+            ["rock"] = new[] { "rock en español éxitos", "rock clásico mix", "rock latino mix", "classic rock greatest hits" },
+            ["pop"] = new[] { "pop éxitos 2024", "pop latino mix", "pop en español mix", "pop hits mix" },
+            ["rap"] = new[] { "rap éxitos", "hip hop mix", "rap en español mix", "trap latino mix" },
+            ["trap"] = new[] { "trap latino mix", "trap éxitos 2024", "trap mix" },
+            ["balada"] = new[] { "baladas románticas mix", "baladas en español", "baladas de amor mix" },
+            ["ranchera"] = new[] { "rancheras éxitos", "música mexicana mix", "mariachi éxitos", "regional mexicano mix" },
+            ["corrido"] = new[] { "corridos tumbados mix", "corridos éxitos", "corridos mix 2024" },
+            ["electronic"] = new[] { "electronic dance mix", "EDM mix 2024", "house music mix", "techno mix" },
+            ["jazz"] = new[] { "jazz clásico", "smooth jazz mix", "jazz éxitos", "jazz instrumental" },
+            ["blues"] = new[] { "blues éxitos", "blues clásico mix", "blues guitar mix" },
+            ["reggae"] = new[] { "reggae éxitos", "reggae mix", "reggae en español mix" },
+            ["clasica"] = new[] { "música clásica famosa", "classical music best", "piano clásico" },
+            ["kpop"] = new[] { "kpop éxitos 2024", "kpop mix", "kpop hits playlist" },
+            ["r&b"] = new[] { "r&b éxitos", "r&b mix", "soul music mix", "r&b classics" },
+        };
+
+        /// <summary>
+        /// Detecta el género probable de un track por su título y artista.
+        /// </summary>
+        internal static string? DetectGenre(string title, string artist)
+        {
+            var combined = $"{title} {artist}".ToLowerInvariant();
+            foreach (var kv in _genreKeywords)
             {
-                $"{artist} mix",
-                $"{artist} éxitos",
-                $"{artist} mejores canciones"
-            };
+                if (combined.Contains(kv.Key))
+                    return kv.Key;
+            }
+            // Heurísticas adicionales por palabras clave comunes
+            if (combined.Contains("reggaet") || combined.Contains("perreo")) return "reggaeton";
+            if (combined.Contains("cumbi")) return "cumbia";
+            if (combined.Contains("bachi") || combined.Contains("bachata")) return "bachata";
+            if (combined.Contains("ranchera") || combined.Contains("mariachi") || combined.Contains("norteñ")) return "ranchera";
+            if (combined.Contains("corrido") || combined.Contains("tumbado")) return "corrido";
+            if (combined.Contains("romántic") || combined.Contains("amor") || combined.Contains("corazón")) return "balada";
+            return null;
+        }
+
+        /// <summary>
+        /// Construye queries de búsqueda variadas: primero por género, luego por artista.
+        /// </summary>
+        private static string[] BuildSmartQueries(string title, string artist)
+        {
+            var queries = new List<string>();
+            var genre = DetectGenre(title, artist);
+
+            if (genre != null && _genreKeywords.TryGetValue(genre, out var genreQueries))
+            {
+                // Tomar 2 queries aleatorias del género
+                var rng = new Random();
+                var shuffled = genreQueries.OrderBy(_ => rng.Next()).Take(2);
+                queries.AddRange(shuffled);
+            }
+
+            // Agregar búsquedas por artista (pero variadas)
+            if (!string.IsNullOrEmpty(artist))
+            {
+                queries.Add($"{artist} éxitos");
+                queries.Add($"{artist} mix");
+            }
+
+            // Si no detectamos género, buscar genéricamente
+            if (genre == null && !string.IsNullOrEmpty(title))
+            {
+                // Extraer posible género del título (ej: "Salsa Mix 2024" → buscar salsa)
+                queries.Add($"música similar a {artist}");
+            }
+
+            return queries.ToArray();
+        }
+
+        /// <summary>
+        /// Devuelve queries según el modo activo: si hay género radio, usa esas; si no, detecta del track actual.
+        /// </summary>
+        private string[] GetActiveQueries()
+        {
+            if (_activeGenre != null && _genreKeywords.TryGetValue(_activeGenre, out var gq))
+            {
+                var rng = new Random();
+                return gq.OrderBy(_ => rng.Next()).ToArray();
+            }
+            if (CurrentTrack != null)
+                return BuildSmartQueries(CurrentTrack.Title, CurrentTrack.Uploader);
+            return Array.Empty<string>();
+        }
+
+        /// <summary>
+        /// Inicia modo radio por género: busca canciones, llena la cola y reproduce.
+        /// </summary>
+        public async Task PlayGenreAsync(string genre)
+        {
+            if (!_genreKeywords.TryGetValue(genre, out var genreQueries)) return;
+
+            ActiveGenre = genre;
+            _playedIds.Clear();
+            _playedTitles.Clear();
+            PlayQueue.Clear();
+            _currentQueueIndex = -1;
+
+            // Buscar con queries aleatorias del género
+            var rng = new Random();
+            var shuffled = genreQueries.OrderBy(_ => rng.Next()).ToArray();
+            var tracks = new List<Track>();
+
+            foreach (var query in shuffled)
+            {
+                if (tracks.Count >= 10) break;
+                var results = await _apiService.SearchTracksAsync(query);
+                foreach (var r in results)
+                {
+                    if (tracks.Count >= 10) break;
+                    if (IsGoodTrack(r) && !tracks.Any(t => t.VideoId == r.VideoId))
+                        tracks.Add(r);
+                }
+            }
+
+            if (tracks.Count == 0) { ActiveGenre = null; return; }
+
+            foreach (var t in tracks)
+            {
+                PlayQueue.Add(t);
+                MarkAsPlayed(t);
+            }
+            _currentQueueIndex = 0;
+            RebuildQueueItems();
+            _isPlayingFromGenre = true;
+            await PlayTrack(PlayQueue[0]);
+            _isPlayingFromGenre = false;
+        }
+
+        /// <summary>
+        /// Filtra relatedStreams: quita duplicados por título, covers, karaoke,
+        /// y prioriza artistas diferentes al actual.
+        /// </summary>
+        private List<Track> FilterRelated(List<Track>? related, string currentArtist, HashSet<string>? extraIds = null)
+        {
+            if (related == null || related.Count == 0) return new List<Track>();
+
+            var seen = new HashSet<string>();
+            var differentArtist = new List<Track>();
+            var sameArtist = new List<Track>();
+
+            foreach (var r in related)
+            {
+                if (!IsGoodTrack(r, extraIds)) continue;
+                var norm = NormalizeTitle(r.Title);
+                if (seen.Contains(norm)) continue;
+                seen.Add(norm);
+
+                // Priorizar artistas diferentes para variedad
+                var uploaderNorm = (r.Uploader ?? "").ToLowerInvariant().Trim();
+                var currentNorm = (currentArtist ?? "").ToLowerInvariant().Trim();
+                if (!string.IsNullOrEmpty(currentNorm) && uploaderNorm.Contains(currentNorm))
+                    sameArtist.Add(r);
+                else
+                    differentArtist.Add(r);
+            }
+
+            // Intercalar: 2 de diferente artista, 1 del mismo
+            var result = new List<Track>();
+            int d = 0, s = 0;
+            while (result.Count < 10 && (d < differentArtist.Count || s < sameArtist.Count))
+            {
+                if (d < differentArtist.Count) result.Add(differentArtist[d++]);
+                if (d < differentArtist.Count) result.Add(differentArtist[d++]);
+                if (s < sameArtist.Count) result.Add(sameArtist[s++]);
+            }
+            return result;
         }
 
         private async Task FetchAndPlayRelatedAsync()
         {
             if (CurrentTrack == null) return;
 
-            // Tier 1: relatedStreams filtrando ya reproducidos
+            // Tier 1: relatedStreams filtrados inteligentemente
             var streamInfo = await _apiService.GetStreamAsync(CurrentTrack.VideoId);
-            var next = streamInfo?.RelatedStreams?
-                .FirstOrDefault(r => !string.IsNullOrEmpty(r.VideoId) && !_playedIds.Contains(r.VideoId));
-            if (next != null)
+            var filtered = FilterRelated(streamInfo?.RelatedStreams, CurrentTrack.Uploader);
+            if (filtered.Count > 0)
             {
-                await PlayTrack(next);
+                _isPlayingFromGenre = _activeGenre != null;
+                MarkAsPlayed(filtered[0]);
+                await PlayTrack(filtered[0]);
+                _isPlayingFromGenre = false;
                 return;
             }
 
-            // Tier 2: buscar por artista con queries variadas (mantiene el género)
-            var queries = BuildArtistQueries(CurrentTrack.Uploader);
+            // Tier 2: búsqueda inteligente (por género activo o detección automática)
+            var queries = GetActiveQueries();
             foreach (var query in queries)
             {
                 var results = await _apiService.SearchTracksAsync(query);
-                next = results.FirstOrDefault(r => !string.IsNullOrEmpty(r.VideoId) && !_playedIds.Contains(r.VideoId));
-                if (next != null)
+                var good = results.FirstOrDefault(r => IsGoodTrack(r));
+                if (good != null)
                 {
-                    await PlayTrack(next);
+                    _isPlayingFromGenre = _activeGenre != null;
+                    MarkAsPlayed(good);
+                    await PlayTrack(good);
+                    _isPlayingFromGenre = false;
                     return;
                 }
             }
 
-            // Tier 3: cualquier related (aunque sea repetida)
-            next = streamInfo?.RelatedStreams?.FirstOrDefault(r => !string.IsNullOrEmpty(r.VideoId) && r.VideoId != CurrentTrack.VideoId);
-            if (next != null) await PlayTrack(next);
+            // Tier 3: cualquier related diferente (limpiar filtros estrictos)
+            var next = streamInfo?.RelatedStreams?
+                .FirstOrDefault(r => !string.IsNullOrEmpty(r.VideoId) && r.VideoId != CurrentTrack.VideoId
+                    && !r.Title.ToLowerInvariant().Contains("karaoke"));
+            if (next != null)
+            {
+                _isPlayingFromGenre = _activeGenre != null;
+                MarkAsPlayed(next);
+                await PlayTrack(next);
+                _isPlayingFromGenre = false;
+            }
         }
 
         private async Task ExtendQueueWithRelatedAsync()
@@ -549,66 +810,56 @@ namespace eMusicApp.ViewModels
             var newTracks = new List<Track>();
             var queueIds = new HashSet<string>(PlayQueue.Select(t => t.VideoId));
 
-            // Tier 1: relatedStreams filtrando ya reproducidos y ya en cola
-            if (newTracks.Count < 3)
-            {
-                var streamInfo = await _apiService.GetStreamAsync(CurrentTrack.VideoId);
-                if (streamInfo?.RelatedStreams?.Count > 0)
-                {
-                    var related = streamInfo.RelatedStreams
-                        .Where(r => !string.IsNullOrEmpty(r.VideoId)
-                                 && !_playedIds.Contains(r.VideoId)
-                                 && !queueIds.Contains(r.VideoId)
-                                 && !newTracks.Any(n => n.VideoId == r.VideoId))
-                        .Take(8 - newTracks.Count)
-                        .ToList();
-                    newTracks.AddRange(related);
-                }
-            }
+            // Tier 1: relatedStreams filtrados
+            var streamInfo = await _apiService.GetStreamAsync(CurrentTrack.VideoId);
+            var filtered = FilterRelated(streamInfo?.RelatedStreams, CurrentTrack.Uploader, queueIds);
+            newTracks.AddRange(filtered.Take(5));
 
-            // Tier 2: Búsqueda por artista con queries variadas (mantiene el género)
+            // Tier 2: búsqueda por género activo o detección automática
             if (newTracks.Count < 3)
             {
-                var queries = BuildArtistQueries(CurrentTrack.Uploader);
+                var queries = GetActiveQueries();
                 foreach (var query in queries)
                 {
                     if (newTracks.Count >= 8) break;
                     var results = await _apiService.SearchTracksAsync(query);
-                    var extraTracks = results
-                        .Where(r => !string.IsNullOrEmpty(r.VideoId)
-                                 && !_playedIds.Contains(r.VideoId)
-                                 && !queueIds.Contains(r.VideoId)
-                                 && !newTracks.Any(n => n.VideoId == r.VideoId))
-                        .Take(8 - newTracks.Count)
-                        .ToList();
-                    newTracks.AddRange(extraTracks);
-                    if (newTracks.Count >= 3) break; // suficientes tracks
+                    var extra = results
+                        .Where(r => IsGoodTrack(r, queueIds) && !newTracks.Any(n => n.VideoId == r.VideoId))
+                        .Take(3);
+                    newTracks.AddRange(extra);
                 }
             }
 
             if (newTracks.Count > 0)
             {
                 foreach (var r in newTracks)
+                {
                     PlayQueue.Add(r);
+                    MarkAsPlayed(r);
+                }
                 _currentQueueIndex++;
                 RebuildQueueItems();
+                _isPlayingFromGenre = _activeGenre != null;
                 await PlayTrack(PlayQueue[_currentQueueIndex]);
+                _isPlayingFromGenre = false;
             }
             else
             {
                 // Tier 3: limpiar historial y reintentar
                 _playedIds.Clear();
-                var streamInfo = await _apiService.GetStreamAsync(CurrentTrack.VideoId);
-                if (streamInfo?.RelatedStreams?.Count > 0)
+                _playedTitles.Clear();
+                var fallback = streamInfo?.RelatedStreams?
+                    .Where(r => !string.IsNullOrEmpty(r.VideoId) && r.VideoId != CurrentTrack.VideoId
+                        && !r.Title.ToLowerInvariant().Contains("karaoke"))
+                    .Take(8).ToList();
+                if (fallback?.Count > 0)
                 {
-                    var fallback = streamInfo.RelatedStreams
-                        .Where(r => !string.IsNullOrEmpty(r.VideoId) && r.VideoId != CurrentTrack.VideoId)
-                        .Take(8).ToList();
-                    foreach (var r in fallback)
-                        PlayQueue.Add(r);
+                    foreach (var r in fallback) PlayQueue.Add(r);
                     _currentQueueIndex++;
                     RebuildQueueItems();
+                    _isPlayingFromGenre = _activeGenre != null;
                     await PlayTrack(PlayQueue[_currentQueueIndex]);
+                    _isPlayingFromGenre = false;
                 }
             }
         }

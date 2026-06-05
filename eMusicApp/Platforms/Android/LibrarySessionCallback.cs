@@ -59,7 +59,31 @@ namespace eMusicApp.Platforms.Android
             => CreateImmediateFuture(new SessionResult(SessionResult.ResultErrorNotSupported));
 
         public IListenableFuture OnPlaybackResumption(MediaSession mediaSession, MediaSession.ControllerInfo controller)
-            => CreateImmediateFuture(new SessionResult(SessionResult.ResultErrorNotSupported));
+        {
+            // Devolver la canción actual si hay una, para que Android Auto pueda reanudar
+            return CreateAsyncFuture(async () =>
+            {
+                var player = mediaSession.Player;
+                if (player?.CurrentMediaItem != null)
+                {
+                    var list = new List<MediaItem> { player.CurrentMediaItem };
+                    return new MediaSession.MediaItemsWithStartPosition(
+                        list, player.CurrentMediaItemIndex, player.CurrentPosition);
+                }
+                // Sin canción actual — buscar algo popular como fallback
+                var track = await SearchAndResolveAsync("música popular mix");
+                if (track != null)
+                {
+                    var list = new List<MediaItem>
+                    {
+                        BuildResolvedItem(track.Value.videoId, track.Value.title,
+                            track.Value.artist, track.Value.thumb, track.Value.streamUrl)
+                    };
+                    return new MediaSession.MediaItemsWithStartPosition(list, 0, 0);
+                }
+                return new MediaSession.MediaItemsWithStartPosition(new List<MediaItem>(), 0, 0);
+            });
+        }
 
         public IListenableFuture OnPlaybackResumption(MediaSession mediaSession, MediaSession.ControllerInfo controller, bool isForPlayback)
             => OnPlaybackResumption(mediaSession, controller);
@@ -77,6 +101,7 @@ namespace eMusicApp.Platforms.Android
                 foreach (var item in mediaItems)
                 {
                     var query = GetSearchQuery(item);
+                    System.Diagnostics.Debug.WriteLine($"[SessionCallback] OnAddMediaItems query='{query}' mediaId='{item.MediaId}'");
 
                     if (!string.IsNullOrEmpty(query))
                     {
@@ -86,6 +111,11 @@ namespace eMusicApp.Platforms.Android
                             resolved.Add(BuildResolvedItem(
                                 track.Value.videoId, track.Value.title, track.Value.artist,
                                 track.Value.thumb, track.Value.streamUrl));
+                            System.Diagnostics.Debug.WriteLine($"[SessionCallback] Resolved: {track.Value.title}");
+                        }
+                        else
+                        {
+                            System.Diagnostics.Debug.WriteLine($"[SessionCallback] Search failed for: {query}");
                         }
                     }
                     else if (!string.IsNullOrEmpty(item.MediaId))
@@ -99,8 +129,25 @@ namespace eMusicApp.Platforms.Android
                                 track.Value.thumb, track.Value.streamUrl));
                         }
                     }
+                    else
+                    {
+                        // Fallback: intentar con el título del MediaItem como query
+                        var title = item.MediaMetadata?.Title?.ToString();
+                        if (!string.IsNullOrEmpty(title))
+                        {
+                            System.Diagnostics.Debug.WriteLine($"[SessionCallback] Fallback search by title: {title}");
+                            var track = await SearchAndResolveAsync(title);
+                            if (track != null)
+                            {
+                                resolved.Add(BuildResolvedItem(
+                                    track.Value.videoId, track.Value.title, track.Value.artist,
+                                    track.Value.thumb, track.Value.streamUrl));
+                            }
+                        }
+                    }
                 }
 
+                System.Diagnostics.Debug.WriteLine($"[SessionCallback] Resolved {resolved.Count} items");
                 var javaList = new Java.Util.ArrayList();
                 foreach (var r in resolved) javaList.Add(r);
                 return (Java.Lang.Object)javaList;

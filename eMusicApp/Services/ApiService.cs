@@ -283,6 +283,22 @@ namespace eMusicApp.Services
             }
         }
 
+        public async Task<List<GenreStat>> GetTopGenresAsync()
+        {
+            try
+            {
+                var response = await _httpClient.GetAsync($"{BaseUrl}/history/top-genres");
+                if (!response.IsSuccessStatusCode) return new List<GenreStat>();
+                var json = await response.Content.ReadAsStringAsync();
+                return JsonSerializer.Deserialize<List<GenreStat>>(json, JsonOpts) ?? new List<GenreStat>();
+            }
+            catch (System.Exception ex)
+            {
+                System.Diagnostics.Debug.WriteLine($"[API] GetTopGenresAsync ERROR: {ex.Message}");
+                return new List<GenreStat>();
+            }
+        }
+
         public async Task AddHistoryAsync(Track track)
         {
             try

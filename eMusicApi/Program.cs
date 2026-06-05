@@ -25,6 +25,14 @@ using (var scope = app.Services.CreateScope())
 {
     var db = scope.ServiceProvider.GetRequiredService<AppDbContext>();
     db.Database.EnsureCreated();
+
+    // Agregar columna PlayCount si no existe (SQLite no la agrega con EnsureCreated si la tabla ya existe)
+    try
+    {
+        db.Database.ExecuteSqlRaw(
+            "ALTER TABLE History ADD COLUMN PlayCount INTEGER NOT NULL DEFAULT 1");
+    }
+    catch { /* columna ya existe */ }
 }
 
 if (app.Environment.IsDevelopment())

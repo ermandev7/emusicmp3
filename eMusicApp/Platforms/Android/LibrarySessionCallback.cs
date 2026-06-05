@@ -1,3 +1,4 @@
+using Android.Content;
 using Android.OS;
 using AndroidX.Concurrent.Futures;
 using AndroidX.Media3.Common;
@@ -12,107 +13,70 @@ using System.Threading.Tasks;
 namespace eMusicApp.Platforms.Android
 {
     /// <summary>
-    /// Callback para MediaLibrarySession. Expone historial y favoritos a Android Auto
-    /// y resuelve comandos de voz (OnAddMediaItems) buscando en la API.
+    /// Callback para MediaSession. Resuelve comandos de voz ("Play X on eMusicApp")
+    /// buscando en la API y devolviendo MediaItems con stream URL.
     /// </summary>
-    public class LibrarySessionCallback : MediaLibraryService.MediaLibrarySession.Callback
+    public class SessionCallback : Java.Lang.Object, MediaSession.ICallback
     {
-        private const string ROOT_ID = "ROOT";
-        private const string HISTORY_ID = "HISTORY";
-        private const string FAVORITES_ID = "FAVORITES";
-
         private static readonly HttpClient _http = new HttpClient
         {
             Timeout = System.TimeSpan.FromSeconds(20)
         };
 
-        // ── Browsing: Root ──
-        public override IListenableFuture OnGetLibraryRoot(
-            MediaLibraryService.MediaLibrarySession session,
-            MediaSession.ControllerInfo browser,
-            MediaLibraryService.LibraryParams? libParams)
+        // ── Aceptar conexiones de Android Auto y otros controladores ──
+        public MediaSession.ConnectionResult OnConnect(
+            MediaSession session,
+            MediaSession.ControllerInfo controller)
         {
-            var root = new MediaItem.Builder()
-                .SetMediaId(ROOT_ID)
-                .SetMediaMetadata(new MediaMetadata.Builder()
-                    .SetIsBrowsable(Java.Lang.Boolean.True)
-                    .SetIsPlayable(Java.Lang.Boolean.False)
-                    .SetMediaType(new Java.Lang.Integer((int)MediaMetadata.MediaTypeFolderMixed))
-                    .SetTitle("eMusicApp")
-                    .Build())
-                .Build();
-
-            return CreateImmediateFuture(
-                MediaLibraryService.LibraryResult.OfItem(root, null));
+            return MediaSession.ConnectionResult.Accept(
+                MediaSession.ConnectionResult.DefaultSessionCommands,
+                MediaSession.ConnectionResult.DefaultPlayerCommands);
         }
 
-        // ── Browsing: Children (categories or tracks) ──
-        public override IListenableFuture OnGetChildren(
-            MediaLibraryService.MediaLibrarySession session,
-            MediaSession.ControllerInfo browser,
-            string parentId,
-            int page, int pageSize,
-            MediaLibraryService.LibraryParams? libParams)
-        {
-            if (parentId == ROOT_ID)
-            {
-                var folders = new Java.Util.ArrayList();
-                folders.Add(BuildFolder(HISTORY_ID, "Historial"));
-                folders.Add(BuildFolder(FAVORITES_ID, "Favoritos"));
-                return CreateImmediateFuture(
-                    MediaLibraryService.LibraryResult.OfItemList(
-                        (Java.Util.IList)folders, null));
-            }
+        public void OnPostConnect(MediaSession session, MediaSession.ControllerInfo controller) { }
+        public void OnDisconnected(MediaSession session, MediaSession.ControllerInfo controller) { }
+        public void OnPlayerInteractionFinished(MediaSession session, MediaSession.ControllerInfo controllerInfo, PlayerCommands playerCommands) { }
 
-            return CreateAsyncFuture(async () =>
-            {
-                var tracks = parentId == FAVORITES_ID
-                    ? await FetchFavoritesAsync()
-                    : await FetchHistoryAsync();
+        public int OnPlayerCommandRequest(MediaSession session, MediaSession.ControllerInfo controller, int playerCommand)
+            => playerCommand; // Allow all commands
 
-                var items = new Java.Util.ArrayList();
-                foreach (var t in tracks.Take(30))
-                    items.Add(BuildPlayableItem(t.videoId, t.title, t.artist, t.thumb));
+        public bool OnMediaButtonEvent(MediaSession session, MediaSession.ControllerInfo controllerInfo, Intent intent)
+            => false; // Not handled, let default behavior
 
-                return (Java.Lang.Object)MediaLibraryService.LibraryResult.OfItemList(
-                    (Java.Util.IList)items, null);
-            });
-        }
+        public IListenableFuture OnCustomCommand(MediaSession session, MediaSession.ControllerInfo controller, SessionCommand customCommand, Bundle args)
+            => CreateImmediateFuture(new SessionResult(SessionResult.ResultErrorNotSupported));
 
-        // ── Search (Android Auto search bar) ──
-        public override IListenableFuture OnGetSearchResult(
-            MediaLibraryService.MediaLibrarySession session,
-            MediaSession.ControllerInfo browser,
-            string query,
-            int page, int pageSize,
-            MediaLibraryService.LibraryParams? libParams)
-        {
-            return CreateAsyncFuture(async () =>
-            {
-                var tracks = await SearchTracksAsync(query);
-                var items = new Java.Util.ArrayList();
-                foreach (var t in tracks.Take(20))
-                    items.Add(BuildPlayableItem(t.videoId, t.title, t.artist, t.thumb));
+        public IListenableFuture OnCustomCommand(MediaSession session, MediaSession.ControllerInfo controller, SessionCommand customCommand, Bundle args, MediaSession.IProgressReporter progressReporter)
+            => CreateImmediateFuture(new SessionResult(SessionResult.ResultErrorNotSupported));
 
-                return (Java.Lang.Object)MediaLibraryService.LibraryResult.OfItemList(
-                    (Java.Util.IList)items, null);
-            });
-        }
+        public IListenableFuture OnSetMediaItems(MediaSession mediaSession, MediaSession.ControllerInfo controller, IList<MediaItem> mediaItems, int startIndex, long startPositionMs)
+            => OnAddMediaItems(mediaSession, controller, mediaItems);
+
+        public IListenableFuture OnSetRating(MediaSession session, MediaSession.ControllerInfo controller, Rating rating)
+            => CreateImmediateFuture(new SessionResult(SessionResult.ResultErrorNotSupported));
+
+        public IListenableFuture OnSetRating(MediaSession session, MediaSession.ControllerInfo controller, string mediaId, Rating rating)
+            => CreateImmediateFuture(new SessionResult(SessionResult.ResultErrorNotSupported));
+
+        public IListenableFuture OnPlaybackResumption(MediaSession mediaSession, MediaSession.ControllerInfo controller)
+            => CreateImmediateFuture(new SessionResult(SessionResult.ResultErrorNotSupported));
+
+        public IListenableFuture OnPlaybackResumption(MediaSession mediaSession, MediaSession.ControllerInfo controller, bool isForPlayback)
+            => OnPlaybackResumption(mediaSession, controller);
 
         // ── Voice commands: "Play X on eMusicApp" ──
-        public override IListenableFuture OnAddMediaItems(
+        public IListenableFuture OnAddMediaItems(
             MediaSession session,
             MediaSession.ControllerInfo controller,
-            Java.Util.IList mediaItems)
+            IList<MediaItem> mediaItems)
         {
             return CreateAsyncFuture(async () =>
             {
-                var resolved = new Java.Util.ArrayList();
+                var resolved = new List<MediaItem>();
 
-                for (int i = 0; i < mediaItems.Size(); i++)
+                foreach (var item in mediaItems)
                 {
-                    var item = (MediaItem)mediaItems.Get(i)!;
-                    var query = item.RequestMetadata?.SearchQuery;
+                    var query = GetSearchQuery(item);
 
                     if (!string.IsNullOrEmpty(query))
                     {
@@ -137,8 +101,34 @@ namespace eMusicApp.Platforms.Android
                     }
                 }
 
-                return (Java.Lang.Object)(Java.Util.IList)resolved;
+                var javaList = new Java.Util.ArrayList();
+                foreach (var r in resolved) javaList.Add(r);
+                return (Java.Lang.Object)javaList;
             });
+        }
+
+        /// <summary>
+        /// Accede al campo Java requestMetadata.searchQuery via JNI,
+        /// ya que los bindings .NET no exponen RequestMetadata como propiedad de MediaItem.
+        /// </summary>
+        private static string? GetSearchQuery(MediaItem item)
+        {
+            try
+            {
+                var itemClass = Java.Lang.Class.FromType(typeof(MediaItem));
+                var field = itemClass.GetField("requestMetadata");
+                var reqMeta = field?.Get(item);
+                if (reqMeta == null) return null;
+
+                var reqMetaClass = reqMeta.Class;
+                var searchField = reqMetaClass.GetField("searchQuery");
+                var searchQuery = searchField?.Get(reqMeta)?.ToString();
+                return string.IsNullOrEmpty(searchQuery) ? null : searchQuery;
+            }
+            catch
+            {
+                return null;
+            }
         }
 
         // ── Future helpers ──
@@ -179,8 +169,8 @@ namespace eMusicApp.Platforms.Android
                     }
                     catch (System.Exception ex)
                     {
-                        System.Diagnostics.Debug.WriteLine($"[LibraryCallback] Error: {ex.Message}");
-                        completer.Set(new Java.Util.ArrayList()); // empty fallback
+                        System.Diagnostics.Debug.WriteLine($"[SessionCallback] Error: {ex.Message}");
+                        completer.Set(new Java.Util.ArrayList());
                     }
                 });
                 return null;
@@ -188,25 +178,6 @@ namespace eMusicApp.Platforms.Android
         }
 
         // ── API calls ──
-
-        private static async Task<List<(string videoId, string title, string artist, string thumb)>> FetchHistoryAsync()
-        {
-            var json = await _http.GetStringAsync($"{AppConstants.ApiBaseUrl}/history");
-            return ParseTracks(json);
-        }
-
-        private static async Task<List<(string videoId, string title, string artist, string thumb)>> FetchFavoritesAsync()
-        {
-            var json = await _http.GetStringAsync($"{AppConstants.ApiBaseUrl}/favorites");
-            return ParseTracks(json);
-        }
-
-        private static async Task<List<(string videoId, string title, string artist, string thumb)>> SearchTracksAsync(string query)
-        {
-            var url = $"{AppConstants.ApiBaseUrl}/search?q={System.Uri.EscapeDataString(query)}";
-            var json = await _http.GetStringAsync(url);
-            return ParseSearchResults(json);
-        }
 
         private static async Task<(string videoId, string title, string artist, string thumb, string streamUrl)?> SearchAndResolveAsync(string query)
         {
@@ -216,6 +187,40 @@ namespace eMusicApp.Platforms.Android
             var streamUrl = await GetBestStreamUrlAsync(first.videoId);
             if (string.IsNullOrEmpty(streamUrl)) return null;
             return (first.videoId, first.title, first.artist, first.thumb, streamUrl);
+        }
+
+        private static async Task<List<(string videoId, string title, string artist, string thumb)>> SearchTracksAsync(string query)
+        {
+            var url = $"{AppConstants.ApiBaseUrl}/search?q={System.Uri.EscapeDataString(query)}";
+            var json = await _http.GetStringAsync(url);
+            var result = new List<(string, string, string, string)>();
+            try
+            {
+                using var doc = JsonDocument.Parse(json);
+                JsonElement items;
+                if (doc.RootElement.TryGetProperty("items", out items)) { }
+                else if (doc.RootElement.ValueKind == JsonValueKind.Array) items = doc.RootElement;
+                else return result;
+
+                foreach (var el in items.EnumerateArray())
+                {
+                    if (el.TryGetProperty("type", out var typeEl))
+                    {
+                        var type = typeEl.GetString();
+                        if (!string.IsNullOrEmpty(type) && type != "stream") continue;
+                    }
+                    var vid = ExtractVideoId(el);
+                    if (string.IsNullOrEmpty(vid)) continue;
+                    var title = el.TryGetProperty("title", out var tp) ? tp.GetString() ?? "" : "";
+                    var artist = el.TryGetProperty("uploaderName", out var up) ? up.GetString() ?? ""
+                               : el.TryGetProperty("uploader", out var up2) ? up2.GetString() ?? "" : "";
+                    var thumb = el.TryGetProperty("thumbnailUrl", out var thp) ? thp.GetString() ?? ""
+                              : el.TryGetProperty("thumbnail", out var thp2) ? thp2.GetString() ?? "" : "";
+                    result.Add((vid, title, artist, thumb));
+                }
+            }
+            catch { }
+            return result;
         }
 
         private static async Task<(string title, string artist, string thumb, string streamUrl)?> ResolveStreamAsync(string videoId)
@@ -261,59 +266,6 @@ namespace eMusicApp.Platforms.Android
             catch { return null; }
         }
 
-        // ── JSON parsing ──
-
-        private static List<(string videoId, string title, string artist, string thumb)> ParseTracks(string json)
-        {
-            var result = new List<(string, string, string, string)>();
-            try
-            {
-                using var doc = JsonDocument.Parse(json);
-                JsonElement.ArrayEnumerator arr;
-                if (doc.RootElement.ValueKind == JsonValueKind.Array)
-                    arr = doc.RootElement.EnumerateArray();
-                else if (doc.RootElement.TryGetProperty("items", out var items))
-                    arr = items.EnumerateArray();
-                else return result;
-
-                foreach (var el in arr)
-                {
-                    var vid = ExtractVideoId(el);
-                    if (string.IsNullOrEmpty(vid)) continue;
-                    result.Add((vid, GetString(el, "title"), GetArtist(el), GetThumb(el)));
-                }
-            }
-            catch { }
-            return result;
-        }
-
-        private static List<(string videoId, string title, string artist, string thumb)> ParseSearchResults(string json)
-        {
-            var result = new List<(string, string, string, string)>();
-            try
-            {
-                using var doc = JsonDocument.Parse(json);
-                JsonElement items;
-                if (doc.RootElement.TryGetProperty("items", out items)) { }
-                else if (doc.RootElement.ValueKind == JsonValueKind.Array) items = doc.RootElement;
-                else return result;
-
-                foreach (var el in items.EnumerateArray())
-                {
-                    if (el.TryGetProperty("type", out var typeEl))
-                    {
-                        var type = typeEl.GetString();
-                        if (!string.IsNullOrEmpty(type) && type != "stream") continue;
-                    }
-                    var vid = ExtractVideoId(el);
-                    if (string.IsNullOrEmpty(vid)) continue;
-                    result.Add((vid, GetString(el, "title"), GetArtist(el), GetThumb(el)));
-                }
-            }
-            catch { }
-            return result;
-        }
-
         private static string? ExtractVideoId(JsonElement el)
         {
             if (el.TryGetProperty("videoId", out var vp))
@@ -330,48 +282,7 @@ namespace eMusicApp.Platforms.Android
             return null;
         }
 
-        private static string GetString(JsonElement el, string prop)
-            => el.TryGetProperty(prop, out var p) ? p.GetString() ?? "" : "";
-
-        private static string GetArtist(JsonElement el)
-            => GetString(el, "uploaderName") is { Length: > 0 } u ? u
-             : GetString(el, "artist") is { Length: > 0 } a ? a
-             : GetString(el, "uploader");
-
-        private static string GetThumb(JsonElement el)
-            => GetString(el, "thumbnailUrl") is { Length: > 0 } t ? t
-             : GetString(el, "thumbnail");
-
-        // ── MediaItem builders ──
-
-        private static MediaItem BuildFolder(string id, string title)
-        {
-            return new MediaItem.Builder()
-                .SetMediaId(id)
-                .SetMediaMetadata(new MediaMetadata.Builder()
-                    .SetTitle(title)
-                    .SetIsBrowsable(Java.Lang.Boolean.True)
-                    .SetIsPlayable(Java.Lang.Boolean.False)
-                    .SetMediaType(new Java.Lang.Integer((int)MediaMetadata.MediaTypeFolderMixed))
-                    .Build())
-                .Build();
-        }
-
-        private static MediaItem BuildPlayableItem(string videoId, string title, string artist, string thumbUrl)
-        {
-            var meta = new MediaMetadata.Builder()
-                .SetTitle(title)
-                .SetArtist(artist)
-                .SetIsBrowsable(Java.Lang.Boolean.False)
-                .SetIsPlayable(Java.Lang.Boolean.True)
-                .SetMediaType(new Java.Lang.Integer((int)MediaMetadata.MediaTypeMusic));
-            if (!string.IsNullOrEmpty(thumbUrl))
-                meta.SetArtworkUri(global::Android.Net.Uri.Parse(thumbUrl));
-            return new MediaItem.Builder()
-                .SetMediaId(videoId)
-                .SetMediaMetadata(meta.Build())
-                .Build();
-        }
+        // ── MediaItem builder ──
 
         private static MediaItem BuildResolvedItem(string videoId, string title, string artist, string thumbUrl, string streamUrl)
         {

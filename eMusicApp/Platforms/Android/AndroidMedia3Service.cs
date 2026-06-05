@@ -16,10 +16,10 @@ using System.Threading.Tasks;
 namespace eMusicApp.Platforms.Android
 {
     [Service(Exported = true, ForegroundServiceType = global::Android.Content.PM.ForegroundService.TypeMediaPlayback)]
-    [IntentFilter(new[] { "androidx.media3.session.MediaLibraryService", "android.media.browse.MediaBrowserService" })]
-    public class AndroidMedia3Service : MediaLibraryService
+    [IntentFilter(new[] { "androidx.media3.session.MediaSessionService", "android.media.browse.MediaBrowserService" })]
+    public class AndroidMedia3Service : MediaSessionService
     {
-        private MediaLibraryService.MediaLibrarySession? _mediaSession;
+        private MediaSession? _mediaSession;
         private IExoPlayer? _player;
 
         public static AndroidMedia3Service? Instance { get; private set; }
@@ -109,7 +109,8 @@ namespace eMusicApp.Platforms.Android
                 .SetAudioAttributes(audioAttributes, true)
                 .Build();
 
-            _mediaSession = new MediaLibraryService.MediaLibrarySession.Builder(this, _player, new LibrarySessionCallback())
+            _mediaSession = new MediaSession.Builder(this, _player)
+                .SetCallback(new SessionCallback())
                 .Build();
 
             _progressHandler  = new global::Android.OS.Handler(global::Android.OS.Looper.MainLooper!);
@@ -120,7 +121,7 @@ namespace eMusicApp.Platforms.Android
             PostMediaNotification();
         }
 
-        public override MediaLibraryService.MediaLibrarySession? OnGetSessionFromMediaLibraryService(MediaSession.ControllerInfo? controllerInfo)
+        public override MediaSession? OnGetSession(MediaSession.ControllerInfo? controllerInfo)
             => _mediaSession;
 
         // ── Notificación MediaStyle manual (Plan B) ──

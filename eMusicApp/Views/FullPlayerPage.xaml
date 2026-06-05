@@ -72,7 +72,7 @@
         </Grid>
 
         <!-- Track Info -->
-        <Grid Grid.Row="2" ColumnDefinitions="*, Auto, Auto" Margin="0,0,0,20">
+        <Grid Grid.Row="2" ColumnDefinitions="*, Auto" Margin="0,0,0,20">
             <StackLayout Grid.Column="0" VerticalOptions="Center">
                 <Label Text="{Binding Player.CurrentTrack.Title}"
                        TextColor="White"
@@ -86,20 +86,13 @@
                        MaxLines="1"
                        LineBreakMode="TailTruncation" />
             </StackLayout>
-            <ImageButton Grid.Column="1" 
-                          Source="download.png" 
-                          BackgroundColor="Transparent" 
-                          WidthRequest="30" HeightRequest="30"
-                          Margin="0,0,15,0"
-                          VerticalOptions="Center" 
-                          Command="{Binding Player.DownloadTrackCommand}"
-                          CommandParameter="{Binding Player.CurrentTrack}" />
-            <ImageButton Grid.Column="2"
-                          Source="{Binding Player.FavoriteIcon}"
+            <ImageButton Grid.Column="1"
+                          Source="download.png"
                           BackgroundColor="Transparent"
                           WidthRequest="30" HeightRequest="30"
                           VerticalOptions="Center"
-                          Command="{Binding Player.ToggleFavoriteCommand}" />
+                          Command="{Binding Player.DownloadTrackCommand}"
+                          CommandParameter="{Binding Player.CurrentTrack}" />
         </Grid>
 
         <!-- Controls -->

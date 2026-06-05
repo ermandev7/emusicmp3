@@ -8,83 +8,17 @@
              Title="Biblioteca"
              BackgroundColor="#121212">
 
-    <Grid RowDefinitions="Auto, Auto, *, Auto">
+    <Grid RowDefinitions="Auto, *, Auto">
 
         <!-- Header -->
-        <Label Grid.Row="0" Text="Tu Biblioteca" TextColor="White" FontSize="24"
+        <Label Grid.Row="0" Text="Descargas" TextColor="White" FontSize="24"
                FontAttributes="Bold" Margin="16,20,16,12" />
 
-        <!-- Tabs Favoritos / Descargas -->
-        <HorizontalStackLayout Grid.Row="1" Spacing="10" Margin="16,0,16,10">
-            <Button Text="{Binding FavoritesTabText}"
-                    TextColor="{Binding FavoritesTabTextColor}"
-                    BackgroundColor="{Binding FavoritesTabBg}"
-                    FontSize="13" FontAttributes="Bold"
-                    CornerRadius="16" HeightRequest="34" Padding="16,0"
-                    BorderColor="Transparent"
-                    Command="{Binding SetTabCommand}" CommandParameter="Favoritos" />
-            <Button Text="{Binding DownloadsTabText}"
-                    TextColor="{Binding DownloadsTabTextColor}"
-                    BackgroundColor="{Binding DownloadsTabBg}"
-                    FontSize="13" FontAttributes="Bold"
-                    CornerRadius="16" HeightRequest="34" Padding="16,0"
-                    BorderColor="Transparent"
-                    Command="{Binding SetTabCommand}" CommandParameter="Descargas" />
-        </HorizontalStackLayout>
-
-        <!-- Favoritos list -->
-        <CollectionView Grid.Row="2"
-                        ItemsSource="{Binding LikedSongs}"
-                        SelectionMode="None"
-                        Margin="10,0"
-                        IsVisible="{Binding ShowFavorites}">
-            <CollectionView.EmptyView>
-                <StackLayout VerticalOptions="Center" HorizontalOptions="Center"
-                             Spacing="10" Padding="40,0">
-                    <Label Text="Sin favoritos aun"
-                           TextColor="#B3B3B3" FontSize="18" FontAttributes="Bold"
-                           HorizontalOptions="Center" />
-                    <Label Text="Toca el corazon en una cancion para guardarla"
-                           TextColor="#535353" FontSize="14"
-                           HorizontalOptions="Center" HorizontalTextAlignment="Center" />
-                </StackLayout>
-            </CollectionView.EmptyView>
-            <CollectionView.ItemTemplate>
-                <DataTemplate x:DataType="models:Track">
-                    <Grid Padding="5,4">
-                        <Grid.GestureRecognizers>
-                            <TapGestureRecognizer
-                                Command="{Binding Source={RelativeSource AncestorType={x:Type vm:LibraryViewModel}}, Path=Player.PlayTrackCommand}"
-                                CommandParameter="{Binding .}"/>
-                        </Grid.GestureRecognizers>
-                        <Grid ColumnDefinitions="Auto, *, Auto" Padding="10">
-                            <Border Grid.Column="0" StrokeThickness="0" StrokeShape="RoundRectangle 6"
-                                    WidthRequest="52" HeightRequest="52" Margin="0,0,14,0">
-                                <Image Source="{Binding ThumbnailUrl}" Aspect="AspectFill" />
-                            </Border>
-                            <StackLayout Grid.Column="1" VerticalOptions="Center" Spacing="2">
-                                <Label Text="{Binding Title}" TextColor="White" FontAttributes="Bold" FontSize="15"
-                                       MaxLines="1" LineBreakMode="TailTruncation" />
-                                <Label Text="{Binding Uploader}" TextColor="#B3B3B3" FontSize="13"
-                                       MaxLines="1" LineBreakMode="TailTruncation" />
-                            </StackLayout>
-                            <ImageButton Grid.Column="2" Source="heart_filled.png"
-                                         BackgroundColor="Transparent" WidthRequest="30" HeightRequest="30"
-                                         Padding="5" VerticalOptions="Center"
-                                         Command="{Binding Source={RelativeSource AncestorType={x:Type vm:LibraryViewModel}}, Path=RemoveFavoriteCommand}"
-                                         CommandParameter="{Binding .}" />
-                        </Grid>
-                    </Grid>
-                </DataTemplate>
-            </CollectionView.ItemTemplate>
-        </CollectionView>
-
         <!-- Descargas list -->
-        <CollectionView Grid.Row="2"
+        <CollectionView Grid.Row="1"
                         ItemsSource="{Binding DownloadedSongs}"
                         SelectionMode="None"
-                        Margin="10,0"
-                        IsVisible="{Binding ShowDownloads}">
+                        Margin="10,0">
             <CollectionView.EmptyView>
                 <StackLayout VerticalOptions="Center" HorizontalOptions="Center"
                              Spacing="10" Padding="40,0">
@@ -127,7 +61,7 @@
         </CollectionView>
 
         <!-- Download progress -->
-        <Grid Grid.Row="2" VerticalOptions="End" Margin="16,0,16,10"
+        <Grid Grid.Row="1" VerticalOptions="End" Margin="16,0,16,10"
               IsVisible="{Binding IsDownloading}">
             <Border StrokeThickness="0" StrokeShape="RoundRectangle 10"
                     BackgroundColor="#1E1E1E" Padding="14,10">
@@ -140,6 +74,6 @@
             </Border>
         </Grid>
 
-        <views:MiniPlayerView Grid.Row="3" />
+        <views:MiniPlayerView Grid.Row="2" />
     </Grid>
 </ContentPage>

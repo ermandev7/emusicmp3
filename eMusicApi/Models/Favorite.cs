@@ -10,4 +10,5 @@ public class Favorite
     public string Artist { get; set; } = string.Empty;
     public string ThumbnailUrl { get; set; } = string.Empty;
     public long Duration { get; set; }
+    public string UserId { get; set; } = "";
 }

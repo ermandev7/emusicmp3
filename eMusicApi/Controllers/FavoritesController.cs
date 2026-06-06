@@ -17,26 +17,33 @@ public class FavoritesController : ControllerBase
         _context = context;
     }
 
+    private string GetUserId() =>
+        Request.Headers.TryGetValue("X-User-Id", out var val) ? val.ToString() : "";
+
     [HttpGet]
     public async Task<IActionResult> Get()
     {
-        return Ok(await _context.Favorites.AsNoTracking().ToListAsync());
+        var userId = GetUserId();
+        return Ok(await _context.Favorites.AsNoTracking()
+            .Where(f => f.UserId == userId).ToListAsync());
     }
 
     [HttpGet("{id}")]
     public async Task<IActionResult> GetById(string id)
     {
-        var exists = await _context.Favorites.AnyAsync(f => f.Id == id);
+        var userId = GetUserId();
+        var exists = await _context.Favorites.AnyAsync(f => f.Id == id && f.UserId == userId);
         return exists ? Ok() : NotFound();
     }
 
     [HttpPost]
     public async Task<IActionResult> Post([FromBody] FavoriteRequest req)
     {
+        var userId = GetUserId();
         var id = req.VideoId ?? req.Id ?? string.Empty;
         if (string.IsNullOrEmpty(id)) return BadRequest("videoId is required.");
 
-        if (await _context.Favorites.AnyAsync(f => f.Id == id))
+        if (await _context.Favorites.AnyAsync(f => f.Id == id && f.UserId == userId))
             return Conflict("Already exists in favorites.");
 
         var favorite = new Favorite
@@ -45,7 +52,8 @@ public class FavoritesController : ControllerBase
             Title        = req.Title ?? string.Empty,
             Artist       = req.Artist ?? string.Empty,
             ThumbnailUrl = req.ThumbnailUrl ?? string.Empty,
-            Duration     = req.Duration
+            Duration     = req.Duration,
+            UserId       = userId
         };
 
         _context.Favorites.Add(favorite);
@@ -56,7 +64,8 @@ public class FavoritesController : ControllerBase
     [HttpDelete("{id}")]
     public async Task<IActionResult> Delete(string id)
     {
-        var fav = await _context.Favorites.FindAsync(id);
+        var userId = GetUserId();
+        var fav = await _context.Favorites.FirstOrDefaultAsync(f => f.Id == id && f.UserId == userId);
         if (fav == null) return NotFound();
 
         _context.Favorites.Remove(fav);
@@ -65,11 +74,10 @@ public class FavoritesController : ControllerBase
     }
 }
 
-// DTO para aceptar el payload del POST desde la app MAUI
 public class FavoriteRequest
 {
     public string? Id           { get; set; }
-    public string? VideoId      { get; set; } // Alias de Id
+    public string? VideoId      { get; set; }
     public string? Title        { get; set; }
     public string? Artist       { get; set; }
     public string? ThumbnailUrl { get; set; }

@@ -18,10 +18,16 @@ namespace eMusicApp.Platforms.Android
     /// </summary>
     public class SessionCallback : Java.Lang.Object, MediaSession.ICallback
     {
-        private static readonly HttpClient _http = new HttpClient
+        private static readonly HttpClient _http = CreateHttpClient();
+
+        private static HttpClient CreateHttpClient()
         {
-            Timeout = System.TimeSpan.FromSeconds(15) // Cada llamada API tarda ~5-7s, y hacemos 2 secuenciales
-        };
+            var client = new HttpClient { Timeout = System.TimeSpan.FromSeconds(15) };
+            var userId = Preferences.Default.Get("user_id", "");
+            if (!string.IsNullOrEmpty(userId))
+                client.DefaultRequestHeaders.Add("X-User-Id", userId);
+            return client;
+        }
 
         // ── Aceptar conexiones de Android Auto y otros controladores ──
         public MediaSession.ConnectionResult OnConnect(

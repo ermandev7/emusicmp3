@@ -56,9 +56,6 @@
                     Clicked="OnEntrarClicked" />
         </StackLayout>
 
-        <!-- Espacio inferior -->
-        <BoxView Grid.Row="2" Color="Transparent" />
-
     </Grid>
 
 </ContentPage>

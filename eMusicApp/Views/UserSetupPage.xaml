@@ -31,14 +31,15 @@
                    FontAttributes="Bold"
                    HorizontalOptions="Center" />
 
-            <Border StrokeThickness="0"
+            <Border StrokeThickness="1"
+                    Stroke="#333333"
                     StrokeShape="RoundRectangle 12"
-                    BackgroundColor="#242424"
-                    Padding="4,0">
+                    BackgroundColor="#1E1E1E"
+                    Padding="12,4">
                 <Entry x:Name="NameEntry"
                        Placeholder="Tu nombre"
                        TextColor="White"
-                       PlaceholderColor="#535353"
+                       PlaceholderColor="#666666"
                        FontSize="18"
                        HorizontalTextAlignment="Center"
                        BackgroundColor="Transparent"

@@ -5,6 +5,15 @@ public partial class UserSetupPage : ContentPage
     public UserSetupPage()
     {
         InitializeComponent();
+
+        // Quitar underline nativo de Android en el Entry
+        Microsoft.Maui.Handlers.EntryHandler.Mapper.AppendToMapping("NoUnderline", (handler, view) =>
+        {
+#if ANDROID
+            handler.PlatformView.BackgroundTintList =
+                Android.Content.Res.ColorStateList.ValueOf(Android.Graphics.Color.Transparent);
+#endif
+        });
     }
 
     private void OnEntryCompleted(object? sender, EventArgs e)

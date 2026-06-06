@@ -19,19 +19,27 @@ public class HistoryController : ControllerBase
         _context = context;
     }
 
+    private string GetUserId() =>
+        Request.Headers.TryGetValue("X-User-Id", out var val) ? val.ToString() : "";
+
     [HttpGet]
     public async Task<IActionResult> Get()
     {
+        var userId = GetUserId();
         return Ok(await _context.History.AsNoTracking()
+            .Where(h => h.UserId == userId)
             .OrderByDescending(h => h.PlayedAt).Take(50).ToListAsync());
     }
 
     [HttpPost]
     public async Task<IActionResult> Post(History history)
     {
-        // Upsert: si ya existe, incrementar PlayCount y actualizar fecha
+        var userId = GetUserId();
+        history.UserId = userId;
+
+        // Upsert: si ya existe para este usuario, incrementar PlayCount
         var existing = await _context.History
-            .FirstOrDefaultAsync(h => h.VideoId == history.VideoId);
+            .FirstOrDefaultAsync(h => h.VideoId == history.VideoId && h.UserId == userId);
 
         if (existing != null)
         {
@@ -51,8 +59,9 @@ public class HistoryController : ControllerBase
 
         await _context.SaveChangesAsync();
 
-        // Limpiar historial antiguo (mantener los 200 más recientes)
+        // Limpiar historial antiguo de este usuario (mantener 200)
         var oldHistory = await _context.History
+            .Where(h => h.UserId == userId)
             .OrderByDescending(h => h.PlayedAt).Skip(200).ToListAsync();
         if (oldHistory.Any())
         {
@@ -63,14 +72,13 @@ public class HistoryController : ControllerBase
         return CreatedAtAction(nameof(Get), new { id = existing?.Id ?? history.Id }, existing ?? history);
     }
 
-    /// <summary>
-    /// Devuelve los géneros más escuchados, ordenados por total de reproducciones.
-    /// Analiza título y artista de todo el historial con detección de género por keywords.
-    /// </summary>
     [HttpGet("top-genres")]
     public async Task<IActionResult> GetTopGenres()
     {
-        var all = await _context.History.AsNoTracking().ToListAsync();
+        var userId = GetUserId();
+        var all = await _context.History.AsNoTracking()
+            .Where(h => h.UserId == userId)
+            .ToListAsync();
         var counts = new Dictionary<string, int>();
 
         foreach (var h in all)
@@ -91,7 +99,6 @@ public class HistoryController : ControllerBase
     {
         var combined = $"{title} {artist}".ToLowerInvariant();
 
-        // Géneros directos
         string[] genres = { "salsa", "bachata", "reggaeton", "cumbia", "merengue",
             "vallenato", "rock", "pop", "rap", "trap", "balada", "ranchera",
             "corrido", "electronic", "jazz", "blues", "reggae", "clasica", "kpop", "r&b" };
@@ -99,7 +106,6 @@ public class HistoryController : ControllerBase
         foreach (var g in genres)
             if (combined.Contains(g)) return g;
 
-        // Heurísticas
         if (combined.Contains("reggaet") || combined.Contains("perreo")) return "reggaeton";
         if (combined.Contains("cumbi")) return "cumbia";
         if (combined.Contains("bachi")) return "bachata";
@@ -124,7 +130,9 @@ public class HistoryController : ControllerBase
     [HttpDelete]
     public async Task<IActionResult> Clear()
     {
-        _context.History.RemoveRange(_context.History);
+        var userId = GetUserId();
+        var userHistory = await _context.History.Where(h => h.UserId == userId).ToListAsync();
+        _context.History.RemoveRange(userHistory);
         await _context.SaveChangesAsync();
         return NoContent();
     }

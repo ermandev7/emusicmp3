@@ -21,6 +21,14 @@ namespace eMusicApp.Services
             DefaultIgnoreCondition = JsonIgnoreCondition.WhenWritingNull
         };
 
+        private static string _userId = "";
+
+        /// <summary>Configura el userId para todas las instancias de ApiService.</summary>
+        public static void SetUserId(string userId)
+        {
+            _userId = userId;
+        }
+
         public ApiService()
         {
             _httpClient = new HttpClient
@@ -29,6 +37,8 @@ namespace eMusicApp.Services
                 Timeout = System.TimeSpan.FromSeconds(25)
             };
             _httpClient.DefaultRequestHeaders.Add("User-Agent", "eMusicApp/1.0");
+            if (!string.IsNullOrEmpty(_userId))
+                _httpClient.DefaultRequestHeaders.Add("X-User-Id", _userId);
         }
 
         // ─────────────────────────────────────────────

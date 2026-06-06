@@ -18,16 +18,23 @@ public class PlaylistsController : ControllerBase
         _context = context;
     }
 
+    private string GetUserId() =>
+        Request.Headers.TryGetValue("X-User-Id", out var val) ? val.ToString() : "";
+
     [HttpGet]
     public async Task<IActionResult> Get()
     {
-        return Ok(await _context.Playlists.AsNoTracking().ToListAsync());
+        var userId = GetUserId();
+        return Ok(await _context.Playlists.AsNoTracking()
+            .Where(p => p.UserId == userId).ToListAsync());
     }
 
     [HttpGet("{id}")]
     public async Task<IActionResult> Get(int id)
     {
-        var playlist = await _context.Playlists.AsNoTracking().FirstOrDefaultAsync(p => p.Id == id);
+        var userId = GetUserId();
+        var playlist = await _context.Playlists.AsNoTracking()
+            .FirstOrDefaultAsync(p => p.Id == id && p.UserId == userId);
         if (playlist == null) return NotFound();
         return Ok(playlist);
     }
@@ -35,6 +42,7 @@ public class PlaylistsController : ControllerBase
     [HttpPost]
     public async Task<IActionResult> Post(Playlist playlist)
     {
+        playlist.UserId = GetUserId();
         _context.Playlists.Add(playlist);
         await _context.SaveChangesAsync();
         return CreatedAtAction(nameof(Get), new { id = playlist.Id }, playlist);
@@ -43,9 +51,10 @@ public class PlaylistsController : ControllerBase
     [HttpPut("{id}")]
     public async Task<IActionResult> Put(int id, Playlist updatedPlaylist)
     {
+        var userId = GetUserId();
         if (id != updatedPlaylist.Id) return BadRequest();
 
-        var existing = await _context.Playlists.FindAsync(id);
+        var existing = await _context.Playlists.FirstOrDefaultAsync(p => p.Id == id && p.UserId == userId);
         if (existing == null) return NotFound();
 
         existing.Name = updatedPlaylist.Name;
@@ -59,7 +68,8 @@ public class PlaylistsController : ControllerBase
     [HttpDelete("{id}")]
     public async Task<IActionResult> Delete(int id)
     {
-        var playlist = await _context.Playlists.FindAsync(id);
+        var userId = GetUserId();
+        var playlist = await _context.Playlists.FirstOrDefaultAsync(p => p.Id == id && p.UserId == userId);
         if (playlist == null) return NotFound();
 
         _context.Playlists.Remove(playlist);
@@ -71,12 +81,12 @@ public class PlaylistsController : ControllerBase
     public async Task<IActionResult> AddTrack(int id, [FromBody] JsonNode? track)
     {
         if (track == null) return BadRequest();
-        var playlist = await _context.Playlists.FindAsync(id);
+        var userId = GetUserId();
+        var playlist = await _context.Playlists.FirstOrDefaultAsync(p => p.Id == id && p.UserId == userId);
         if (playlist == null) return NotFound();
 
         var array = JsonNode.Parse(playlist.SongsJson ?? "[]")?.AsArray() ?? new JsonArray();
 
-        // Remove duplicate by videoId
         var videoId = track["videoId"]?.GetValue<string>();
         if (videoId != null)
         {
@@ -96,7 +106,8 @@ public class PlaylistsController : ControllerBase
     [HttpDelete("{id}/tracks/{videoId}")]
     public async Task<IActionResult> RemoveTrack(int id, string videoId)
     {
-        var playlist = await _context.Playlists.FindAsync(id);
+        var userId = GetUserId();
+        var playlist = await _context.Playlists.FirstOrDefaultAsync(p => p.Id == id && p.UserId == userId);
         if (playlist == null) return NotFound();
 
         var array = JsonNode.Parse(playlist.SongsJson ?? "[]")?.AsArray() ?? new JsonArray();

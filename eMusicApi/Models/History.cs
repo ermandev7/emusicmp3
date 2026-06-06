@@ -16,4 +16,5 @@ public class History
     public long Duration { get; set; }
     public int PlayCount { get; set; } = 1;
     public DateTime PlayedAt { get; set; } = DateTime.UtcNow;
+    public string UserId { get; set; } = "";
 }

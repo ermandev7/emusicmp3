@@ -341,6 +341,12 @@ public class MusicExtractionService
                 var id = root.TryGetProperty("id", out var idEl) ? idEl.GetString() ?? "" : "";
                 var title = root.TryGetProperty("title", out var titleEl) ? titleEl.GetString() ?? "" : "";
                 var uploader = root.TryGetProperty("uploader", out var uploaderEl) ? uploaderEl.GetString() ?? "" : "";
+                if (string.IsNullOrEmpty(uploader))
+                    uploader = root.TryGetProperty("channel", out var channelEl) ? channelEl.GetString() ?? "" : "";
+                if (string.IsNullOrEmpty(uploader))
+                    uploader = root.TryGetProperty("artist", out var artistEl) ? artistEl.GetString() ?? "" : "";
+                if (string.IsNullOrEmpty(uploader))
+                    uploader = root.TryGetProperty("creator", out var creatorEl) ? creatorEl.GetString() ?? "" : "";
                 // Thumbnail fiable con URL estándar de YouTube (siempre funciona)
                 var thumb = $"https://i.ytimg.com/vi/{id}/mqdefault.jpg";
                 var duration = root.TryGetProperty("duration", out var durEl) && durEl.ValueKind == JsonValueKind.Number

@@ -149,7 +149,8 @@ namespace eMusicApp.Platforms.Android
                 .SetAudioAttributes(audioAttributes, true)
                 .Build();
 
-            _mediaSession = new MediaSession.Builder(this, _player)
+            var wrappedPlayer = new SkipAwareForwardingPlayer(_player, this);
+            _mediaSession = new MediaSession.Builder(this, wrappedPlayer)
                 .SetCallback(new SessionCallback())
                 .Build();
 
@@ -211,6 +212,9 @@ namespace eMusicApp.Platforms.Android
             return PendingIntent.GetForegroundService(this, action.GetHashCode(), intent,
                 PendingIntentFlags.UpdateCurrent | PendingIntentFlags.Immutable)!;
         }
+
+        /// <summary>Thread-safe wrapper para que el ForwardingPlayer actualice la notificación.</summary>
+        public void PostMediaNotificationSafe() => PostMediaNotification();
 
         private bool _isPostingNotification;
         private void PostMediaNotification()
@@ -372,8 +376,13 @@ namespace eMusicApp.Platforms.Android
                         _player.Volume = 1f;
                     }
 
-                    if (_nativeQueue.Count > 0 && !_isFetchingNext)
-                        _ = FetchNextTrackNativelyAsync();
+                    if (!_isFetchingNext)
+                    {
+                        if (_nativeQueue.Count > 0)
+                            _ = FetchNextTrackNativelyAsync();
+                        else
+                            _ = FetchRelatedAndQueueNextAsync(playingId);
+                    }
                 }
             }
 
@@ -872,6 +881,128 @@ namespace eMusicApp.Platforms.Android
             _mediaSession     = null;
             Instance          = null;
             base.OnDestroy();
+        }
+    }
+
+    /// <summary>
+    /// Intercepta comandos de Android Auto (next/prev/play/pause/stop).
+    /// - Next/Previous: si ExoPlayer no tiene items, dispara búsqueda nativa.
+    /// - Siempre reporta Next/Prev como disponibles para que Android Auto muestre los botones.
+    /// - Play/Pause/Stop: actualiza la notificación MediaStyle tras cada acción.
+    /// </summary>
+    public class SkipAwareForwardingPlayer : AndroidX.Media3.Common.ForwardingPlayer
+    {
+        private readonly AndroidMedia3Service _service;
+
+        public SkipAwareForwardingPlayer(IPlayer player, AndroidMedia3Service service)
+            : base(player)
+        {
+            _service = service;
+        }
+
+        // Constantes de Player.COMMAND_* (Media3 spec, no expuestas en .NET bindings)
+        private const int CMD_STOP = 3;
+        private const int CMD_SEEK_TO_PREVIOUS = 15;
+        private const int CMD_SEEK_TO_PREVIOUS_MEDIA_ITEM = 16;
+        private const int CMD_SEEK_TO_NEXT = 17;
+        private const int CMD_SEEK_TO_NEXT_MEDIA_ITEM = 18;
+
+        // Siempre reportar Next/Previous como disponibles para que Android Auto muestre los botones
+        public override bool IsCommandAvailable(int command)
+        {
+            if (command == CMD_SEEK_TO_NEXT
+                || command == CMD_SEEK_TO_NEXT_MEDIA_ITEM
+                || command == CMD_SEEK_TO_PREVIOUS
+                || command == CMD_SEEK_TO_PREVIOUS_MEDIA_ITEM
+                || command == CMD_STOP)
+                return true;
+            return base.IsCommandAvailable(command);
+        }
+
+        public override PlayerCommands AvailableCommands
+        {
+            get
+            {
+                var cmds = base.AvailableCommands;
+                return cmds.BuildUpon()
+                    .Add(CMD_SEEK_TO_NEXT)
+                    .Add(CMD_SEEK_TO_NEXT_MEDIA_ITEM)
+                    .Add(CMD_SEEK_TO_PREVIOUS)
+                    .Add(CMD_SEEK_TO_PREVIOUS_MEDIA_ITEM)
+                    .Add(CMD_STOP)
+                    .Build();
+            }
+        }
+
+        // ── Next ──
+        public override void SeekToNext()
+        {
+            if (HasNextMediaItem)
+            {
+                base.SeekToNext();
+            }
+            else
+            {
+                System.Diagnostics.Debug.WriteLine("[ForwardingPlayer] SeekToNext sin items — skip nativo");
+                NativeAudioController.OnSkipToNext?.Invoke();
+                _ = _service.FetchNextTrackNativelyAsync();
+            }
+        }
+
+        public override void SeekToNextMediaItem()
+        {
+            if (HasNextMediaItem)
+            {
+                base.SeekToNextMediaItem();
+            }
+            else
+            {
+                System.Diagnostics.Debug.WriteLine("[ForwardingPlayer] SeekToNextMediaItem sin items — skip nativo");
+                NativeAudioController.OnSkipToNext?.Invoke();
+                _ = _service.FetchNextTrackNativelyAsync();
+            }
+        }
+
+        // ── Previous ──
+        public override void SeekToPrevious()
+        {
+            // Si llevamos más de 3s de reproducción, reiniciar la canción
+            if (CurrentPosition > 3000)
+            {
+                SeekTo(0);
+                return;
+            }
+            if (HasPreviousMediaItem)
+                base.SeekToPrevious();
+            else
+                NativeAudioController.OnSkipToPrevious?.Invoke();
+        }
+
+        public override void SeekToPreviousMediaItem()
+        {
+            if (HasPreviousMediaItem)
+                base.SeekToPreviousMediaItem();
+            else
+                NativeAudioController.OnSkipToPrevious?.Invoke();
+        }
+
+        // ── Play / Pause / Stop — actualizar notificación ──
+        public override void Play()
+        {
+            base.Play();
+            _service?.PostMediaNotificationSafe();
+        }
+
+        public override void Pause()
+        {
+            base.Pause();
+            _service?.PostMediaNotificationSafe();
+        }
+
+        public override void Stop()
+        {
+            base.Stop();
+            _service?.PostMediaNotificationSafe();
         }
     }
 }

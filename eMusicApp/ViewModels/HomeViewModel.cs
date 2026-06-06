@@ -87,10 +87,10 @@ namespace eMusicApp.ViewModels
         {
             get
             {
+                var name = Preferences.Default.Get("user_name", "");
                 int hour = DateTime.Now.Hour;
-                if (hour < 12) return "Buenos dias";
-                if (hour < 19) return "Buenas tardes";
-                return "Buenas noches";
+                var saludo = hour < 12 ? "Buenos dias" : hour < 19 ? "Buenas tardes" : "Buenas noches";
+                return string.IsNullOrEmpty(name) ? saludo : $"{saludo}, {name}";
             }
         }
 

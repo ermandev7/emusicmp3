@@ -56,7 +56,15 @@ namespace eMusicApp.Platforms.Android
             => CreateImmediateFuture(new SessionResult(SessionResult.ResultErrorNotSupported));
 
         public IListenableFuture OnSetMediaItems(MediaSession mediaSession, MediaSession.ControllerInfo controller, IList<MediaItem> mediaItems, int startIndex, long startPositionMs)
-            => OnAddMediaItems(mediaSession, controller, mediaItems);
+        {
+            // Media3 espera MediaItemsWithStartPosition, NO List<MediaItem>
+            return CreateAsyncFuture(async () =>
+            {
+                var resolved = await ResolveItemsInternalAsync(mediaItems);
+                return (Java.Lang.Object)new MediaSession.MediaItemsWithStartPosition(
+                    resolved, startIndex, startPositionMs);
+            });
+        }
 
         public IListenableFuture OnSetRating(MediaSession session, MediaSession.ControllerInfo controller, Rating rating)
             => CreateImmediateFuture(new SessionResult(SessionResult.ResultErrorNotSupported));
@@ -120,78 +128,85 @@ namespace eMusicApp.Platforms.Android
         {
             return CreateAsyncFuture(async () =>
             {
-                var resolved = new List<MediaItem>();
+                var resolved = await ResolveItemsInternalAsync(mediaItems);
+                var javaList = new Java.Util.ArrayList();
+                foreach (var r in resolved) javaList.Add(r);
+                return (Java.Lang.Object)javaList;
+            });
+        }
 
-                foreach (var item in mediaItems)
+        /// <summary>
+        /// Lógica compartida entre OnAddMediaItems y OnSetMediaItems.
+        /// Resuelve cada MediaItem buscando en la API y obteniendo stream URL.
+        /// </summary>
+        private async Task<List<MediaItem>> ResolveItemsInternalAsync(IList<MediaItem> mediaItems)
+        {
+            var resolved = new List<MediaItem>();
+
+            foreach (var item in mediaItems)
+            {
+                var query = GetSearchQuery(item);
+                System.Diagnostics.Debug.WriteLine($"[SessionCallback] Resolving query='{query}' mediaId='{item.MediaId}'");
+
+                if (!string.IsNullOrEmpty(query))
                 {
-                    var query = GetSearchQuery(item);
-                    System.Diagnostics.Debug.WriteLine($"[SessionCallback] OnAddMediaItems query='{query}' mediaId='{item.MediaId}'");
-
-                    if (!string.IsNullOrEmpty(query))
+                    var track = await SearchAndResolveAsync(query);
+                    if (track != null)
                     {
-                        var track = await SearchAndResolveAsync(query);
+                        resolved.Add(BuildResolvedItem(
+                            track.Value.videoId, track.Value.title, track.Value.artist,
+                            track.Value.thumb, track.Value.streamUrl));
+                        System.Diagnostics.Debug.WriteLine($"[SessionCallback] Resolved: {track.Value.title}");
+                    }
+                    else
+                    {
+                        System.Diagnostics.Debug.WriteLine($"[SessionCallback] Search failed for: {query}");
+                    }
+                }
+                else if (!string.IsNullOrEmpty(item.MediaId))
+                {
+                    var track = await ResolveStreamAsync(item.MediaId);
+                    if (track != null)
+                    {
+                        resolved.Add(BuildResolvedItem(
+                            item.MediaId,
+                            track.Value.title, track.Value.artist,
+                            track.Value.thumb, track.Value.streamUrl));
+                    }
+                }
+                else
+                {
+                    var title = item.MediaMetadata?.Title?.ToString();
+                    if (!string.IsNullOrEmpty(title))
+                    {
+                        System.Diagnostics.Debug.WriteLine($"[SessionCallback] Fallback search by title: {title}");
+                        var track = await SearchAndResolveAsync(title);
                         if (track != null)
                         {
                             resolved.Add(BuildResolvedItem(
                                 track.Value.videoId, track.Value.title, track.Value.artist,
                                 track.Value.thumb, track.Value.streamUrl));
-                            System.Diagnostics.Debug.WriteLine($"[SessionCallback] Resolved: {track.Value.title}");
-                        }
-                        else
-                        {
-                            System.Diagnostics.Debug.WriteLine($"[SessionCallback] Search failed for: {query}");
-                        }
-                    }
-                    else if (!string.IsNullOrEmpty(item.MediaId))
-                    {
-                        var track = await ResolveStreamAsync(item.MediaId);
-                        if (track != null)
-                        {
-                            resolved.Add(BuildResolvedItem(
-                                item.MediaId,
-                                track.Value.title, track.Value.artist,
-                                track.Value.thumb, track.Value.streamUrl));
-                        }
-                    }
-                    else
-                    {
-                        // Fallback: intentar con el título del MediaItem como query
-                        var title = item.MediaMetadata?.Title?.ToString();
-                        if (!string.IsNullOrEmpty(title))
-                        {
-                            System.Diagnostics.Debug.WriteLine($"[SessionCallback] Fallback search by title: {title}");
-                            var track = await SearchAndResolveAsync(title);
-                            if (track != null)
-                            {
-                                resolved.Add(BuildResolvedItem(
-                                    track.Value.videoId, track.Value.title, track.Value.artist,
-                                    track.Value.thumb, track.Value.streamUrl));
-                            }
                         }
                     }
                 }
+            }
 
-                System.Diagnostics.Debug.WriteLine($"[SessionCallback] Resolved {resolved.Count} items");
-                // Media3 espera IList<MediaItem> — usar List<MediaItem> directamente
-                // wrapeado en Java.Util.ArrayList para compatibilidad con IListenableFuture
-                var javaList = new Java.Util.ArrayList();
-                foreach (var r in resolved) javaList.Add(r);
+            System.Diagnostics.Debug.WriteLine($"[SessionCallback] Resolved {resolved.Count}/{mediaItems.Count} items");
 
-                // Si no se resolvió nada, intentar fallback con el texto completo del primer item
-                if (resolved.Count == 0 && mediaItems.Count > 0)
+            // Fallback genérico si no se resolvió nada
+            if (resolved.Count == 0 && mediaItems.Count > 0)
+            {
+                System.Diagnostics.Debug.WriteLine("[SessionCallback] All items failed, trying generic fallback");
+                var fallback = await SearchAndResolveAsync("música popular");
+                if (fallback != null)
                 {
-                    System.Diagnostics.Debug.WriteLine("[SessionCallback] All items failed, trying generic fallback");
-                    var fallback = await SearchAndResolveAsync("música popular");
-                    if (fallback != null)
-                    {
-                        javaList.Add(BuildResolvedItem(
-                            fallback.Value.videoId, fallback.Value.title,
-                            fallback.Value.artist, fallback.Value.thumb, fallback.Value.streamUrl));
-                    }
+                    resolved.Add(BuildResolvedItem(
+                        fallback.Value.videoId, fallback.Value.title,
+                        fallback.Value.artist, fallback.Value.thumb, fallback.Value.streamUrl));
                 }
+            }
 
-                return (Java.Lang.Object)javaList;
-            });
+            return resolved;
         }
 
         /// <summary>

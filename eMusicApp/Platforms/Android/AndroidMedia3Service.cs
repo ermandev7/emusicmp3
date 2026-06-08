@@ -16,11 +16,11 @@ using System.Threading.Tasks;
 namespace eMusicApp.Platforms.Android
 {
     [Service(Exported = true, ForegroundServiceType = global::Android.Content.PM.ForegroundService.TypeMediaPlayback)]
-    [IntentFilter(new[] { "androidx.media3.session.MediaSessionService", "android.media.browse.MediaBrowserService" },
+    [IntentFilter(new[] { "androidx.media3.session.MediaLibraryService", "android.media.browse.MediaBrowserService" },
         Categories = new[] { "android.intent.category.DEFAULT" })]
-    public class AndroidMedia3Service : MediaSessionService
+    public class AndroidMedia3Service : MediaLibraryService
     {
-        private MediaSession? _mediaSession;
+        private MediaLibraryService.MediaLibrarySession? _mediaSession;
         private IExoPlayer? _player;
 
         public static AndroidMedia3Service? Instance { get; private set; }
@@ -173,15 +173,14 @@ namespace eMusicApp.Platforms.Android
                 .Build();
 
             var wrappedPlayer = new SkipAwareForwardingPlayer(_player, this);
-            _mediaSession = new MediaSession.Builder(this, wrappedPlayer)
-                .SetCallback(new SessionCallback())
+            _mediaSession = new MediaLibraryService.MediaLibrarySession.Builder(this, wrappedPlayer, new LibraryCallback())
                 .Build();
 
             _progressHandler  = new global::Android.OS.Handler(global::Android.OS.Looper.MainLooper!);
             _progressRunnable = new global::Java.Lang.Runnable(OnProgressTick);
             _progressHandler.PostDelayed(_progressRunnable, 500);
 
-            // ── Promover a foreground con notificación MediaStyle manual ──
+            // Promover a foreground inmediatamente (Android exige StartForeground rápido)
             PostMediaNotification();
 
             // Flush pending play: si MAUI pidió reproducir mientras el servicio estaba muerto
@@ -194,16 +193,16 @@ namespace eMusicApp.Platforms.Android
             }
         }
 
+        public override MediaLibraryService.MediaLibrarySession? OnGetSessionFromMediaLibraryService(MediaSession.ControllerInfo? controllerInfo)
+            => _mediaSession;
+
         public override MediaSession? OnGetSession(MediaSession.ControllerInfo? controllerInfo)
             => _mediaSession;
 
-        // ── Notificación MediaStyle manual (Plan B) ──
-        // Suprimir la notificación automática de Media3 y usar la nuestra propia.
+        // Suprimir notificación automática de Media3 — usamos la nuestra con MediaStyle + session token.
         public override void OnUpdateNotification(MediaSession session, bool startInForegroundRequired)
         {
-            // NO llamar a base ni a PostMediaNotification aquí.
-            // PostMediaNotification ya llama StartForeground, que re-dispara OnUpdateNotification.
-            // Dejar vacío para romper el ciclo.
+            // Vacío: PostMediaNotification ya llama StartForeground.
         }
 
         public override StartCommandResult OnStartCommand(Intent? intent, global::Android.App.StartCommandFlags flags, int startId)
@@ -237,11 +236,17 @@ namespace eMusicApp.Platforms.Android
             return base.OnStartCommand(intent, flags, startId);
         }
 
+        /// <summary>
+        /// Crea un PendingIntent que envía un action al servicio ya en foreground.
+        /// Usa GetService (NO GetForegroundService) — el servicio ya está corriendo,
+        /// así que no necesita permisos de foreground. Esto funciona desde lock screen
+        /// y notificaciones en Samsung OneUI / Android 14+.
+        /// </summary>
         private PendingIntent BuildActionPendingIntent(string action)
         {
             var intent = new Intent(this, Java.Lang.Class.FromType(typeof(AndroidMedia3Service)));
             intent.SetAction(action);
-            return PendingIntent.GetForegroundService(this, action.GetHashCode(), intent,
+            return PendingIntent.GetService(this, action.GetHashCode(), intent,
                 PendingIntentFlags.UpdateCurrent | PendingIntentFlags.Immutable)!;
         }
 
@@ -251,68 +256,69 @@ namespace eMusicApp.Platforms.Android
         private bool _isPostingNotification;
         private void PostMediaNotification()
         {
-            if (_isPostingNotification) return; // Guard contra recursión de StartForeground → OnUpdateNotification
+            if (_isPostingNotification) return;
             _isPostingNotification = true;
-            try {
-            bool isPlaying = _player?.IsPlaying ?? false;
-            string title  = _player?.CurrentMediaItem?.MediaMetadata?.Title?.ToString()  ?? "eMusicApp";
-            string artist = _player?.CurrentMediaItem?.MediaMetadata?.Artist?.ToString() ?? "";
-
-            var builder = new Notification.Builder(this, CHANNEL_ID)
-                .SetContentTitle(title)
-                .SetContentText(artist)
-                .SetSmallIcon(Resource.Mipmap.appicon)
-                .SetOngoing(isPlaying)
-                .SetVisibility(NotificationVisibility.Public)
-                .AddAction(new Notification.Action.Builder(
-                    global::Android.Resource.Drawable.IcMediaPrevious, "Anterior",
-                    BuildActionPendingIntent(ACTION_PREV)).Build())
-                .AddAction(new Notification.Action.Builder(
-                    isPlaying ? global::Android.Resource.Drawable.IcMediaPause
-                              : global::Android.Resource.Drawable.IcMediaPlay,
-                    isPlaying ? "Pausa" : "Play",
-                    BuildActionPendingIntent(ACTION_PLAY_PAUSE)).Build())
-                .AddAction(new Notification.Action.Builder(
-                    global::Android.Resource.Drawable.IcMediaNext, "Siguiente",
-                    BuildActionPendingIntent(ACTION_NEXT)).Build());
-
-            // MediaStyle con token de sesión para lock screen + burbuja
-            var style = new Notification.MediaStyle()
-                .SetShowActionsInCompactView(0, 1, 2);
             try
             {
-                if (_mediaSession != null)
+                bool isPlaying = _player?.IsPlaying ?? false;
+                string title  = _player?.CurrentMediaItem?.MediaMetadata?.Title?.ToString()  ?? "eMusicApp";
+                string artist = _player?.CurrentMediaItem?.MediaMetadata?.Artist?.ToString() ?? "";
+
+                var builder = new Notification.Builder(this, CHANNEL_ID)
+                    .SetContentTitle(title)
+                    .SetContentText(artist)
+                    .SetSmallIcon(Resource.Mipmap.appicon)
+                    .SetOngoing(isPlaying)
+                    .SetVisibility(NotificationVisibility.Public)
+                    .AddAction(new Notification.Action.Builder(
+                        global::Android.Resource.Drawable.IcMediaPrevious, "Anterior",
+                        BuildActionPendingIntent(ACTION_PREV)).Build())
+                    .AddAction(new Notification.Action.Builder(
+                        isPlaying ? global::Android.Resource.Drawable.IcMediaPause
+                                  : global::Android.Resource.Drawable.IcMediaPlay,
+                        isPlaying ? "Pausa" : "Play",
+                        BuildActionPendingIntent(ACTION_PLAY_PAUSE)).Build())
+                    .AddAction(new Notification.Action.Builder(
+                        global::Android.Resource.Drawable.IcMediaNext, "Siguiente",
+                        BuildActionPendingIntent(ACTION_NEXT)).Build());
+
+                // MediaStyle con token de sesión para lock screen + burbuja
+                var style = new Notification.MediaStyle()
+                    .SetShowActionsInCompactView(0, 1, 2);
+                try
                 {
-                    var token = _mediaSession.PlatformToken;
-                    if (token is global::Android.Media.Session.MediaSession.Token platformToken)
-                        style.SetMediaSession(platformToken);
+                    if (_mediaSession != null)
+                    {
+                        var token = _mediaSession.PlatformToken;
+                        if (token is global::Android.Media.Session.MediaSession.Token platformToken)
+                            style.SetMediaSession(platformToken);
+                    }
                 }
-            }
-            catch (Exception ex)
-            {
-                System.Diagnostics.Debug.WriteLine($"[Notification] Error getting platform token: {ex.Message}");
-            }
-            builder.SetStyle(style);
+                catch (Exception ex)
+                {
+                    System.Diagnostics.Debug.WriteLine($"[Notification] Error getting platform token: {ex.Message}");
+                }
+                builder.SetStyle(style);
 
-            if (_artworkBitmap != null)
-                builder.SetLargeIcon(_artworkBitmap);
+                if (_artworkBitmap != null)
+                    builder.SetLargeIcon(_artworkBitmap);
 
-            // Abrir la app al tocar la notificación
-            var launchIntent = PackageManager?.GetLaunchIntentForPackage(PackageName ?? "");
-            if (launchIntent != null)
-            {
-                var contentIntent = PendingIntent.GetActivity(this, 0, launchIntent,
-                    PendingIntentFlags.UpdateCurrent | PendingIntentFlags.Immutable);
-                builder.SetContentIntent(contentIntent);
-            }
+                // Abrir la app al tocar la notificación
+                var launchIntent = PackageManager?.GetLaunchIntentForPackage(PackageName ?? "");
+                if (launchIntent != null)
+                {
+                    var contentIntent = PendingIntent.GetActivity(this, 0, launchIntent,
+                        PendingIntentFlags.UpdateCurrent | PendingIntentFlags.Immutable);
+                    builder.SetContentIntent(contentIntent);
+                }
 
-            var notification = builder.Build();
+                var notification = builder.Build();
 
-            if (global::Android.OS.Build.VERSION.SdkInt >= global::Android.OS.BuildVersionCodes.Q)
-                StartForeground(NOTIFICATION_ID, notification,
-                    global::Android.Content.PM.ForegroundService.TypeMediaPlayback);
-            else
-                StartForeground(NOTIFICATION_ID, notification);
+                if (global::Android.OS.Build.VERSION.SdkInt >= global::Android.OS.BuildVersionCodes.Q)
+                    StartForeground(NOTIFICATION_ID, notification,
+                        global::Android.Content.PM.ForegroundService.TypeMediaPlayback);
+                else
+                    StartForeground(NOTIFICATION_ID, notification);
             }
             finally { _isPostingNotification = false; }
         }
@@ -325,7 +331,7 @@ namespace eMusicApp.Platforms.Android
             {
                 var bytes = await _httpClient.GetByteArrayAsync(url);
                 _artworkBitmap = BitmapFactory.DecodeByteArray(bytes, 0, bytes.Length);
-                PostMediaNotification(); // Actualizar notificación con artwork
+                PostMediaNotification();
             }
             catch { }
         }

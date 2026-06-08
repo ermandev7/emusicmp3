@@ -607,7 +607,7 @@ namespace eMusicApp.ViewModels
         /// <summary>
         /// Detecta el género probable de un track por su título y artista.
         /// </summary>
-        internal static string? DetectGenre(string title, string artist)
+        public static string? DetectGenre(string title, string artist)
         {
             var combined = $"{title} {artist}".ToLowerInvariant();
             foreach (var kv in _genreKeywords)

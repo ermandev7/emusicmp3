@@ -10,13 +10,15 @@ using System.Net.Http;
 using System.Text.Json;
 using System.Threading.Tasks;
 
+using MLS = AndroidX.Media3.Session.MediaLibraryService;
+
 namespace eMusicApp.Platforms.Android
 {
     /// <summary>
-    /// Callback para MediaSession. Resuelve comandos de voz ("Play X on eMusicApp")
-    /// buscando en la API y devolviendo MediaItems con stream URL.
+    /// Callback para MediaLibrarySession. Resuelve comandos de voz ("Play X on eMusicApp")
+    /// y provee un media tree mínimo para que Android Auto descubra la app.
     /// </summary>
-    public class SessionCallback : Java.Lang.Object, MediaSession.ICallback
+    public class LibraryCallback : Java.Lang.Object, MLS.MediaLibrarySession.ICallback
     {
         private static readonly HttpClient _http = CreateHttpClient();
 
@@ -29,7 +31,10 @@ namespace eMusicApp.Platforms.Android
             return client;
         }
 
-        // ── Aceptar conexiones de Android Auto y otros controladores ──
+        // ══════════════════════════════════════════════
+        //  Conexión — aceptar Android Auto y todos
+        // ══════════════════════════════════════════════
+
         public MediaSession.ConnectionResult OnConnect(
             MediaSession session,
             MediaSession.ControllerInfo controller)
@@ -44,10 +49,10 @@ namespace eMusicApp.Platforms.Android
         public void OnPlayerInteractionFinished(MediaSession session, MediaSession.ControllerInfo controllerInfo, PlayerCommands playerCommands) { }
 
         public int OnPlayerCommandRequest(MediaSession session, MediaSession.ControllerInfo controller, int playerCommand)
-            => playerCommand; // Allow all commands
+            => playerCommand;
 
         public bool OnMediaButtonEvent(MediaSession session, MediaSession.ControllerInfo controllerInfo, Intent intent)
-            => false; // Not handled, let default behavior
+            => false;
 
         public IListenableFuture OnCustomCommand(MediaSession session, MediaSession.ControllerInfo controller, SessionCommand customCommand, Bundle args)
             => CreateImmediateFuture(new SessionResult(SessionResult.ResultErrorNotSupported));
@@ -55,9 +60,119 @@ namespace eMusicApp.Platforms.Android
         public IListenableFuture OnCustomCommand(MediaSession session, MediaSession.ControllerInfo controller, SessionCommand customCommand, Bundle args, MediaSession.IProgressReporter progressReporter)
             => CreateImmediateFuture(new SessionResult(SessionResult.ResultErrorNotSupported));
 
+        public IListenableFuture OnSetRating(MediaSession session, MediaSession.ControllerInfo controller, Rating rating)
+            => CreateImmediateFuture(new SessionResult(SessionResult.ResultErrorNotSupported));
+
+        public IListenableFuture OnSetRating(MediaSession session, MediaSession.ControllerInfo controller, string mediaId, Rating rating)
+            => CreateImmediateFuture(new SessionResult(SessionResult.ResultErrorNotSupported));
+
+        // ══════════════════════════════════════════════
+        //  Media Library — árbol para Android Auto
+        // ══════════════════════════════════════════════
+
+        private const string ROOT_ID = "emusic_root";
+
+        public IListenableFuture OnGetLibraryRoot(
+            MLS.MediaLibrarySession session,
+            MediaSession.ControllerInfo browser,
+            MLS.LibraryParams? p)
+        {
+            var root = new MediaItem.Builder()
+                .SetMediaId(ROOT_ID)
+                .SetMediaMetadata(new MediaMetadata.Builder()
+                    .SetIsBrowsable(Java.Lang.Boolean.True)
+                    .SetIsPlayable(Java.Lang.Boolean.False)
+                    .SetMediaType(new Java.Lang.Integer((int)MediaMetadata.MediaTypeMusic))
+                    .SetTitle("eMusicApp")
+                    .Build())
+                .Build();
+
+            return CreateImmediateFuture(
+                LibraryResult.OfItem(root, null));
+        }
+
+        public IListenableFuture OnGetChildren(
+            MLS.MediaLibrarySession session,
+            MediaSession.ControllerInfo browser,
+            string parentId, int page, int pageSize,
+            MLS.LibraryParams? p)
+        {
+            return CreateImmediateFuture(
+                LibraryResult.OfItemList(new List<MediaItem>(), null));
+        }
+
+        public IListenableFuture OnGetItem(
+            MLS.MediaLibrarySession session,
+            MediaSession.ControllerInfo browser,
+            string mediaId)
+        {
+            return CreateImmediateFuture(
+                LibraryResult.OfError(LibraryResult.ResultErrorNotSupported));
+        }
+
+        public IListenableFuture OnGetSearchResult(
+            MLS.MediaLibrarySession session,
+            MediaSession.ControllerInfo browser,
+            string query, int page, int pageSize,
+            MLS.LibraryParams? p)
+        {
+            return CreateAsyncFuture(async () =>
+            {
+                var tracks = await SearchTracksAsync(query);
+                var items = new List<MediaItem>();
+                foreach (var t in tracks.Take(10))
+                {
+                    items.Add(BuildBrowsableItem(t.videoId, t.title, t.artist, t.thumb));
+                }
+                return (Java.Lang.Object)LibraryResult.OfItemList(items, null);
+            });
+        }
+
+        public IListenableFuture OnSearch(
+            MLS.MediaLibrarySession session,
+            MediaSession.ControllerInfo browser,
+            string query,
+            MLS.LibraryParams? p)
+        {
+            System.Diagnostics.Debug.WriteLine($"[LibraryCallback] OnSearch: '{query}'");
+            Task.Run(async () =>
+            {
+                try
+                {
+                    await Task.Delay(100);
+                    session.NotifySearchResultChanged(browser, query, 0, null);
+                }
+                catch { }
+            });
+            return CreateImmediateFuture(
+                LibraryResult.OfVoid());
+        }
+
+        public IListenableFuture OnSubscribe(
+            MLS.MediaLibrarySession session,
+            MediaSession.ControllerInfo browser,
+            string parentId,
+            MLS.LibraryParams? p)
+        {
+            return CreateImmediateFuture(
+                LibraryResult.OfVoid());
+        }
+
+        public IListenableFuture OnUnsubscribe(
+            MLS.MediaLibrarySession session,
+            MediaSession.ControllerInfo browser,
+            string parentId)
+        {
+            return CreateImmediateFuture(
+                LibraryResult.OfVoid());
+        }
+
+        // ══════════════════════════════════════════════
+        //  Voice: "Play X on eMusicApp" (Android Auto)
+        // ══════════════════════════════════════════════
+
         public IListenableFuture OnSetMediaItems(MediaSession mediaSession, MediaSession.ControllerInfo controller, IList<MediaItem> mediaItems, int startIndex, long startPositionMs)
         {
-            // Media3 espera MediaItemsWithStartPosition, NO List<MediaItem>
             return CreateAsyncFuture(async () =>
             {
                 var resolved = await ResolveItemsInternalAsync(mediaItems);
@@ -66,15 +181,26 @@ namespace eMusicApp.Platforms.Android
             });
         }
 
-        public IListenableFuture OnSetRating(MediaSession session, MediaSession.ControllerInfo controller, Rating rating)
-            => CreateImmediateFuture(new SessionResult(SessionResult.ResultErrorNotSupported));
+        public IListenableFuture OnAddMediaItems(
+            MediaSession session,
+            MediaSession.ControllerInfo controller,
+            IList<MediaItem> mediaItems)
+        {
+            return CreateAsyncFuture(async () =>
+            {
+                var resolved = await ResolveItemsInternalAsync(mediaItems);
+                var javaList = new Java.Util.ArrayList();
+                foreach (var r in resolved) javaList.Add(r);
+                return (Java.Lang.Object)javaList;
+            });
+        }
 
-        public IListenableFuture OnSetRating(MediaSession session, MediaSession.ControllerInfo controller, string mediaId, Rating rating)
-            => CreateImmediateFuture(new SessionResult(SessionResult.ResultErrorNotSupported));
+        // ══════════════════════════════════════════════
+        //  Playback resumption
+        // ══════════════════════════════════════════════
 
         public IListenableFuture OnPlaybackResumption(MediaSession mediaSession, MediaSession.ControllerInfo controller)
         {
-            // Capturar datos del player en el main thread ANTES de ir a background
             MediaItem? currentItem = null;
             int currentIndex = 0;
             long currentPosition = 0;
@@ -90,7 +216,7 @@ namespace eMusicApp.Platforms.Android
             }
             catch (System.Exception ex)
             {
-                System.Diagnostics.Debug.WriteLine($"[SessionCallback] Error reading player state: {ex.Message}");
+                System.Diagnostics.Debug.WriteLine($"[LibraryCallback] Error reading player state: {ex.Message}");
             }
 
             if (currentItem != null)
@@ -100,7 +226,6 @@ namespace eMusicApp.Platforms.Android
                     list, currentIndex, currentPosition));
             }
 
-            // Sin canción actual — buscar algo popular como fallback (en background)
             return CreateAsyncFuture(async () =>
             {
                 var track = await SearchAndResolveAsync("música popular mix");
@@ -120,25 +245,10 @@ namespace eMusicApp.Platforms.Android
         public IListenableFuture OnPlaybackResumption(MediaSession mediaSession, MediaSession.ControllerInfo controller, bool isForPlayback)
             => OnPlaybackResumption(mediaSession, controller);
 
-        // ── Voice commands: "Play X on eMusicApp" ──
-        public IListenableFuture OnAddMediaItems(
-            MediaSession session,
-            MediaSession.ControllerInfo controller,
-            IList<MediaItem> mediaItems)
-        {
-            return CreateAsyncFuture(async () =>
-            {
-                var resolved = await ResolveItemsInternalAsync(mediaItems);
-                var javaList = new Java.Util.ArrayList();
-                foreach (var r in resolved) javaList.Add(r);
-                return (Java.Lang.Object)javaList;
-            });
-        }
+        // ══════════════════════════════════════════════
+        //  Resolución interna
+        // ══════════════════════════════════════════════
 
-        /// <summary>
-        /// Lógica compartida entre OnAddMediaItems y OnSetMediaItems.
-        /// Resuelve cada MediaItem buscando en la API y obteniendo stream URL.
-        /// </summary>
         private async Task<List<MediaItem>> ResolveItemsInternalAsync(IList<MediaItem> mediaItems)
         {
             var resolved = new List<MediaItem>();
@@ -146,7 +256,7 @@ namespace eMusicApp.Platforms.Android
             foreach (var item in mediaItems)
             {
                 var query = GetSearchQuery(item);
-                System.Diagnostics.Debug.WriteLine($"[SessionCallback] Resolving query='{query}' mediaId='{item.MediaId}'");
+                System.Diagnostics.Debug.WriteLine($"[LibraryCallback] Resolving query='{query}' mediaId='{item.MediaId}'");
 
                 if (!string.IsNullOrEmpty(query))
                 {
@@ -156,11 +266,6 @@ namespace eMusicApp.Platforms.Android
                         resolved.Add(BuildResolvedItem(
                             track.Value.videoId, track.Value.title, track.Value.artist,
                             track.Value.thumb, track.Value.streamUrl));
-                        System.Diagnostics.Debug.WriteLine($"[SessionCallback] Resolved: {track.Value.title}");
-                    }
-                    else
-                    {
-                        System.Diagnostics.Debug.WriteLine($"[SessionCallback] Search failed for: {query}");
                     }
                 }
                 else if (!string.IsNullOrEmpty(item.MediaId))
@@ -179,7 +284,6 @@ namespace eMusicApp.Platforms.Android
                     var title = item.MediaMetadata?.Title?.ToString();
                     if (!string.IsNullOrEmpty(title))
                     {
-                        System.Diagnostics.Debug.WriteLine($"[SessionCallback] Fallback search by title: {title}");
                         var track = await SearchAndResolveAsync(title);
                         if (track != null)
                         {
@@ -191,12 +295,8 @@ namespace eMusicApp.Platforms.Android
                 }
             }
 
-            System.Diagnostics.Debug.WriteLine($"[SessionCallback] Resolved {resolved.Count}/{mediaItems.Count} items");
-
-            // Fallback genérico si no se resolvió nada
             if (resolved.Count == 0 && mediaItems.Count > 0)
             {
-                System.Diagnostics.Debug.WriteLine("[SessionCallback] All items failed, trying generic fallback");
                 var fallback = await SearchAndResolveAsync("música popular");
                 if (fallback != null)
                 {
@@ -209,13 +309,8 @@ namespace eMusicApp.Platforms.Android
             return resolved;
         }
 
-        /// <summary>
-        /// Accede al campo Java requestMetadata.searchQuery via JNI,
-        /// ya que los bindings .NET no exponen RequestMetadata como propiedad de MediaItem.
-        /// </summary>
         private static string? GetSearchQuery(MediaItem item)
         {
-            // Intento 1: JNI — acceder a requestMetadata.searchQuery
             try
             {
                 var itemClass = Java.Lang.Class.FromType(typeof(MediaItem));
@@ -223,70 +318,47 @@ namespace eMusicApp.Platforms.Android
                 var reqMeta = field?.Get(item);
                 if (reqMeta != null)
                 {
-                    var reqMetaClass = reqMeta.Class;
-                    var searchField = reqMetaClass.GetField("searchQuery");
+                    var searchField = reqMeta.Class.GetField("searchQuery");
                     var searchQuery = searchField?.Get(reqMeta)?.ToString();
                     if (!string.IsNullOrEmpty(searchQuery))
-                    {
-                        System.Diagnostics.Debug.WriteLine($"[SessionCallback] JNI searchQuery: '{searchQuery}'");
                         return searchQuery;
-                    }
-                }
-            }
-            catch (System.Exception ex)
-            {
-                System.Diagnostics.Debug.WriteLine($"[SessionCallback] JNI failed: {ex.Message}");
-            }
-
-            // Intento 2: título del metadata como query de búsqueda
-            try
-            {
-                var title = item.MediaMetadata?.Title?.ToString();
-                if (!string.IsNullOrEmpty(title))
-                {
-                    System.Diagnostics.Debug.WriteLine($"[SessionCallback] Using metadata title as query: '{title}'");
-                    return title;
                 }
             }
             catch { }
 
-            // Intento 3: mediaId como query (a veces contiene el nombre de la canción)
+            try
+            {
+                var title = item.MediaMetadata?.Title?.ToString();
+                if (!string.IsNullOrEmpty(title)) return title;
+            }
+            catch { }
+
             try
             {
                 var mediaId = item.MediaId;
-                if (!string.IsNullOrEmpty(mediaId) && mediaId.Length > 15)
-                {
-                    // Solo si parece texto, no un videoId corto
-                    System.Diagnostics.Debug.WriteLine($"[SessionCallback] Using mediaId as query: '{mediaId}'");
-                    return mediaId;
-                }
+                if (!string.IsNullOrEmpty(mediaId) && mediaId.Length > 15) return mediaId;
             }
             catch { }
 
             return null;
         }
 
-        // ── Future helpers ──
+        // ══════════════════════════════════════════════
+        //  Future helpers
+        // ══════════════════════════════════════════════
 
         private static IListenableFuture CreateImmediateFuture(Java.Lang.Object result)
-        {
-            return CallbackToFutureAdapter.GetFuture(new ImmediateResolver(result));
-        }
+            => CallbackToFutureAdapter.GetFuture(new ImmediateResolver(result));
 
         private static IListenableFuture CreateAsyncFuture(System.Func<Task<Java.Lang.Object>> asyncFunc)
-        {
-            return CallbackToFutureAdapter.GetFuture(new AsyncResolver(asyncFunc));
-        }
+            => CallbackToFutureAdapter.GetFuture(new AsyncResolver(asyncFunc));
 
         private class ImmediateResolver : Java.Lang.Object, CallbackToFutureAdapter.IResolver
         {
             private readonly Java.Lang.Object _result;
             public ImmediateResolver(Java.Lang.Object result) => _result = result;
             public Java.Lang.Object? AttachCompleter(CallbackToFutureAdapter.Completer completer)
-            {
-                completer.Set(_result);
-                return null;
-            }
+            { completer.Set(_result); return null; }
         }
 
         private class AsyncResolver : Java.Lang.Object, CallbackToFutureAdapter.IResolver
@@ -299,28 +371,15 @@ namespace eMusicApp.Platforms.Android
                 {
                     try
                     {
-                        // Timeout global de 25s — la API tarda ~5-7s por llamada, hacemos 2 secuenciales
                         using var cts = new System.Threading.CancellationTokenSource(System.TimeSpan.FromSeconds(25));
                         var task = _func();
                         var completed = await Task.WhenAny(task, Task.Delay(-1, cts.Token));
-                        if (completed == task)
-                        {
-                            completer.Set(await task);
-                        }
-                        else
-                        {
-                            System.Diagnostics.Debug.WriteLine("[SessionCallback] Global timeout (25s) reached");
-                            completer.Set(new Java.Util.ArrayList());
-                        }
-                    }
-                    catch (System.OperationCanceledException)
-                    {
-                        System.Diagnostics.Debug.WriteLine("[SessionCallback] Operation cancelled (timeout)");
-                        completer.Set(new Java.Util.ArrayList());
+                        if (completed == task) completer.Set(await task);
+                        else completer.Set(new Java.Util.ArrayList());
                     }
                     catch (System.Exception ex)
                     {
-                        System.Diagnostics.Debug.WriteLine($"[SessionCallback] Error: {ex.Message}");
+                        System.Diagnostics.Debug.WriteLine($"[LibraryCallback] Error: {ex.Message}");
                         completer.Set(new Java.Util.ArrayList());
                     }
                 });
@@ -328,7 +387,9 @@ namespace eMusicApp.Platforms.Android
             }
         }
 
-        // ── API calls ──
+        // ══════════════════════════════════════════════
+        //  API calls
+        // ══════════════════════════════════════════════
 
         private static async Task<(string videoId, string title, string artist, string thumb, string streamUrl)?> SearchAndResolveAsync(string query)
         {
@@ -346,18 +407,12 @@ namespace eMusicApp.Platforms.Android
             try
             {
                 var url = $"{AppConstants.ApiBaseUrl}/search?q={System.Uri.EscapeDataString(query)}";
-                System.Diagnostics.Debug.WriteLine($"[SessionCallback] Searching: {url}");
                 var json = await _http.GetStringAsync(url);
-
                 using var doc = JsonDocument.Parse(json);
                 JsonElement items;
                 if (doc.RootElement.TryGetProperty("items", out items)) { }
                 else if (doc.RootElement.ValueKind == JsonValueKind.Array) items = doc.RootElement;
-                else
-                {
-                    System.Diagnostics.Debug.WriteLine("[SessionCallback] Search response has no 'items' and is not array");
-                    return result;
-                }
+                else return result;
 
                 foreach (var el in items.EnumerateArray())
                 {
@@ -375,11 +430,10 @@ namespace eMusicApp.Platforms.Android
                               : el.TryGetProperty("thumbnail", out var thp2) ? thp2.GetString() ?? "" : "";
                     result.Add((vid, title, artist, thumb));
                 }
-                System.Diagnostics.Debug.WriteLine($"[SessionCallback] Search found {result.Count} tracks");
             }
             catch (System.Exception ex)
             {
-                System.Diagnostics.Debug.WriteLine($"[SessionCallback] Search error for '{query}': {ex.Message}");
+                System.Diagnostics.Debug.WriteLine($"[LibraryCallback] Search error: {ex.Message}");
             }
             return result;
         }
@@ -394,8 +448,7 @@ namespace eMusicApp.Platforms.Android
                 var title = root.GetProperty("title").GetString() ?? "";
                 var artist = root.GetProperty("uploader").GetString() ?? "";
                 var thumb = root.GetProperty("thumbnailUrl").GetString() ?? "";
-                string? bestUrl = null;
-                int bestBitrate = 0;
+                string? bestUrl = null; int bestBitrate = 0;
                 foreach (var s in root.GetProperty("audioStreams").EnumerateArray())
                 {
                     int br = s.TryGetProperty("bitrate", out var brEl) ? brEl.GetInt32() : 0;
@@ -414,8 +467,7 @@ namespace eMusicApp.Platforms.Android
             {
                 var json = await _http.GetStringAsync($"{AppConstants.ApiBaseUrl}/streams/{videoId}");
                 using var doc = JsonDocument.Parse(json);
-                string? bestUrl = null;
-                int bestBitrate = 0;
+                string? bestUrl = null; int bestBitrate = 0;
                 foreach (var s in doc.RootElement.GetProperty("audioStreams").EnumerateArray())
                 {
                     int br = s.TryGetProperty("bitrate", out var brEl) ? brEl.GetInt32() : 0;
@@ -448,19 +500,38 @@ namespace eMusicApp.Platforms.Android
             return null;
         }
 
-        // ── MediaItem builder ──
+        // ══════════════════════════════════════════════
+        //  MediaItem builders
+        // ══════════════════════════════════════════════
 
         private static MediaItem BuildResolvedItem(string videoId, string title, string artist, string thumbUrl, string streamUrl)
         {
             var meta = new MediaMetadata.Builder()
                 .SetTitle(title)
                 .SetArtist(artist)
-                .SetMediaType(new Java.Lang.Integer((int)MediaMetadata.MediaTypeMusic));
+                .SetMediaType(new Java.Lang.Integer((int)MediaMetadata.MediaTypeMusic))
+                .SetIsPlayable(Java.Lang.Boolean.True);
             if (!string.IsNullOrEmpty(thumbUrl))
                 meta.SetArtworkUri(global::Android.Net.Uri.Parse(thumbUrl));
             return new MediaItem.Builder()
                 .SetMediaId(videoId)
                 .SetUri(streamUrl)
+                .SetMediaMetadata(meta.Build())
+                .Build();
+        }
+
+        private static MediaItem BuildBrowsableItem(string videoId, string title, string artist, string thumbUrl)
+        {
+            var meta = new MediaMetadata.Builder()
+                .SetTitle(title)
+                .SetArtist(artist)
+                .SetMediaType(new Java.Lang.Integer((int)MediaMetadata.MediaTypeMusic))
+                .SetIsPlayable(Java.Lang.Boolean.True)
+                .SetIsBrowsable(Java.Lang.Boolean.False);
+            if (!string.IsNullOrEmpty(thumbUrl))
+                meta.SetArtworkUri(global::Android.Net.Uri.Parse(thumbUrl));
+            return new MediaItem.Builder()
+                .SetMediaId(videoId)
                 .SetMediaMetadata(meta.Build())
                 .Build();
         }

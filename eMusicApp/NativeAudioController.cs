@@ -23,7 +23,7 @@ public static class NativeAudioController
     public static Action<bool>? OnBufferingChanged { get; set; } // true = cargando/buffering
 
     // Pending play request — se guarda cuando el servicio está muerto y se ejecuta al resucitar
-    internal static (string url, string title, string artist, string thumb, string videoId)? PendingPlayRequest { get; set; }
+    public static (string url, string title, string artist, string thumb, string videoId)? PendingPlayRequest { get; set; }
 
     // Called from WebView (MainPage)
     public static void RequestPlay(string url, string title, string artist, string thumb, string videoId)

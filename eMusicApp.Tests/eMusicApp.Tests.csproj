@@ -1,7 +1,7 @@
 <Project Sdk="Microsoft.NET.Sdk">
 
   <PropertyGroup>
-    <TargetFramework>net9.0-android</TargetFramework>
+    <TargetFramework>net9.0</TargetFramework>
     <ImplicitUsings>enable</ImplicitUsings>
     <Nullable>enable</Nullable>
     <IsPackable>false</IsPackable>
@@ -18,8 +18,13 @@
     <Using Include="Xunit" />
   </ItemGroup>
 
+  <!-- Link shared source files that compile under net9.0 -->
   <ItemGroup>
-    <ProjectReference Include="..\eMusicApp\eMusicApp.csproj" />
+    <Compile Include="..\eMusicApp\NativeAudioController.cs" Link="Linked\NativeAudioController.cs" />
+  </ItemGroup>
+
+  <ItemGroup>
+    <Content Include="xunit.runner.json" CopyToOutputDirectory="PreserveNewest" />
   </ItemGroup>
 
 </Project>

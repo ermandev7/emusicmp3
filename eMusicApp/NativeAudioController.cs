@@ -22,10 +22,34 @@ public static class NativeAudioController
     public static Action<bool>? OnPlaybackStateChanged { get; set; }
     public static Action<bool>? OnBufferingChanged { get; set; } // true = cargando/buffering
 
+    // Pending play request — se guarda cuando el servicio está muerto y se ejecuta al resucitar
+    internal static (string url, string title, string artist, string thumb, string videoId)? PendingPlayRequest { get; set; }
+
     // Called from WebView (MainPage)
     public static void RequestPlay(string url, string title, string artist, string thumb, string videoId)
     {
-        OnPlayRequested?.Invoke(url, title, artist, thumb, videoId);
+        if (OnPlayRequested != null)
+        {
+            OnPlayRequested.Invoke(url, title, artist, thumb, videoId);
+        }
+        else
+        {
+            // Servicio muerto — guardar request y resucitar el servicio
+            System.Diagnostics.Debug.WriteLine("[NativeAudioController] Service dead, queuing play and restarting...");
+            PendingPlayRequest = (url, title, artist, thumb, videoId);
+#if ANDROID
+            try
+            {
+                var context = Android.App.Application.Context;
+                var intent = new Android.Content.Intent(context, typeof(Platforms.Android.AndroidMedia3Service));
+                context.StartForegroundService(intent);
+            }
+            catch (System.Exception ex)
+            {
+                System.Diagnostics.Debug.WriteLine($"[NativeAudioController] Failed to restart service: {ex.Message}");
+            }
+#endif
+        }
     }
 
     public static void RequestPause()
@@ -35,7 +59,27 @@ public static class NativeAudioController
 
     public static void RequestResume()
     {
-        OnResumeRequested?.Invoke();
+        if (OnResumeRequested != null)
+        {
+            OnResumeRequested.Invoke();
+        }
+        else
+        {
+            // Servicio muerto — intentar resucitar (sin pending play, solo restart)
+            System.Diagnostics.Debug.WriteLine("[NativeAudioController] Resume: service dead, restarting...");
+#if ANDROID
+            try
+            {
+                var context = Android.App.Application.Context;
+                var intent = new Android.Content.Intent(context, typeof(Platforms.Android.AndroidMedia3Service));
+                context.StartForegroundService(intent);
+            }
+            catch (System.Exception ex)
+            {
+                System.Diagnostics.Debug.WriteLine($"[NativeAudioController] Failed to restart service: {ex.Message}");
+            }
+#endif
+        }
     }
 
     public static void RequestSeek(int positionMs)

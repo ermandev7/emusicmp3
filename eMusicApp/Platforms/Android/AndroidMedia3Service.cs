@@ -16,7 +16,8 @@ using System.Threading.Tasks;
 namespace eMusicApp.Platforms.Android
 {
     [Service(Exported = true, ForegroundServiceType = global::Android.Content.PM.ForegroundService.TypeMediaPlayback)]
-    [IntentFilter(new[] { "androidx.media3.session.MediaSessionService", "android.media.browse.MediaBrowserService" })]
+    [IntentFilter(new[] { "androidx.media3.session.MediaSessionService", "android.media.browse.MediaBrowserService" },
+        Categories = new[] { "android.intent.category.DEFAULT" })]
     public class AndroidMedia3Service : MediaSessionService
     {
         private MediaSession? _mediaSession;
@@ -160,6 +161,15 @@ namespace eMusicApp.Platforms.Android
 
             // ── Promover a foreground con notificación MediaStyle manual ──
             PostMediaNotification();
+
+            // Flush pending play: si MAUI pidió reproducir mientras el servicio estaba muerto
+            if (NativeAudioController.PendingPlayRequest is var pending && pending != null)
+            {
+                var p = pending.Value;
+                NativeAudioController.PendingPlayRequest = null;
+                System.Diagnostics.Debug.WriteLine($"[Service] Flushing pending play: {p.title}");
+                PlayStream(p.url, p.title, p.artist, p.thumb, p.videoId);
+            }
         }
 
         public override MediaSession? OnGetSession(MediaSession.ControllerInfo? controllerInfo)

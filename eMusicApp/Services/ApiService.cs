@@ -1,3 +1,4 @@
+using System.Linq;
 using System.Net.Http;
 using System.Text.Json;
 using System.Text.Json.Serialization;
@@ -180,6 +181,32 @@ namespace eMusicApp.Services
             }
 
             return null;
+        }
+
+        /// <summary>
+        /// Pre-fetch: calienta el cache de streams en la Pi para los primeros resultados.
+        /// Se llama en background tras mostrar búsqueda — cuando el usuario toque play,
+        /// el stream ya estará en cache (~0ms en vez de ~7s).
+        /// </summary>
+        public void PrefetchStreams(string[] videoIds)
+        {
+            if (videoIds == null || videoIds.Length == 0) return;
+            var ids = videoIds.Where(id => !string.IsNullOrEmpty(id)).ToArray();
+            if (ids.Length == 0) return;
+            _ = Task.Run(async () =>
+            {
+                try
+                {
+                    var payload = System.Text.Json.JsonSerializer.Serialize(new { videoIds = ids });
+                    var content = new StringContent(payload, System.Text.Encoding.UTF8, "application/json");
+                    await _httpClient.PostAsync($"{BaseUrl}/streams/prefetch", content);
+                    System.Diagnostics.Debug.WriteLine($"[API] Prefetch sent for {ids.Length} streams");
+                }
+                catch (System.Exception ex)
+                {
+                    System.Diagnostics.Debug.WriteLine($"[API] Prefetch failed: {ex.Message}");
+                }
+            });
         }
 
         // ─────────────────────────────────────────────

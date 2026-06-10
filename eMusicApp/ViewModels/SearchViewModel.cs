@@ -1,4 +1,5 @@
 using System.Collections.ObjectModel;
+using System.Linq;
 using System.Threading.Tasks;
 using CommunityToolkit.Mvvm.ComponentModel;
 using CommunityToolkit.Mvvm.Input;
@@ -104,6 +105,10 @@ namespace eMusicApp.ViewModels
             Player.SetQueue(results);
 
             SaveRecentQuery(SearchQuery.Trim());
+
+            // Pre-fetch: calentar cache de los primeros 3 resultados en background
+            // para que al tocar play la respuesta sea instantánea (~0ms vs ~7s)
+            _apiService.PrefetchStreams(results.Take(3).Select(t => t.VideoId).ToArray());
 
             IsBusy = false;
             OnPropertyChanged(nameof(HasNoResults));

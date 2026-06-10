@@ -17,9 +17,12 @@ namespace eMusicApp.Views
             };
         }
 
-        private void OnTrackTapped(object? sender, TappedEventArgs e)
+        private async void OnTrackTapped(object? sender, TappedEventArgs e)
         {
             SearchBarControl.Unfocus();
+            if (sender is not VisualElement el) return;
+            await el.ScaleTo(0.96, 60, Easing.CubicIn);
+            await el.ScaleTo(1.0, 100, Easing.CubicOut);
         }
     }
 }

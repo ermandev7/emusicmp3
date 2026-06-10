@@ -22,6 +22,7 @@ namespace eMusicApp.Platforms.Android
     {
         private MediaLibraryService.MediaLibrarySession? _mediaSession;
         private IExoPlayer? _player;
+        private SkipAwareForwardingPlayer? _wrappedPlayer;
 
         public static AndroidMedia3Service? Instance { get; private set; }
 
@@ -160,6 +161,20 @@ namespace eMusicApp.Platforms.Android
                     new DefaultHttpDataSource.Factory().SetAllowCrossProtocolRedirects(true))
                 .SetFlags(CacheDataSource.FlagIgnoreCacheOnError);
 
+            // ── Buffer agresivo para conducción (túneles / zonas sin cobertura) ──
+            // MinBuffer 60s: ExoPlayer intentará mantener al menos 60s de audio en RAM.
+            // MaxBuffer 120s: tope de lo que almacena antes de pausar la descarga.
+            // BufferForPlayback 2.5s: mínimo para arrancar reproducción (rápido).
+            // BufferForPlaybackAfterRebuffer 5s: mínimo tras un rebuffer (un poco más conservador).
+            var loadControl = new DefaultLoadControl.Builder()
+                .SetBufferDurationsMs(
+                    /* minBufferMs */                60_000,
+                    /* maxBufferMs */               120_000,
+                    /* bufferForPlaybackMs */          2_500,
+                    /* bufferForPlaybackAfterRebufferMs */ 5_000)
+                .SetPrioritizeTimeOverSizeThresholds(true)
+                .Build();
+
             var audioAttributes = new AndroidX.Media3.Common.AudioAttributes.Builder()
                 .SetUsage(C.UsageMedia)
                 .SetContentType(C.AudioContentTypeMusic)
@@ -167,14 +182,26 @@ namespace eMusicApp.Platforms.Android
 
             _player = new ExoPlayerBuilder(this)
                 .SetMediaSourceFactory(new DefaultMediaSourceFactory(this).SetDataSourceFactory(cacheDataSourceFactory))
+                .SetLoadControl(loadControl)
                 .SetWakeMode(C.WakeModeNetwork)
                 .SetHandleAudioBecomingNoisy(true)
                 .SetAudioAttributes(audioAttributes, true)
                 .Build();
 
-            var wrappedPlayer = new SkipAwareForwardingPlayer(_player, this);
-            _mediaSession = new MediaLibraryService.MediaLibrarySession.Builder(this, wrappedPlayer, new LibraryCallback())
-                .Build();
+            _wrappedPlayer = new SkipAwareForwardingPlayer(_player, this);
+
+            // SessionActivity: PendingIntent para abrir la app desde Android Auto / notificación.
+            // Sin esto, Android Auto muestra "Desbloquea el teléfono".
+            var sessionActivityIntent = PackageManager?.GetLaunchIntentForPackage(PackageName ?? "");
+            PendingIntent? sessionActivity = null;
+            if (sessionActivityIntent != null)
+                sessionActivity = PendingIntent.GetActivity(this, 0, sessionActivityIntent,
+                    PendingIntentFlags.UpdateCurrent | PendingIntentFlags.Immutable);
+
+            var sessionBuilder = new MediaLibraryService.MediaLibrarySession.Builder(this, _wrappedPlayer, new LibraryCallback());
+            if (sessionActivity != null)
+                sessionBuilder.SetSessionActivity(sessionActivity);
+            _mediaSession = sessionBuilder.Build();
 
             _progressHandler  = new global::Android.OS.Handler(global::Android.OS.Looper.MainLooper!);
             _progressRunnable = new global::Java.Lang.Runnable(OnProgressTick);
@@ -209,43 +236,46 @@ namespace eMusicApp.Platforms.Android
         {
             if (intent?.Action != null)
             {
+                // Usar _wrappedPlayer que maneja next/prev nativamente cuando no hay items
+                var player = _wrappedPlayer ?? (IPlayer?)_player;
                 switch (intent.Action)
                 {
                     case ACTION_PREV:
-                        if (_player != null && _player.HasPreviousMediaItem)
-                            _player.SeekToPreviousMediaItem();
-                        else
-                            NativeAudioController.OnSkipToPrevious?.Invoke();
-                        break;
+                        if (player != null)
+                            player.SeekToPrevious();
+                        PostMediaNotification();
+                        return StartCommandResult.Sticky;
                     case ACTION_PLAY_PAUSE:
-                        if (_player != null)
+                        if (player != null)
                         {
-                            if (_player.IsPlaying) _player.Pause();
-                            else _player.Play();
+                            if (player.IsPlaying) player.Pause();
+                            else player.Play();
                         }
-                        break;
+                        PostMediaNotification();
+                        return StartCommandResult.Sticky;
                     case ACTION_NEXT:
-                        if (_player != null && _player.HasNextMediaItem)
-                            _player.SeekToNextMediaItem();
-                        else
-                            NativeAudioController.OnSkipToNext?.Invoke();
-                        break;
+                        if (player != null)
+                            player.SeekToNext();
+                        PostMediaNotification();
+                        return StartCommandResult.Sticky;
                 }
-                PostMediaNotification();
             }
             return base.OnStartCommand(intent, flags, startId);
         }
 
         /// <summary>
-        /// Crea un PendingIntent que envía un action al servicio ya en foreground.
-        /// Usa GetService (NO GetForegroundService) — el servicio ya está corriendo,
-        /// así que no necesita permisos de foreground. Esto funciona desde lock screen
-        /// y notificaciones en Samsung OneUI / Android 14+.
+        /// Crea un PendingIntent que envía un action al servicio foreground.
+        /// Usa GetForegroundService (Android 12+ bloquea GetService para servicios
+        /// en background). Esto garantiza que los botones de la notificación funcionen
+        /// con pantalla apagada, lock screen, Android Auto y Samsung OneUI.
         /// </summary>
         private PendingIntent BuildActionPendingIntent(string action)
         {
             var intent = new Intent(this, Java.Lang.Class.FromType(typeof(AndroidMedia3Service)));
             intent.SetAction(action);
+            if (global::Android.OS.Build.VERSION.SdkInt >= global::Android.OS.BuildVersionCodes.O)
+                return PendingIntent.GetForegroundService(this, action.GetHashCode(), intent,
+                    PendingIntentFlags.UpdateCurrent | PendingIntentFlags.Immutable)!;
             return PendingIntent.GetService(this, action.GetHashCode(), intent,
                 PendingIntentFlags.UpdateCurrent | PendingIntentFlags.Immutable)!;
         }
@@ -866,6 +896,7 @@ namespace eMusicApp.Platforms.Android
             _simpleCache      = null;
             _databaseProvider = null;
             _mediaSession     = null;
+            _wrappedPlayer    = null;
             Instance          = null;
             base.OnDestroy();
         }

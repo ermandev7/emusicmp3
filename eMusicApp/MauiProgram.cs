@@ -31,6 +31,7 @@ public static class MauiProgram
 		builder.Services.AddSingleton<PlayerViewModel>();
 #if ANDROID
 		builder.Services.AddSingleton<IAlbumColorService, AlbumColorService>();
+		builder.Services.AddSingleton<IVoiceAssistant, AndroidVoiceAssistant>();
 #endif
 
 		// ViewModels

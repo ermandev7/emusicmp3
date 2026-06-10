@@ -1,6 +1,5 @@
 using Android.App;
 using Android.Content;
-using Android.Graphics;
 using AndroidX.Media3.Common;
 using AndroidX.Media3.ExoPlayer;
 using AndroidX.Media3.ExoPlayer.Source;
@@ -124,7 +123,7 @@ namespace eMusicApp.Platforms.Android
         public const string ACTION_NEXT       = "emusic.ACTION_NEXT";
 
         // Artwork cacheado para la notificación
-        private Android.Graphics.Bitmap? _artworkBitmap;
+        private global::Android.Graphics.Bitmap? _artworkBitmap;
         private string? _artworkUrl;
 
         public override void OnCreate()
@@ -328,7 +327,7 @@ namespace eMusicApp.Platforms.Android
             try
             {
                 var bytes = await _httpClient.GetByteArrayAsync(url);
-                _artworkBitmap = BitmapFactory.DecodeByteArray(bytes, 0, bytes.Length);
+                _artworkBitmap = global::Android.Graphics.BitmapFactory.DecodeByteArray(bytes, 0, bytes.Length);
                 PostMediaNotification();
             }
             catch { }

@@ -1,3 +1,4 @@
+using Android.App;
 using Android.Content;
 
 namespace eMusicApp.Platforms.Android;

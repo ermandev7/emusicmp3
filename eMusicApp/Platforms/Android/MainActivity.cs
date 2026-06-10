@@ -29,13 +29,18 @@ public class MainActivity : MauiAppCompatActivity
 
         Logger.Log("MainActivity OnCreate started.");
 
-        if (Build.VERSION.SdkInt >= BuildVersionCodes.Tiramisu)
-        {
-            if (CheckSelfPermission(global::Android.Manifest.Permission.PostNotifications) != Permission.Granted)
-            {
-                RequestPermissions(new[] { global::Android.Manifest.Permission.PostNotifications }, 1);
-            }
-        }
+        // Permisos en runtime: notificaciones (Android 13+) y micrófono (asistente de voz)
+        var permissionsNeeded = new System.Collections.Generic.List<string>();
+
+        if (Build.VERSION.SdkInt >= BuildVersionCodes.Tiramisu
+            && CheckSelfPermission(global::Android.Manifest.Permission.PostNotifications) != Permission.Granted)
+            permissionsNeeded.Add(global::Android.Manifest.Permission.PostNotifications);
+
+        if (CheckSelfPermission(global::Android.Manifest.Permission.RecordAudio) != Permission.Granted)
+            permissionsNeeded.Add(global::Android.Manifest.Permission.RecordAudio);
+
+        if (permissionsNeeded.Count > 0)
+            RequestPermissions(permissionsNeeded.ToArray(), 1);
 
         // Start the service so it's alive and listening to NativeAudioController
         try

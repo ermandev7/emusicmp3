@@ -221,17 +221,11 @@ public class VoiceListenerService : Service
                 break;
 
             case VoiceAction.Next:
-                var wrappedNext = (AndroidMedia3Service.Instance as object)?.GetType()
-                    .GetField("_wrappedPlayer", System.Reflection.BindingFlags.NonPublic | System.Reflection.BindingFlags.Instance)
-                    ?.GetValue(AndroidMedia3Service.Instance) as AndroidX.Media3.Common.IPlayer;
-                wrappedNext?.SeekToNext();
+                AndroidMedia3Service.Instance?.HandleNext();
                 break;
 
             case VoiceAction.Previous:
-                var wrappedPrev = (AndroidMedia3Service.Instance as object)?.GetType()
-                    .GetField("_wrappedPlayer", System.Reflection.BindingFlags.NonPublic | System.Reflection.BindingFlags.Instance)
-                    ?.GetValue(AndroidMedia3Service.Instance) as AndroidX.Media3.Common.IPlayer;
-                wrappedPrev?.SeekToPrevious();
+                AndroidMedia3Service.Instance?.HandlePrev();
                 break;
 
             case VoiceAction.Play:

@@ -221,8 +221,6 @@ public class VoiceListenerService : Service
                 break;
 
             case VoiceAction.Next:
-                AndroidMedia3Service.Instance?
-                    .PostMediaNotificationSafe();
                 var wrappedNext = (AndroidMedia3Service.Instance as object)?.GetType()
                     .GetField("_wrappedPlayer", System.Reflection.BindingFlags.NonPublic | System.Reflection.BindingFlags.Instance)
                     ?.GetValue(AndroidMedia3Service.Instance) as AndroidX.Media3.Common.IPlayer;

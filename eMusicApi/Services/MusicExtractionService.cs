@@ -1,5 +1,6 @@
 using System.Net.Http;
 using System.Text.Json;
+using System.Threading;
 using System.Threading.Tasks;
 using System;
 using System.Collections.Generic;
@@ -388,7 +389,7 @@ public class MusicExtractionService
     }
 
     // ─────────────────────────────────────────────────────────────────
-    // STREAMS — El más crítico: cascada de Piped + YoutubeExplode
+    // STREAMS — El más crítico: extractores en PARALELO, gana el primero
     // ─────────────────────────────────────────────────────────────────
     public async Task<string> GetStreamAsync(string videoId)
     {
@@ -396,55 +397,96 @@ public class MusicExtractionService
         if (_cache.TryGetValue(cacheKey, out string? cached) && cached != null)
             return cached;
 
-        // FASE 1: Intentar con cada instancia de Piped
-        foreach (var instance in PipedInstances)
+        // Lanzar TODOS los extractores en paralelo — el primero que devuelva
+        // audioStreams válidos gana. yt-dlp es el más robusto (casi nunca falla),
+        // pero Piped interno puede ser más rápido si está funcionando.
+        using var cts = new CancellationTokenSource(TimeSpan.FromSeconds(20));
+
+        var tasks = new List<Task<(string json, string source)>>();
+
+        // yt-dlp: el más robusto, casi siempre funciona
+        tasks.Add(Task.Run(async () =>
         {
+            var json = await ExtractWithYtDlpAsync(videoId, cacheKey: null);
+            return (json, "yt-dlp");
+        }));
+
+        // Piped interno (Docker) — el más rápido cuando funciona
+        tasks.Add(TryPipedInstanceAsync(PipedInstances[0], videoId, cts.Token));
+
+        // YoutubeExplode — Plan B nativo
+        tasks.Add(Task.Run(async () =>
+        {
+            var json = await ExtractWithYoutubeExplodeAsync(videoId, cacheKey: null);
+            return (json, "YoutubeExplode");
+        }));
+
+        // 1-2 Piped públicos (solo los que resuelven DNS)
+        if (PipedInstances.Length > 1)
+            tasks.Add(TryPipedInstanceAsync(PipedInstances[1], videoId, cts.Token));
+        if (PipedInstances.Length > 2)
+            tasks.Add(TryPipedInstanceAsync(PipedInstances[2], videoId, cts.Token));
+
+        // Esperar al primero que tenga audioStreams válidos
+        while (tasks.Count > 0)
+        {
+            var completed = await Task.WhenAny(tasks);
+            tasks.Remove(completed);
+
             try
             {
-                var client = _httpClientFactory.CreateClient();
-                client.Timeout = TimeSpan.FromSeconds(10);
-                var response = await client.GetAsync($"{instance}/streams/{Uri.EscapeDataString(videoId)}");
-
-                if (response.IsSuccessStatusCode)
+                var (json, source) = await completed;
+                if (HasValidAudioStreams(json))
                 {
-                    var json = await response.Content.ReadAsStringAsync();
-
-                    // Verificar que el JSON tenga audioStreams válidos y no vacíos
-                    if (HasValidAudioStreams(json))
+                    _cache.Set(cacheKey, json, TimeSpan.FromMinutes(55));
+                    Console.WriteLine($"[Stream] OK via {source} (paralelo) para {videoId}");
+                    cts.Cancel(); // Cancelar el resto
+                    // Enriquecer related streams en background (no bloquea el play)
+                    _ = Task.Run(async () =>
                     {
-                        json = await EnrichRelatedStreamsIfEmptyAsync(json, videoId);
-                        _cache.Set(cacheKey, json, TimeSpan.FromMinutes(55));
-                        Console.WriteLine($"[Stream] OK via Piped: {instance}");
-                        return json;
-                    }
-                    Console.WriteLine($"[Stream] {instance} respondió pero sin audioStreams válidos.");
+                        var enriched = await EnrichRelatedStreamsIfEmptyAsync(json, videoId);
+                        if (enriched != json)
+                            _cache.Set(cacheKey, enriched, TimeSpan.FromMinutes(55));
+                    });
+                    return json;
                 }
-                else
-                {
-                    Console.WriteLine($"[Stream] {instance} devolvió HTTP {(int)response.StatusCode}");
-                }
+                Console.WriteLine($"[Stream] {source} respondió sin audioStreams válidos.");
             }
             catch (Exception ex)
             {
-                Console.WriteLine($"[Stream] Fallo en {instance}: {ex.Message}");
+                Console.WriteLine($"[Stream] Extractor falló: {ex.Message}");
             }
         }
 
-        // FASE 2: Extracción nativa con YoutubeExplode (Plan B)
-        Console.WriteLine($"[Stream] Todos los Piped fallaron. Intentando YoutubeExplode para {videoId}...");
-        var ytExplodeResult = await ExtractWithYoutubeExplodeAsync(videoId, cacheKey);
-        if (HasValidAudioStreams(ytExplodeResult))
-            return ytExplodeResult;
+        return BuildErrorJson("Todos los extractores fallaron.");
+    }
 
-        // FASE 3: yt-dlp como último recurso (Plan C — el más robusto)
-        Console.WriteLine($"[Stream] YoutubeExplode falló. Usando yt-dlp para {videoId}...");
-        return await ExtractWithYtDlpAsync(videoId, cacheKey);
+    private async Task<(string json, string source)> TryPipedInstanceAsync(
+        string instance, string videoId, CancellationToken ct)
+    {
+        try
+        {
+            var client = _httpClientFactory.CreateClient();
+            client.Timeout = TimeSpan.FromSeconds(8);
+            var response = await client.GetAsync(
+                $"{instance}/streams/{Uri.EscapeDataString(videoId)}", ct);
+            if (response.IsSuccessStatusCode)
+            {
+                var json = await response.Content.ReadAsStringAsync(ct);
+                return (json, $"Piped:{instance}");
+            }
+            return (BuildErrorJson($"HTTP {(int)response.StatusCode}"), $"Piped:{instance}");
+        }
+        catch (Exception ex)
+        {
+            return (BuildErrorJson(ex.Message), $"Piped:{instance}");
+        }
     }
 
     // ─────────────────────────────────────────────────────────────────
     // EXTRACTOR NATIVO con YoutubeExplode
     // ─────────────────────────────────────────────────────────────────
-    private async Task<string> ExtractWithYoutubeExplodeAsync(string videoId, string cacheKey)
+    private async Task<string> ExtractWithYoutubeExplodeAsync(string videoId, string? cacheKey)
     {
         try
         {
@@ -464,8 +506,11 @@ public class MusicExtractionService
 
             // Construir JSON compatible con el formato Piped que espera la app MAUI
             var resultJson = BuildCompatibleJson(video, audioStream);
-            resultJson = await EnrichRelatedStreamsIfEmptyAsync(resultJson, videoId);
-            _cache.Set(cacheKey, resultJson, TimeSpan.FromMinutes(55));
+            if (cacheKey != null)
+            {
+                resultJson = await EnrichRelatedStreamsIfEmptyAsync(resultJson, videoId);
+                _cache.Set(cacheKey, resultJson, TimeSpan.FromMinutes(55));
+            }
             Console.WriteLine($"[YoutubeExplode] ✅ Stream extraído nativamente para: {video.Title}");
             return resultJson;
         }
@@ -479,7 +524,7 @@ public class MusicExtractionService
     // ─────────────────────────────────────────────────────────────────
     // EXTRACTOR yt-dlp — Plan C, el más actualizado y robusto
     // ─────────────────────────────────────────────────────────────────
-    private async Task<string> ExtractWithYtDlpAsync(string videoId, string cacheKey)
+    private async Task<string> ExtractWithYtDlpAsync(string videoId, string? cacheKey)
     {
         try
         {
@@ -568,10 +613,13 @@ public class MusicExtractionService
                 videoStreams = Array.Empty<object>()
             };
 
-            // Enriquecer con related streams (Invidious → búsqueda por artista)
+            // Serializar sin enriquecer (se hace en background desde GetStreamAsync)
             var json = JsonSerializer.Serialize(result, new JsonSerializerOptions { PropertyNamingPolicy = JsonNamingPolicy.CamelCase });
-            json = await EnrichRelatedStreamsIfEmptyAsync(json, videoId);
-            _cache.Set(cacheKey, json, TimeSpan.FromMinutes(50));
+            if (cacheKey != null)
+            {
+                json = await EnrichRelatedStreamsIfEmptyAsync(json, videoId);
+                _cache.Set(cacheKey, json, TimeSpan.FromMinutes(50));
+            }
             Console.WriteLine($"[yt-dlp] ✅ Audio extraído exitosamente: {title}");
             return json;
         }

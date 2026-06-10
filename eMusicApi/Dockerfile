@@ -8,7 +8,7 @@ RUN dotnet restore
 
 # Copiar todo y compilar en Release
 COPY . ./
-RUN dotnet publish -c Release -o /app/publish --no-restore
+RUN dotnet publish -c Release -o /app/publish
 
 # ── Etapa 2: Runtime (imagen mínima ARM64) ────────────────────────────────────
 FROM mcr.microsoft.com/dotnet/aspnet:9.0 AS runtime

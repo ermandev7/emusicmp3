@@ -202,12 +202,23 @@ namespace eMusicApp.Platforms.Android
                 sessionBuilder.SetSessionActivity(sessionActivity);
             _mediaSession = sessionBuilder.Build();
 
+            // Configurar el provider de notificaciones de Media3 para que genere
+            // botones funcionales (Play/Pause/Next/Prev) enrutados por MediaSession
+            SetMediaNotificationProvider(new DefaultMediaNotificationProvider(this));
+
             _progressHandler  = new global::Android.OS.Handler(global::Android.OS.Looper.MainLooper!);
             _progressRunnable = new global::Java.Lang.Runnable(OnProgressTick);
             _progressHandler.PostDelayed(_progressRunnable, 500);
 
             // Promover a foreground inmediatamente (Android exige StartForeground en <5s)
-            PostMediaNotification();
+            try
+            {
+                base.OnUpdateNotification(_mediaSession, true);
+            }
+            catch
+            {
+                PostMediaNotification();
+            }
 
             // Flush pending play: si MAUI pidió reproducir mientras el servicio estaba muerto
             if (NativeAudioController.PendingPlayRequest is var pending && pending != null)
@@ -225,11 +236,19 @@ namespace eMusicApp.Platforms.Android
         public override MediaSession? OnGetSession(MediaSession.ControllerInfo? controllerInfo)
             => _mediaSession;
 
-        // Notificación custom con MediaStyle — Media3 no genera notificación visible en .NET MAUI.
-        // Los botones usan BroadcastReceiver (no PendingIntent a servicio) para evitar throttling.
         public override void OnUpdateNotification(MediaSession session, bool startInForegroundRequired)
         {
-            PostMediaNotification();
+            // Intentar primero que Media3 genere su propia notificación con MediaSession transport controls
+            try
+            {
+                base.OnUpdateNotification(session, startInForegroundRequired);
+            }
+            catch (Exception ex)
+            {
+                System.Diagnostics.Debug.WriteLine($"[Notification] base.OnUpdateNotification failed: {ex.Message}");
+                // Fallback: notificación custom si Media3 falla
+                PostMediaNotification();
+            }
         }
 
         public override StartCommandResult OnStartCommand(Intent? intent, global::Android.App.StartCommandFlags flags, int startId)
@@ -970,6 +989,29 @@ namespace eMusicApp.Platforms.Android
                     .Add(CMD_STOP)
                     .Build();
             }
+        }
+
+        // ── Play / Pause / Stop ──
+        // Overrides explícitos para que Media3 los enrute desde la notificación y lock screen
+        public override void Play()
+        {
+            System.Diagnostics.Debug.WriteLine("[ForwardingPlayer] Play()");
+            base.Play();
+            NativeAudioController.ReportPlaybackState(true);
+        }
+
+        public override void Pause()
+        {
+            System.Diagnostics.Debug.WriteLine("[ForwardingPlayer] Pause()");
+            base.Pause();
+            NativeAudioController.ReportPlaybackState(false);
+        }
+
+        public override void Stop()
+        {
+            System.Diagnostics.Debug.WriteLine("[ForwardingPlayer] Stop()");
+            base.Stop();
+            NativeAudioController.ReportPlaybackState(false);
         }
 
         // ── Next ──

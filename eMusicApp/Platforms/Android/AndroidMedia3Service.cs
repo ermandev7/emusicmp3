@@ -300,17 +300,30 @@ namespace eMusicApp.Platforms.Android
                 {
                     if (_mediaSession != null)
                     {
-                        var token = _mediaSession.PlatformToken;
-                        if (token is global::Android.Media.Session.MediaSession.Token platformToken)
+                        var tokenObj = _mediaSession.PlatformToken;
+                        if (tokenObj != null)
                         {
-                            style.SetMediaSession(platformToken);
+                            // Crear wrapper .NET desde el Handle Java directo.
+                            // PlatformToken devuelve Java.Lang.Object pero internamente ES un
+                            // android.media.session.MediaSession.Token — GetObject crea el wrapper correcto.
+                            var platformToken = Java.Lang.Object.GetObject<global::Android.Media.Session.MediaSession.Token>(
+                                tokenObj.Handle, global::Android.Runtime.JniHandleOwnership.DoNotTransfer);
+                            if (platformToken != null)
+                            {
+                                style.SetMediaSession(platformToken);
+                                System.Diagnostics.Debug.WriteLine("[Notification] Token set OK via GetObject");
+                            }
+                            else
+                            {
+                                System.Diagnostics.Debug.WriteLine("[Notification] GetObject returned null, trying JavaCast");
+                                var castToken = global::Android.Runtime.Extensions.JavaCast<global::Android.Media.Session.MediaSession.Token>(tokenObj);
+                                if (castToken != null)
+                                    style.SetMediaSession(castToken);
+                            }
                         }
-                        else if (token != null)
+                        else
                         {
-                            // Fallback: el tipo .NET no matchea pero el objeto Java sí es un token válido
-                            var tokenFromHandle = global::Android.Runtime.Extensions.JavaCast<global::Android.Media.Session.MediaSession.Token>(token);
-                            if (tokenFromHandle != null)
-                                style.SetMediaSession(tokenFromHandle);
+                            System.Diagnostics.Debug.WriteLine("[Notification] PlatformToken is null!");
                         }
                     }
                 }
@@ -350,6 +363,7 @@ namespace eMusicApp.Platforms.Android
             {
                 var bytes = await _httpClient.GetByteArrayAsync(url);
                 _artworkBitmap = global::Android.Graphics.BitmapFactory.DecodeByteArray(bytes, 0, bytes.Length);
+                PostMediaNotification();
             }
             catch { }
         }
@@ -416,6 +430,7 @@ namespace eMusicApp.Platforms.Android
                     _currentTitle = title;
                     var thumb  = _player.CurrentMediaItem?.MediaMetadata?.ArtworkUri?.ToString() ?? "";
                     NativeAudioController.ReportTrackStarted(playingId, title, artist, thumb, durMs);
+                    PostMediaNotification();
                     _ = LoadArtworkAsync(thumb);
 
                     _nextPrepared = false;
@@ -491,6 +506,7 @@ namespace eMusicApp.Platforms.Android
             _player.Prepare();
             _player.Play();
 
+            PostMediaNotification();
             _ = LoadArtworkAsync(thumbUrl);
             _ = FetchRelatedAndQueueNextAsync(videoId);
         }
@@ -831,8 +847,8 @@ namespace eMusicApp.Platforms.Android
                 .Build();
         }
 
-        public void Pause()  { _player?.Pause(); }
-        public void Resume() { _player?.Play(); }
+        public void Pause()  { _player?.Pause(); PostMediaNotification(); }
+        public void Resume() { _player?.Play(); PostMediaNotification(); }
 
         // ── Handlers para BroadcastReceiver (botones de notificación) ──
         public void HandlePlayPause()
@@ -848,6 +864,7 @@ namespace eMusicApp.Platforms.Android
                 _player.Play();
                 NativeAudioController.ReportPlaybackState(true);
             }
+            PostMediaNotification();
         }
 
         public void HandleNext()
@@ -862,6 +879,7 @@ namespace eMusicApp.Platforms.Android
                 NativeAudioController.OnSkipToNext?.Invoke();
                 _ = FetchNextTrackNativelyAsync();
             }
+            PostMediaNotification();
         }
 
         public void HandlePrev()
@@ -875,6 +893,7 @@ namespace eMusicApp.Platforms.Android
             {
                 NativeAudioController.OnSkipToPrevious?.Invoke();
             }
+            PostMediaNotification();
         }
         public void SeekTo(long positionMs) => _player?.SeekTo(positionMs);
 
@@ -946,21 +965,20 @@ namespace eMusicApp.Platforms.Android
             _service = service;
         }
 
-        // Constantes de Player.COMMAND_* (Media3 spec, no expuestas en .NET bindings)
+        // Constantes de Player.COMMAND_* (Media3 Player.java — valores verificados)
+        private const int CMD_PLAY_PAUSE = 1;
+        private const int CMD_PREPARE = 2;
         private const int CMD_STOP = 3;
-        private const int CMD_SEEK_TO_PREVIOUS = 15;
-        private const int CMD_SEEK_TO_PREVIOUS_MEDIA_ITEM = 16;
-        private const int CMD_SEEK_TO_NEXT = 17;
-        private const int CMD_SEEK_TO_NEXT_MEDIA_ITEM = 18;
+        private const int CMD_SEEK_TO_DEFAULT_POSITION = 4;
+        private const int CMD_SEEK_IN_CURRENT_MEDIA_ITEM = 5;
+        private const int CMD_SEEK_TO_PREVIOUS_MEDIA_ITEM = 6;
+        private const int CMD_SEEK_TO_PREVIOUS = 7;
+        private const int CMD_SEEK_TO_NEXT_MEDIA_ITEM = 8;
+        private const int CMD_SEEK_TO_NEXT = 9;
 
-        // Siempre reportar Next/Previous como disponibles para que Android Auto muestre los botones
         public override bool IsCommandAvailable(int command)
         {
-            if (command == CMD_SEEK_TO_NEXT
-                || command == CMD_SEEK_TO_NEXT_MEDIA_ITEM
-                || command == CMD_SEEK_TO_PREVIOUS
-                || command == CMD_SEEK_TO_PREVIOUS_MEDIA_ITEM
-                || command == CMD_STOP)
+            if (command >= CMD_PLAY_PAUSE && command <= CMD_SEEK_TO_NEXT)
                 return true;
             return base.IsCommandAvailable(command);
         }
@@ -971,11 +989,15 @@ namespace eMusicApp.Platforms.Android
             {
                 var cmds = base.AvailableCommands;
                 return cmds.BuildUpon()
-                    .Add(CMD_SEEK_TO_NEXT)
-                    .Add(CMD_SEEK_TO_NEXT_MEDIA_ITEM)
-                    .Add(CMD_SEEK_TO_PREVIOUS)
-                    .Add(CMD_SEEK_TO_PREVIOUS_MEDIA_ITEM)
+                    .Add(CMD_PLAY_PAUSE)
+                    .Add(CMD_PREPARE)
                     .Add(CMD_STOP)
+                    .Add(CMD_SEEK_TO_DEFAULT_POSITION)
+                    .Add(CMD_SEEK_IN_CURRENT_MEDIA_ITEM)
+                    .Add(CMD_SEEK_TO_PREVIOUS_MEDIA_ITEM)
+                    .Add(CMD_SEEK_TO_PREVIOUS)
+                    .Add(CMD_SEEK_TO_NEXT_MEDIA_ITEM)
+                    .Add(CMD_SEEK_TO_NEXT)
                     .Build();
             }
         }

@@ -166,8 +166,12 @@ namespace eMusicApp.ViewModels
         {
             IsBusy = true;
 
-            var hist = await _apiService.GetHistoryAsync();
-            await UpdateGenresFromApiAsync();
+            // Paralelo: historial + géneros + recomendaciones al mismo tiempo
+            var histTask = _apiService.GetHistoryAsync();
+            var genresTask = UpdateGenresFromApiAsync();
+            var recosTask = LoadRecommendationsAsync();
+
+            var hist = await histTask;
             RecentTracks.Clear();
             foreach (var t in hist.Take(12))
                 RecentTracks.Add(t);
@@ -177,7 +181,8 @@ namespace eMusicApp.ViewModels
             OnPropertyChanged(nameof(HasNoHistory));
             OnPropertyChanged(nameof(HasHistory));
 
-            _ = LoadRecommendationsAsync();
+            await genresTask;
+            await recosTask;
         }
 
         private async Task LoadRecommendationsAsync()

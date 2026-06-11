@@ -89,11 +89,11 @@
             <Button Grid.Column="1"
                     Text="⬇"
                     TextColor="{Binding Player.DownloadButtonColor}"
-                    FontSize="22"
+                    FontSize="32"
                     BackgroundColor="Transparent"
                     BorderColor="Transparent"
                     Padding="0"
-                    WidthRequest="40" HeightRequest="40"
+                    WidthRequest="52" HeightRequest="52"
                     VerticalOptions="Center"
                     Command="{Binding Player.DownloadTrackCommand}"
                     CommandParameter="{Binding Player.CurrentTrack}" />

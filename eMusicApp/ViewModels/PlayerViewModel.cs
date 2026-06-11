@@ -739,6 +739,22 @@ namespace eMusicApp.ViewModels
         {
             if (CurrentTrack == null) return;
 
+            // Primero intentar recomendaciones personalizadas del motor TF-IDF
+            var recoTracks = await FetchRecommendationsAsync();
+            if (recoTracks.Count > 0)
+            {
+                foreach (var t in recoTracks)
+                {
+                    PlayQueue.Add(t);
+                    MarkAsPlayed(t);
+                }
+                _currentQueueIndex = PlayQueue.Count - recoTracks.Count;
+                RebuildQueueItems();
+                await PlayTrack(PlayQueue[_currentQueueIndex]);
+                return;
+            }
+
+            // Fallback: búsqueda inteligente por track actual
             var newTracks = await SmartSearchTracksAsync(CurrentTrack.Title, CurrentTrack.Uploader);
 
             if (newTracks.Count > 0)
@@ -773,6 +789,26 @@ namespace eMusicApp.ViewModels
                 _isPlayingFromGenre = _activeGenre != null;
                 await PlayTrack(PlayQueue[_currentQueueIndex]);
                 _isPlayingFromGenre = false;
+            }
+        }
+
+        private async Task<List<Track>> FetchRecommendationsAsync()
+        {
+            try
+            {
+                var recs = await _apiService.GetRecommendationsAsync(10);
+                var queueIds = new HashSet<string>(PlayQueue.Select(t => t.VideoId));
+                return recs
+                    .Where(t => !string.IsNullOrEmpty(t.VideoId)
+                        && !_playedIds.Contains(t.VideoId)
+                        && !queueIds.Contains(t.VideoId))
+                    .Take(6)
+                    .ToList();
+            }
+            catch (Exception ex)
+            {
+                System.Diagnostics.Debug.WriteLine($"[Player] FetchRecommendations error: {ex.Message}");
+                return new List<Track>();
             }
         }
 

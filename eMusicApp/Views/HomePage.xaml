@@ -180,6 +180,51 @@
                         </CollectionView.ItemTemplate>
                     </CollectionView>
 
+                    <!-- ═══ RECOMENDADO PARA TI ═══ -->
+                    <Label Text="Recomendado para ti"
+                           IsVisible="{Binding HasRecommendations}"
+                           TextColor="#B3B3B3" FontSize="14"
+                           Margin="2,20,0,10" />
+
+                    <CollectionView ItemsSource="{Binding RecommendedTracks}"
+                                    SelectionMode="None"
+                                    IsVisible="{Binding HasRecommendations}"
+                                    HeightRequest="180">
+
+                        <CollectionView.ItemsLayout>
+                            <LinearItemsLayout Orientation="Horizontal" ItemSpacing="12" />
+                        </CollectionView.ItemsLayout>
+
+                        <CollectionView.ItemTemplate>
+                            <DataTemplate x:DataType="models:Track">
+                                <Grid WidthRequest="140">
+                                    <Grid.GestureRecognizers>
+                                        <TapGestureRecognizer
+                                            Command="{Binding Source={RelativeSource AncestorType={x:Type vm:HomeViewModel}}, Path=Player.PlayTrackCommand}"
+                                            CommandParameter="{Binding .}"
+                                            Tapped="OnTrackTapped" />
+                                    </Grid.GestureRecognizers>
+
+                                    <StackLayout Spacing="6">
+                                        <Border StrokeThickness="0"
+                                                StrokeShape="RoundRectangle 8"
+                                                BackgroundColor="#282828"
+                                                HeightRequest="140" WidthRequest="140">
+                                            <Image Source="{Binding ThumbnailUrl}" Aspect="AspectFill" />
+                                        </Border>
+                                        <Label Text="{Binding Title}"
+                                               TextColor="White" FontSize="12" FontAttributes="Bold"
+                                               MaxLines="1" LineBreakMode="TailTruncation" />
+                                        <Label Text="{Binding Uploader}"
+                                               TextColor="#808080" FontSize="10"
+                                               MaxLines="1" LineBreakMode="TailTruncation"
+                                               Margin="0,-4,0,0" />
+                                    </StackLayout>
+                                </Grid>
+                            </DataTemplate>
+                        </CollectionView.ItemTemplate>
+                    </CollectionView>
+
                     <!-- Empty state -->
                     <StackLayout IsVisible="{Binding HasNoHistory}"
                                  VerticalOptions="Center" HorizontalOptions="Center"

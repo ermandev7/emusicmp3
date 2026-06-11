@@ -17,10 +17,10 @@ namespace eMusicApp.Views
             _player = playerViewModel;
             BindingContext = new FullPlayerViewModelWrapper(playerViewModel, Navigation);
 
-            // Dynamic background from album art
             playerViewModel.PropertyChanged += OnPlayerPropertyChanged;
             playerViewModel.PropertyChanged += OnSliderPropertyChanged;
             ApplyDynamicBackground(playerViewModel.DominantColor);
+            UpdateDownloadTint();
         }
 
         protected override void OnDisappearing()
@@ -40,6 +40,15 @@ namespace eMusicApp.Views
         {
             if (e.PropertyName == nameof(PlayerViewModel.DominantColor))
                 ApplyDynamicBackground(_player.DominantColor);
+            if (e.PropertyName == nameof(PlayerViewModel.IsCurrentTrackDownloaded))
+                UpdateDownloadTint();
+        }
+
+        private void UpdateDownloadTint()
+        {
+            var behaviors = DownloadBtn.Behaviors;
+            DownloadBtn.Behaviors.Clear();
+            DownloadBtn.Opacity = _player.IsCurrentTrackDownloaded ? 1.0 : 0.5;
         }
 
         private void ApplyDynamicBackground(Color color)

@@ -86,17 +86,15 @@
                        MaxLines="1"
                        LineBreakMode="TailTruncation" />
             </StackLayout>
-            <Button Grid.Column="1"
-                    Text="⬇"
-                    TextColor="{Binding Player.DownloadButtonColor}"
-                    FontSize="32"
-                    BackgroundColor="Transparent"
-                    BorderColor="Transparent"
-                    Padding="0"
-                    WidthRequest="52" HeightRequest="52"
-                    VerticalOptions="Center"
-                    Command="{Binding Player.DownloadTrackCommand}"
-                    CommandParameter="{Binding Player.CurrentTrack}" />
+            <ImageButton x:Name="DownloadBtn"
+                         Grid.Column="1"
+                         Source="download.png"
+                         BackgroundColor="Transparent"
+                         WidthRequest="44" HeightRequest="44"
+                         Padding="8"
+                         VerticalOptions="Center"
+                         Command="{Binding Player.DownloadTrackCommand}"
+                         CommandParameter="{Binding Player.CurrentTrack}" />
         </Grid>
 
         <!-- Controls -->

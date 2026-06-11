@@ -54,7 +54,7 @@ namespace eMusicApp.Platforms.Android
 
         private static HttpClient CreateHttpClient()
         {
-            var client = new HttpClient { Timeout = System.TimeSpan.FromSeconds(15) };
+            var client = new HttpClient { Timeout = System.TimeSpan.FromSeconds(25) };
             var userId = Preferences.Default.Get("user_id", "");
             if (!string.IsNullOrEmpty(userId))
                 client.DefaultRequestHeaders.Add("X-User-Id", userId);
@@ -679,10 +679,28 @@ namespace eMusicApp.Platforms.Android
         {
             var tracks = await SearchTracksAsync(query);
             if (tracks.Count == 0) return null;
-            var first = tracks[0];
-            var streamUrl = await GetBestStreamUrlAsync(first.videoId);
-            if (string.IsNullOrEmpty(streamUrl)) return null;
-            return (first.videoId, first.title, first.artist, first.thumb, streamUrl);
+
+            // Resolver los primeros 3 en paralelo — el primero que resuelva gana
+            var candidates = tracks.Take(3).ToList();
+            var tasks = candidates.Select(async t =>
+            {
+                var url = await GetBestStreamUrlAsync(t.videoId);
+                return (t.videoId, t.title, t.artist, t.thumb, streamUrl: url);
+            }).ToList();
+
+            while (tasks.Count > 0)
+            {
+                var completed = await Task.WhenAny(tasks);
+                tasks.Remove(completed);
+                try
+                {
+                    var result = await completed;
+                    if (!string.IsNullOrEmpty(result.streamUrl))
+                        return (result.videoId, result.title, result.artist, result.thumb, result.streamUrl!);
+                }
+                catch { }
+            }
+            return null;
         }
 
         private static async Task<List<(string videoId, string title, string artist, string thumb)>> SearchTracksAsync(string query)

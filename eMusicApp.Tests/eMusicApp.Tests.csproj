@@ -21,6 +21,8 @@
   <!-- Link shared source files that compile under net9.0 -->
   <ItemGroup>
     <Compile Include="..\eMusicApp\NativeAudioController.cs" Link="Linked\NativeAudioController.cs" />
+    <Compile Include="..\eMusicApp\Services\VoiceCommandParser.cs" Link="Linked\VoiceCommandParser.cs" />
+    <Compile Include="..\eMusicApp\Services\IVoiceAssistant.cs" Link="Linked\IVoiceAssistant.cs" />
   </ItemGroup>
 
   <ItemGroup>

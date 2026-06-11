@@ -354,7 +354,6 @@ namespace eMusicApp.Platforms.Android
             {
                 var bytes = await _httpClient.GetByteArrayAsync(url);
                 _artworkBitmap = global::Android.Graphics.BitmapFactory.DecodeByteArray(bytes, 0, bytes.Length);
-                PostMediaNotification();
             }
             catch { }
         }
@@ -421,7 +420,6 @@ namespace eMusicApp.Platforms.Android
                     _currentTitle = title;
                     var thumb  = _player.CurrentMediaItem?.MediaMetadata?.ArtworkUri?.ToString() ?? "";
                     NativeAudioController.ReportTrackStarted(playingId, title, artist, thumb, durMs);
-                    PostMediaNotification();
                     _ = LoadArtworkAsync(thumb);
 
                     _nextPrepared = false;
@@ -497,9 +495,7 @@ namespace eMusicApp.Platforms.Android
             _player.Prepare();
             _player.Play();
 
-            PostMediaNotification();
             _ = LoadArtworkAsync(thumbUrl);
-
             _ = FetchRelatedAndQueueNextAsync(videoId);
         }
 
@@ -839,8 +835,8 @@ namespace eMusicApp.Platforms.Android
                 .Build();
         }
 
-        public void Pause()  { _player?.Pause(); PostMediaNotification(); }
-        public void Resume() { _player?.Play(); PostMediaNotification(); }
+        public void Pause()  { _player?.Pause(); }
+        public void Resume() { _player?.Play(); }
 
         // ── Handlers para BroadcastReceiver (botones de notificación) ──
         public void HandlePlayPause()
@@ -856,7 +852,6 @@ namespace eMusicApp.Platforms.Android
                 _player.Play();
                 NativeAudioController.ReportPlaybackState(true);
             }
-            PostMediaNotification();
         }
 
         public void HandleNext()
@@ -871,7 +866,6 @@ namespace eMusicApp.Platforms.Android
                 NativeAudioController.OnSkipToNext?.Invoke();
                 _ = FetchNextTrackNativelyAsync();
             }
-            PostMediaNotification();
         }
 
         public void HandlePrev()
@@ -885,7 +879,6 @@ namespace eMusicApp.Platforms.Android
             {
                 NativeAudioController.OnSkipToPrevious?.Invoke();
             }
-            PostMediaNotification();
         }
         public void SeekTo(long positionMs) => _player?.SeekTo(positionMs);
 

@@ -211,14 +211,10 @@ namespace eMusicApp.Platforms.Android
             _progressHandler.PostDelayed(_progressRunnable, 500);
 
             // Promover a foreground inmediatamente (Android exige StartForeground en <5s)
-            try
-            {
-                base.OnUpdateNotification(_mediaSession, true);
-            }
-            catch
-            {
-                PostMediaNotification();
-            }
+            // Siempre usar PostMediaNotification() aquí porque base.OnUpdateNotification()
+            // no llama StartForeground si no hay media cargada todavía.
+            // Media3 tomará el control con botones funcionales cuando el player tenga contenido.
+            PostMediaNotification();
 
             // Flush pending play: si MAUI pidió reproducir mientras el servicio estaba muerto
             if (NativeAudioController.PendingPlayRequest is var pending && pending != null)

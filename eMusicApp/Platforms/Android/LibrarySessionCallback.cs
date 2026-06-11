@@ -97,10 +97,18 @@ namespace eMusicApp.Platforms.Android
             MediaSession session,
             MediaSession.ControllerInfo controller)
         {
-            // Comandos: 1=PLAY_PAUSE, 3=STOP, 15=SEEK_PREV, 16=SEEK_PREV_ITEM, 17=SEEK_NEXT, 18=SEEK_NEXT_ITEM
+            // Player.COMMAND_* correctos de Media3 Player.java
             var playerCommands = MediaSession.ConnectionResult.DefaultPlayerCommands
                 .BuildUpon()
-                .Add(1).Add(3).Add(15).Add(16).Add(17).Add(18)
+                .Add(1)  // PLAY_PAUSE
+                .Add(2)  // PREPARE
+                .Add(3)  // STOP
+                .Add(4)  // SEEK_TO_DEFAULT_POSITION
+                .Add(5)  // SEEK_IN_CURRENT_MEDIA_ITEM
+                .Add(6)  // SEEK_TO_PREVIOUS_MEDIA_ITEM
+                .Add(7)  // SEEK_TO_PREVIOUS
+                .Add(8)  // SEEK_TO_NEXT_MEDIA_ITEM
+                .Add(9)  // SEEK_TO_NEXT
                 .Build();
 
             return MediaSession.ConnectionResult.Accept(

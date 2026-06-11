@@ -72,12 +72,13 @@ namespace eMusicApp.ViewModels
             {
                 DownloadedSongs.Add(new Track
                 {
-                    Id           = d.Id,
-                    Url          = d.LocalPath,
-                    Title        = d.Title,
-                    Uploader     = d.Artist,
-                    ThumbnailUrl = d.ThumbUrl,
-                    Type         = "stream"
+                    Id              = d.Id,
+                    VideoIdFromJson = d.Id,
+                    Url             = d.LocalPath,
+                    Title           = d.Title,
+                    Uploader        = d.Artist,
+                    ThumbnailUrl    = d.ThumbUrl,
+                    Type            = "stream"
                 });
             }
         }

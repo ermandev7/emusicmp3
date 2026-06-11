@@ -63,6 +63,31 @@ namespace eMusicApp.Models
             set => _thumbnailUrl = value;
         }
 
+        [JsonIgnore]
+        public string HqThumbnailUrl
+        {
+            get
+            {
+                var thumb = ThumbnailUrl;
+                if (!string.IsNullOrEmpty(thumb))
+                {
+                    // Piped/YouTube proxied URLs: .../vi/ID/QUALITY.jpg → maxresdefault
+                    foreach (var q in new[] { "default", "mqdefault", "hqdefault", "sddefault" })
+                    {
+                        var token = $"/{q}.";
+                        int i = thumb.IndexOf(token);
+                        if (i >= 0)
+                            return thumb.Substring(0, i) + "/maxresdefault" + thumb.Substring(i + token.Length - 1);
+                    }
+                }
+                // Fallback: construir directo desde VideoId
+                var vid = VideoId;
+                if (!string.IsNullOrEmpty(vid))
+                    return $"https://i.ytimg.com/vi/{vid}/maxresdefault.jpg";
+                return thumb;
+            }
+        }
+
         [JsonPropertyName("duration")]
         public int Duration { get; set; }
 

@@ -86,11 +86,26 @@ namespace eMusicApp.ViewModels
         [NotifyPropertyChangedFor(nameof(HasCurrentTrack))]
         private Track? _currentTrack;
 
+        [ObservableProperty]
+        [NotifyPropertyChangedFor(nameof(DownloadButtonColor))]
+        private bool _isCurrentTrackDownloaded;
+
+        public Color DownloadButtonColor => IsCurrentTrackDownloaded ? _colorActive : _colorInactive;
+
+        private void RefreshDownloadState()
+        {
+            DownloadManager.Initialize();
+            IsCurrentTrackDownloaded = CurrentTrack != null
+                && !string.IsNullOrEmpty(CurrentTrack.VideoId)
+                && DownloadManager.IsTrackDownloaded(CurrentTrack.VideoId);
+        }
+
         partial void OnCurrentTrackChanged(Track? value)
         {
             RebuildQueueItems();
-            if (_colorService != null && !string.IsNullOrEmpty(value?.ThumbnailUrl))
-                _ = UpdateDominantColorAsync(value.ThumbnailUrl);
+            RefreshDownloadState();
+            if (_colorService != null && !string.IsNullOrEmpty(value?.HqThumbnailUrl))
+                _ = UpdateDominantColorAsync(value.HqThumbnailUrl);
         }
 
         private async Task UpdateDominantColorAsync(string imageUrl)
@@ -898,7 +913,12 @@ namespace eMusicApp.ViewModels
                 var streamInfo = await _apiService.GetStreamAsync(track.VideoId);
                 if (streamInfo != null && streamInfo.AudioStreams != null && streamInfo.AudioStreams.Count > 0)
                 {
-                    streamUrl = streamInfo.AudioStreams.OrderByDescending(s => s.Bitrate).First().Url;
+                    var best = streamInfo.AudioStreams
+                        .Where(s => s.Bitrate <= 128_000)
+                        .OrderByDescending(s => s.Bitrate)
+                        .FirstOrDefault()
+                        ?? streamInfo.AudioStreams.OrderBy(s => s.Bitrate).First();
+                    streamUrl = best.Url;
                 }
             }
 
@@ -906,12 +926,13 @@ namespace eMusicApp.ViewModels
 
             DownloadManager.Initialize();
             await DownloadManager.DownloadTrackAsync(
-                track.VideoId, 
-                streamUrl, 
-                track.Title, 
-                track.Uploader, 
+                track.VideoId,
+                streamUrl,
+                track.Title,
+                track.Uploader,
                 track.ThumbnailUrl
             );
+            RefreshDownloadState();
         }
 
     }

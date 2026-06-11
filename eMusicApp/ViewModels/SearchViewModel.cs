@@ -1,5 +1,6 @@
 using System.Collections.ObjectModel;
 using System.Linq;
+using System.Threading;
 using System.Threading.Tasks;
 using CommunityToolkit.Mvvm.ComponentModel;
 using CommunityToolkit.Mvvm.Input;
@@ -16,6 +17,7 @@ namespace eMusicApp.ViewModels
 
         private const string RecentQueriesKey = "recent_search_queries";
         private const int    MaxRecentQueries = 8;
+        private CancellationTokenSource? _debounceCts;
 
         public ObservableCollection<string> RecentQueries { get; } = new ObservableCollection<string>();
 
@@ -76,6 +78,22 @@ namespace eMusicApp.ViewModels
             OnPropertyChanged(nameof(ShowInitialPrompt));
             OnPropertyChanged(nameof(HasRecentQueries));
             OnPropertyChanged(nameof(HasNoRecentQueries));
+            DebounceSearch(value);
+        }
+
+        private async void DebounceSearch(string query)
+        {
+            _debounceCts?.Cancel();
+            _debounceCts = new CancellationTokenSource();
+            var token = _debounceCts.Token;
+
+            try
+            {
+                await Task.Delay(500, token);
+                if (!token.IsCancellationRequested && !string.IsNullOrWhiteSpace(query))
+                    await SearchAsync();
+            }
+            catch (TaskCanceledException) { }
         }
 
         [ObservableProperty]
@@ -94,20 +112,27 @@ namespace eMusicApp.ViewModels
             if (string.IsNullOrWhiteSpace(SearchQuery))
                 return;
 
+            _debounceCts?.Cancel();
+            var querySnapshot = SearchQuery.Trim();
+
             IsBusy = true;
             SearchResults.Clear();
 
-            var results = await _apiService.SearchTracksAsync(SearchQuery);
+            var results = await _apiService.SearchTracksAsync(querySnapshot);
+
+            if (SearchQuery?.Trim() != querySnapshot)
+            {
+                IsBusy = false;
+                return;
+            }
 
             SearchResults.Clear();
             foreach (var t in results)
                 SearchResults.Add(t);
             Player.SetQueue(results);
 
-            SaveRecentQuery(SearchQuery.Trim());
+            SaveRecentQuery(querySnapshot);
 
-            // Pre-fetch: calentar cache de los primeros 3 resultados en background
-            // para que al tocar play la respuesta sea instantánea (~0ms vs ~7s)
             _apiService.PrefetchStreams(results.Take(3).Select(t => t.VideoId).ToArray());
 
             IsBusy = false;

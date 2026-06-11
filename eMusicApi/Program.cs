@@ -9,6 +9,7 @@ builder.Services.AddOpenApi();
 builder.Services.AddMemoryCache();
 builder.Services.AddHttpClient();
 builder.Services.AddSingleton<MusicExtractionService>();
+builder.Services.AddSingleton<RecommendationEngine>();
 
 builder.Services.AddCors(options =>
 {
@@ -32,6 +33,8 @@ using (var scope = app.Services.CreateScope())
         "ALTER TABLE History ADD COLUMN UserId TEXT NOT NULL DEFAULT ''",
         "ALTER TABLE Favorites ADD COLUMN UserId TEXT NOT NULL DEFAULT ''",
         "ALTER TABLE Playlists ADD COLUMN UserId TEXT NOT NULL DEFAULT ''",
+        "ALTER TABLE History ADD COLUMN SkippedEarly INTEGER NOT NULL DEFAULT 0",
+        "ALTER TABLE History ADD COLUMN IsDownloaded INTEGER NOT NULL DEFAULT 0",
     };
     foreach (var sql in migrations)
     {

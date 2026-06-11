@@ -336,7 +336,7 @@ namespace eMusicApp.Services
             }
         }
 
-        public async Task AddHistoryAsync(Track track)
+        public async Task AddHistoryAsync(Track track, bool isDownloaded = false)
         {
             try
             {
@@ -346,7 +346,8 @@ namespace eMusicApp.Services
                     artist = track.Uploader,
                     thumbnailUrl = track.ThumbnailUrl,
                     duration = track.Duration,
-                    videoId = track.VideoId
+                    videoId = track.VideoId,
+                    isDownloaded = isDownloaded
                 };
                 var json = JsonSerializer.Serialize(payload);
                 var content = new StringContent(json, System.Text.Encoding.UTF8, "application/json");
@@ -355,6 +356,39 @@ namespace eMusicApp.Services
             catch (System.Exception ex)
             {
                 System.Diagnostics.Debug.WriteLine($"[API] AddHistoryAsync ERROR: {ex.Message}");
+            }
+        }
+
+        public async Task MarkSkippedAsync(string videoId)
+        {
+            try
+            {
+                var content = new StringContent("", System.Text.Encoding.UTF8, "application/json");
+                await _httpClient.PatchAsync($"{BaseUrl}/history/{Uri.EscapeDataString(videoId)}/skip", content);
+            }
+            catch (System.Exception ex)
+            {
+                System.Diagnostics.Debug.WriteLine($"[API] MarkSkippedAsync ERROR: {ex.Message}");
+            }
+        }
+
+        public async Task<List<Track>> GetRecommendationsAsync(int limit = 20)
+        {
+            try
+            {
+                var response = await _httpClient.GetAsync($"{BaseUrl}/recommendation?limit={limit}");
+                if (!response.IsSuccessStatusCode) return new List<Track>();
+                var json = await response.Content.ReadAsStringAsync();
+                using var document = JsonDocument.Parse(json);
+                if (!document.RootElement.TryGetProperty("items", out var itemsElement))
+                    return new List<Track>();
+                return JsonSerializer.Deserialize<List<Track>>(itemsElement.GetRawText(), JsonOpts)
+                       ?? new List<Track>();
+            }
+            catch (System.Exception ex)
+            {
+                System.Diagnostics.Debug.WriteLine($"[API] GetRecommendationsAsync ERROR: {ex.Message}");
+                return new List<Track>();
             }
         }
 

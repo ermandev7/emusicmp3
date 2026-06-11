@@ -245,7 +245,7 @@ namespace eMusicApp.Platforms.Android
         private PendingIntent BuildBroadcastPendingIntent(string action)
         {
             var intent = new Intent(action);
-            intent.SetPackage(PackageName);
+            intent.SetComponent(new ComponentName(this, Java.Lang.Class.FromType(typeof(MediaButtonReceiver))));
             return PendingIntent.GetBroadcast(this, action.GetHashCode(), intent,
                 PendingIntentFlags.UpdateCurrent | PendingIntentFlags.Immutable)!;
         }
@@ -279,7 +279,6 @@ namespace eMusicApp.Platforms.Android
                         global::Android.Resource.Drawable.IcMediaNext, "Siguiente",
                         BuildBroadcastPendingIntent(ACTION_NEXT)).Build());
 
-                // MediaStyle con token de sesión para lock screen + burbuja expandida
                 var style = new Notification.MediaStyle()
                     .SetShowActionsInCompactView(0, 1, 2);
                 try
@@ -288,7 +287,16 @@ namespace eMusicApp.Platforms.Android
                     {
                         var token = _mediaSession.PlatformToken;
                         if (token is global::Android.Media.Session.MediaSession.Token platformToken)
+                        {
                             style.SetMediaSession(platformToken);
+                        }
+                        else if (token != null)
+                        {
+                            // Fallback: el tipo .NET no matchea pero el objeto Java sí es un token válido
+                            var tokenFromHandle = global::Android.Runtime.Extensions.JavaCast<global::Android.Media.Session.MediaSession.Token>(token);
+                            if (tokenFromHandle != null)
+                                style.SetMediaSession(tokenFromHandle);
+                        }
                     }
                 }
                 catch (Exception ex)
@@ -300,7 +308,6 @@ namespace eMusicApp.Platforms.Android
                 if (_artworkBitmap != null)
                     builder.SetLargeIcon(_artworkBitmap);
 
-                // Abrir la app al tocar la notificación
                 var launchIntent = PackageManager?.GetLaunchIntentForPackage(PackageName ?? "");
                 if (launchIntent != null)
                 {
@@ -819,24 +826,46 @@ namespace eMusicApp.Platforms.Android
         // ── Handlers para BroadcastReceiver (botones de notificación) ──
         public void HandlePlayPause()
         {
-            var player = _wrappedPlayer ?? (IPlayer?)_player;
-            if (player == null) return;
-            if (player.IsPlaying) player.Pause();
-            else player.Play();
+            if (_player == null) return;
+            if (_player.IsPlaying)
+            {
+                _player.Pause();
+                NativeAudioController.ReportPlaybackState(false);
+            }
+            else
+            {
+                _player.Play();
+                NativeAudioController.ReportPlaybackState(true);
+            }
             PostMediaNotification();
         }
 
         public void HandleNext()
         {
-            var player = _wrappedPlayer ?? (IPlayer?)_player;
-            player?.SeekToNext();
+            System.Diagnostics.Debug.WriteLine("[Notification] HandleNext called");
+            if (_wrappedPlayer != null)
+            {
+                _wrappedPlayer.SeekToNext();
+            }
+            else if (_player != null)
+            {
+                NativeAudioController.OnSkipToNext?.Invoke();
+                _ = FetchNextTrackNativelyAsync();
+            }
             PostMediaNotification();
         }
 
         public void HandlePrev()
         {
-            var player = _wrappedPlayer ?? (IPlayer?)_player;
-            player?.SeekToPrevious();
+            System.Diagnostics.Debug.WriteLine("[Notification] HandlePrev called");
+            if (_wrappedPlayer != null)
+            {
+                _wrappedPlayer.SeekToPrevious();
+            }
+            else if (_player != null)
+            {
+                NativeAudioController.OnSkipToPrevious?.Invoke();
+            }
             PostMediaNotification();
         }
         public void SeekTo(long positionMs) => _player?.SeekTo(positionMs);

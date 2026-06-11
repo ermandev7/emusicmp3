@@ -97,9 +97,15 @@ namespace eMusicApp.Platforms.Android
             MediaSession session,
             MediaSession.ControllerInfo controller)
         {
+            // Comandos: 1=PLAY_PAUSE, 3=STOP, 15=SEEK_PREV, 16=SEEK_PREV_ITEM, 17=SEEK_NEXT, 18=SEEK_NEXT_ITEM
+            var playerCommands = MediaSession.ConnectionResult.DefaultPlayerCommands
+                .BuildUpon()
+                .Add(1).Add(3).Add(15).Add(16).Add(17).Add(18)
+                .Build();
+
             return MediaSession.ConnectionResult.Accept(
                 MediaSession.ConnectionResult.DefaultSessionCommands,
-                MediaSession.ConnectionResult.DefaultPlayerCommands);
+                playerCommands);
         }
 
         public void OnPostConnect(MediaSession session, MediaSession.ControllerInfo controller) { }

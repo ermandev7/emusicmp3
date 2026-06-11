@@ -61,8 +61,10 @@ namespace eMusicApp.ViewModels
                     if (!Player.IsRadioMode && !Player.IsGenreRadioActive && Player.PlayQueue.Count <= 1)
                         Player.SetQueue(RecentTracks);
 
-                    // Persistir en la Pi en background
-                    await _apiService.AddHistoryAsync(newTrack);
+                    // Persistir en la Pi en background (con flag de descarga)
+                    DownloadManager.Initialize();
+                    bool downloaded = DownloadManager.IsTrackDownloaded(newTrack.VideoId);
+                    await _apiService.AddHistoryAsync(newTrack, downloaded);
                     }
                     catch (Exception ex) { System.Diagnostics.Debug.WriteLine($"[Home] OnTrackStarted error: {ex.Message}"); }
                 });

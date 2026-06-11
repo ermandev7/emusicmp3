@@ -488,6 +488,10 @@ namespace eMusicApp.ViewModels
         [RelayCommand]
         private async Task NextTrack()
         {
+            // Detectar skip temprano (< 30s) y notificar al API
+            if (CurrentTrack != null && Position > 0 && Position < 30000 && !string.IsNullOrEmpty(CurrentTrack.VideoId))
+                _ = _apiService.MarkSkippedAsync(CurrentTrack.VideoId);
+
             // Repeat One: volver a reproducir la canción actual
             if (CurrentRepeatMode == RepeatMode.One && CurrentTrack != null)
             {

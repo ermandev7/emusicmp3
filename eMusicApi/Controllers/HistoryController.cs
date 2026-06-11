@@ -47,6 +47,8 @@ public class HistoryController : ControllerBase
             existing.PlayedAt = System.DateTime.UtcNow;
             existing.Title = history.Title;
             existing.Artist = history.Artist;
+            existing.IsDownloaded = history.IsDownloaded;
+            existing.SkippedEarly = false;
             if (!string.IsNullOrEmpty(history.ThumbnailUrl))
                 existing.ThumbnailUrl = history.ThumbnailUrl;
         }
@@ -114,6 +116,19 @@ public class HistoryController : ControllerBase
         if (combined.Contains("romántic") || combined.Contains("amor") || combined.Contains("corazón")) return "balada";
 
         return null;
+    }
+
+    [HttpPatch("{videoId}/skip")]
+    public async Task<IActionResult> MarkSkipped(string videoId)
+    {
+        var userId = GetUserId();
+        var entry = await _context.History
+            .FirstOrDefaultAsync(h => h.VideoId == videoId && h.UserId == userId);
+        if (entry == null) return NotFound();
+
+        entry.SkippedEarly = true;
+        await _context.SaveChangesAsync();
+        return NoContent();
     }
 
     [HttpDelete("{id}")]

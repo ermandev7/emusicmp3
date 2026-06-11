@@ -420,9 +420,11 @@ namespace eMusicApp.Platforms.Android
             IList<MediaItem> mediaItems,
             int startIndex, long startPositionMs)
         {
+            System.Diagnostics.Debug.WriteLine($"[LibraryCallback] OnSetMediaItems: {mediaItems.Count} items, startIndex={startIndex}");
             return CreateAsyncFuture(async () =>
             {
                 var resolved = await ResolveItemsInternalAsync(mediaItems);
+                System.Diagnostics.Debug.WriteLine($"[LibraryCallback] Resolved {resolved.Count} items");
                 return (Java.Lang.Object)new MediaSession.MediaItemsWithStartPosition(
                     resolved, startIndex, startPositionMs);
             });
@@ -638,15 +640,22 @@ namespace eMusicApp.Platforms.Android
                 {
                     try
                     {
-                        using var cts = new System.Threading.CancellationTokenSource(System.TimeSpan.FromSeconds(25));
+                        using var cts = new System.Threading.CancellationTokenSource(System.TimeSpan.FromSeconds(30));
                         var task = _func();
                         var completed = await Task.WhenAny(task, Task.Delay(-1, cts.Token));
-                        if (completed == task) completer.Set(await task);
-                        else completer.Set(new Java.Util.ArrayList());
+                        if (completed == task)
+                        {
+                            completer.Set(await task);
+                        }
+                        else
+                        {
+                            System.Diagnostics.Debug.WriteLine("[LibraryCallback] Timeout: resolución tardó >30s");
+                            completer.Set(new Java.Util.ArrayList());
+                        }
                     }
                     catch (System.Exception ex)
                     {
-                        System.Diagnostics.Debug.WriteLine($"[LibraryCallback] Error: {ex.Message}");
+                        System.Diagnostics.Debug.WriteLine($"[LibraryCallback] Error: {ex.Message}\n{ex.StackTrace}");
                         completer.Set(new Java.Util.ArrayList());
                     }
                 });

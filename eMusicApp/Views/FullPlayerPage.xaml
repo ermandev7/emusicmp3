@@ -53,7 +53,7 @@
                     StrokeShape="RoundRectangle 8"
                     BackgroundColor="#2A2A2A"
                     Shadow="{Shadow Brush=Black, Offset='0,10', Radius=20, Opacity=0.5}">
-                <Image Source="{Binding Player.CurrentTrack.ThumbnailUrl}" Aspect="AspectFill" />
+                <Image Source="{Binding Player.CurrentTrack.HqThumbnailUrl}" Aspect="AspectFill" />
             </Border>
             <!-- Overlay de carga sobre la portada -->
             <Border StrokeThickness="0"
@@ -86,13 +86,17 @@
                        MaxLines="1"
                        LineBreakMode="TailTruncation" />
             </StackLayout>
-            <ImageButton Grid.Column="1"
-                          Source="download.png"
-                          BackgroundColor="Transparent"
-                          WidthRequest="30" HeightRequest="30"
-                          VerticalOptions="Center"
-                          Command="{Binding Player.DownloadTrackCommand}"
-                          CommandParameter="{Binding Player.CurrentTrack}" />
+            <Button Grid.Column="1"
+                    Text="⬇"
+                    TextColor="{Binding Player.DownloadButtonColor}"
+                    FontSize="22"
+                    BackgroundColor="Transparent"
+                    BorderColor="Transparent"
+                    Padding="0"
+                    WidthRequest="40" HeightRequest="40"
+                    VerticalOptions="Center"
+                    Command="{Binding Player.DownloadTrackCommand}"
+                    CommandParameter="{Binding Player.CurrentTrack}" />
         </Grid>
 
         <!-- Controls -->

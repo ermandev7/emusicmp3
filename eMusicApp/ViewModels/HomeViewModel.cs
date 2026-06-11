@@ -146,6 +146,12 @@ namespace eMusicApp.ViewModels
         private ObservableCollection<Track> _recentTracks;
 
         [ObservableProperty]
+        [NotifyPropertyChangedFor(nameof(HasRecommendations))]
+        private ObservableCollection<Track> _recommendedTracks = new();
+
+        public bool HasRecommendations => RecommendedTracks.Count > 0;
+
+        [ObservableProperty]
         [NotifyPropertyChangedFor(nameof(HasNoHistory))]
         [NotifyPropertyChangedFor(nameof(IsNotBusy))]
         private bool _isBusy;
@@ -162,7 +168,6 @@ namespace eMusicApp.ViewModels
 
             var hist = await _apiService.GetHistoryAsync();
             await UpdateGenresFromApiAsync();
-            // Solo mostrar los 12 más recientes en el Home
             RecentTracks.Clear();
             foreach (var t in hist.Take(12))
                 RecentTracks.Add(t);
@@ -171,6 +176,24 @@ namespace eMusicApp.ViewModels
             IsBusy = false;
             OnPropertyChanged(nameof(HasNoHistory));
             OnPropertyChanged(nameof(HasHistory));
+
+            _ = LoadRecommendationsAsync();
+        }
+
+        private async Task LoadRecommendationsAsync()
+        {
+            try
+            {
+                var recs = await _apiService.GetRecommendationsAsync(15);
+                RecommendedTracks.Clear();
+                foreach (var t in recs)
+                    RecommendedTracks.Add(t);
+                OnPropertyChanged(nameof(HasRecommendations));
+            }
+            catch (Exception ex)
+            {
+                System.Diagnostics.Debug.WriteLine($"[Home] LoadRecommendations error: {ex.Message}");
+            }
         }
     }
 }

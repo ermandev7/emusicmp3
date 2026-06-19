@@ -7,6 +7,17 @@ var builder = WebApplication.CreateBuilder(args);
 builder.Services.AddControllers();
 builder.Services.AddOpenApi();
 builder.Services.AddMemoryCache();
+
+// Compresión de respuestas (gzip/brotli) — las búsquedas/recomendaciones son JSON
+// grande; comprimir ahorra datos móviles y acelera la carga en el cliente.
+builder.Services.AddResponseCompression(options =>
+{
+    options.EnableForHttps = true;
+    options.Providers.Add<Microsoft.AspNetCore.ResponseCompression.BrotliCompressionProvider>();
+    options.Providers.Add<Microsoft.AspNetCore.ResponseCompression.GzipCompressionProvider>();
+    options.MimeTypes = Microsoft.AspNetCore.ResponseCompression.ResponseCompressionDefaults
+        .MimeTypes.Concat(new[] { "application/json" });
+});
 builder.Services.AddHttpClient();
 builder.Services.AddSingleton<MusicExtractionService>();
 builder.Services.AddSingleton<RecommendationEngine>();
@@ -73,7 +84,13 @@ using (var scope = app.Services.CreateScope())
 if (app.Environment.IsDevelopment())
     app.MapOpenApi();
 
+app.UseResponseCompression();
 app.UseCors();
 app.UseAuthorization();
 app.MapControllers();
+
+// Liveness ligero para el watchdog/monitorización (responde al instante, sin tocar
+// red externa ni BD). 200 = el servidor está vivo.
+app.MapGet("/health", () => Results.Ok(new { status = "ok", time = DateTime.UtcNow }));
+
 app.Run();

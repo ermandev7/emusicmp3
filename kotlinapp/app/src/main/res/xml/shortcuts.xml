@@ -1,0 +1,24 @@
+<?xml version="1.0" encoding="utf-8"?>
+<shortcuts xmlns:android="http://schemas.android.com/apk/res/android">
+
+    <!-- App Action: "pon/reproduce <X> en eMusic" → busca y reproduce. -->
+    <capability android:name="actions.intent.PLAY_MEDIA">
+        <intent
+            android:action="android.intent.action.VIEW"
+            android:targetPackage="com.emusic.app"
+            android:targetClass="com.emusic.app.MainActivity">
+            <parameter
+                android:name="media.name"
+                android:key="query" />
+            <parameter
+                android:name="media.artist"
+                android:key="artist" />
+        </intent>
+        <!-- Fallback sin parámetros: solo abre la app. -->
+        <intent
+            android:action="android.intent.action.VIEW"
+            android:targetPackage="com.emusic.app"
+            android:targetClass="com.emusic.app.MainActivity" />
+    </capability>
+
+</shortcuts>

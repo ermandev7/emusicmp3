@@ -10,11 +10,13 @@ public class AppDbContext : DbContext
     public DbSet<Favorite> Favorites { get; set; }
     public DbSet<History> History { get; set; }
     public DbSet<Playlist> Playlists { get; set; }
+    public DbSet<Exclusion> Exclusions { get; set; }
 
     protected override void OnModelCreating(ModelBuilder modelBuilder)
     {
         modelBuilder.Entity<History>().HasIndex(h => h.UserId);
         modelBuilder.Entity<Favorite>().HasIndex(f => f.UserId);
         modelBuilder.Entity<Playlist>().HasIndex(p => p.UserId);
+        modelBuilder.Entity<Exclusion>().HasIndex(e => e.UserId);
     }
 }

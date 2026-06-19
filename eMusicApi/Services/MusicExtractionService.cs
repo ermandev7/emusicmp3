@@ -847,6 +847,26 @@ public class MusicExtractionService
         }
     }
 
+    /// <summary>
+    /// Streams relacionados (música similar) a un videoId, en formato JSON
+    /// {"items":[...]} compatible con el parser de candidatos. Usado por el
+    /// motor de recomendación para descubrir canciones nuevas parecidas a los favoritos.
+    /// </summary>
+    public async Task<string> GetRelatedAsync(string videoId)
+    {
+        var cacheKey = $"related_{videoId}";
+        if (_cache.TryGetValue(cacheKey, out string? cached) && cached != null)
+            return cached;
+
+        var related = await GetRelatedStreamsFromInvidiousAsync(videoId);
+        var json = JsonSerializer.Serialize(
+            new { items = related },
+            new JsonSerializerOptions { PropertyNamingPolicy = JsonNamingPolicy.CamelCase });
+        if (related.Length > 0)
+            _cache.Set(cacheKey, json, TimeSpan.FromHours(2));
+        return json;
+    }
+
     // ─────────────────────────────────────────────────────────────────
     // RELATED STREAMS via Invidious /api/v1/videos/{id}
     // ─────────────────────────────────────────────────────────────────

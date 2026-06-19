@@ -50,14 +50,32 @@ public class RecommendationController : ControllerBase
             .AsNoTracking()
             .ToListAsync();
 
-        if (history.Count < 3)
-            return Ok(new { items = Array.Empty<object>(), message = "Necesitas al menos 3 canciones en el historial" });
+        var favorites = await _db.Favorites
+            .Where(f => f.UserId == userId)
+            .AsNoTracking()
+            .ToListAsync();
 
-        var profile = _engine.BuildProfile(history);
+        if (history.Count + favorites.Count < 3)
+            return Ok(new { items = Array.Empty<object>(), message = "Escucha o marca como favoritas al menos 3 canciones" });
+
+        // Exclusiones ("no recomendar") del usuario.
+        var exclusions = await _db.Exclusions
+            .Where(e => e.UserId == userId)
+            .AsNoTracking()
+            .ToListAsync();
+        var excludedIds = exclusions
+            .Select(e => e.VideoId).Where(v => !string.IsNullOrEmpty(v)).ToHashSet();
+        var excludedArtists = exclusions
+            .Select(e => RecommendationEngine.NormalizeArtist(e.Artist))
+            .Where(a => !string.IsNullOrEmpty(a)).ToHashSet();
+
+        var profile = _engine.BuildProfile(history, favorites);
         var queries = _engine.GenerateSearchQueries(profile);
 
-        // Buscar candidatos — max 3 búsquedas en paralelo para no saturar la Pi
+        // Concurrencia limitada para no saturar la Pi.
         var semaphore = new SemaphoreSlim(3);
+
+        // FAMILIAR: búsquedas por artistas/géneros del perfil.
         var searchTasks = queries.Select(async q =>
         {
             await semaphore.WaitAsync();
@@ -66,9 +84,26 @@ public class RecommendationController : ControllerBase
             finally { semaphore.Release(); }
         });
 
-        var searchResults = await Task.WhenAll(searchTasks);
+        // DESCUBRIMIENTO: related streams de las semillas (favoritos primero, luego historial).
+        var seedIds = favorites.Select(f => f.Id)
+            .Concat(history.Select(h => h.VideoId))
+            .Where(v => !string.IsNullOrEmpty(v))
+            .Distinct()
+            .Take(3);
+        var relatedTasks = seedIds.Select(async id =>
+        {
+            await semaphore.WaitAsync();
+            try { return await _music.GetRelatedAsync(id); }
+            catch { return "[]"; }
+            finally { semaphore.Release(); }
+        });
 
-        var candidates = ParseCandidates(searchResults, profile.PlayedVideoIds);
+        var allResults = await Task.WhenAll(searchTasks.Concat(relatedTasks));
+
+        var candidates = ParseCandidates(allResults, profile.PlayedVideoIds)
+            .Where(c => !excludedIds.Contains(c.VideoId) &&
+                        !excludedArtists.Contains(RecommendationEngine.NormalizeArtist(c.Artist)))
+            .ToList();
 
         var scored = candidates
             .Select(c => new
@@ -82,10 +117,22 @@ public class RecommendationController : ControllerBase
                 score = Math.Round(_engine.ScoreCandidate(profile, c.Title, c.Artist), 4)
             })
             .OrderByDescending(c => c.score)
-            .Take(limit)
             .ToList();
 
-        var result = JsonSerializer.Serialize(new { items = scored });
+        // DIVERSIDAD: máximo 2 canciones por artista en el resultado final.
+        var perArtist = new Dictionary<string, int>();
+        var diversified = new List<object>();
+        foreach (var c in scored)
+        {
+            var key = RecommendationEngine.NormalizeArtist(c.uploaderName);
+            perArtist.TryGetValue(key, out int cnt);
+            if (cnt >= 2) continue;
+            perArtist[key] = cnt + 1;
+            diversified.Add(c);
+            if (diversified.Count >= limit) break;
+        }
+
+        var result = JsonSerializer.Serialize(new { items = diversified });
         _cache.Set(cacheKey, result, TimeSpan.FromMinutes(30));
 
         return Content(result, "application/json");
@@ -107,22 +154,60 @@ public class RecommendationController : ControllerBase
             .AsNoTracking()
             .ToListAsync();
 
-        if (history.Count == 0)
-            return Ok(new { message = "Sin historial" });
+        var favorites = await _db.Favorites
+            .Where(f => f.UserId == userId)
+            .AsNoTracking()
+            .ToListAsync();
 
-        var profile = _engine.BuildProfile(history);
+        if (history.Count == 0 && favorites.Count == 0)
+            return Ok(new { message = "Sin historial ni favoritos" });
+
+        var profile = _engine.BuildProfile(history, favorites);
 
         return Ok(new
         {
             topArtists = profile.TopArtists.Select(a => new { artist = a.Key, weight = Math.Round(a.Value, 2) }),
             topGenres = profile.TopGenres.Select(g => new { genre = g.Key, weight = Math.Round(g.Value, 2) }),
+            favoriteArtists = profile.FavoriteArtists,
             topTokens = profile.TokenVector
                 .OrderByDescending(kv => kv.Value)
                 .Take(15)
                 .Select(kv => new { token = kv.Key, weight = Math.Round(kv.Value, 2) }),
             tracksAnalyzed = history.Count,
+            favoritesAnalyzed = favorites.Count,
             searchQueries = _engine.GenerateSearchQueries(profile)
         });
+    }
+
+    /// <summary>
+    /// POST /api/recommendation/exclude  — marca una canción/artista como "no recomendar".
+    /// </summary>
+    [HttpPost("exclude")]
+    public async Task<IActionResult> Exclude([FromBody] ExcludeRequest request)
+    {
+        var userId = Request.Headers.TryGetValue("X-User-Id", out var val) ? val.ToString() : "";
+        if (request == null || string.IsNullOrEmpty(request.VideoId))
+            return BadRequest();
+
+        bool exists = await _db.Exclusions
+            .AnyAsync(e => e.UserId == userId && e.VideoId == request.VideoId);
+        if (!exists)
+        {
+            _db.Exclusions.Add(new eMusicApi.Models.Exclusion
+            {
+                UserId = userId,
+                VideoId = request.VideoId,
+                Artist = request.Artist ?? "",
+                CreatedAt = DateTime.UtcNow
+            });
+            await _db.SaveChangesAsync();
+        }
+
+        // Invalidar cache de recomendaciones del usuario.
+        foreach (var lim in new[] { 10, 20, 30, 50 })
+            _cache.Remove($"reco:{userId}:{lim}");
+
+        return Ok(new { excluded = request.VideoId });
     }
 
     private static List<(string VideoId, string Title, string Artist, string Thumb, int Duration, string Url)>
@@ -184,4 +269,11 @@ public class RecommendationController : ControllerBase
         }
         return null;
     }
+}
+
+public class ExcludeRequest
+{
+    public string VideoId { get; set; } = "";
+    public string? Artist { get; set; }
+    public string? Title { get; set; }
 }

@@ -31,6 +31,7 @@ import androidx.hilt.navigation.compose.hiltViewModel
 import androidx.lifecycle.compose.collectAsStateWithLifecycle
 import androidx.media3.common.Player
 import coil.compose.AsyncImage
+import coil.compose.SubcomposeAsyncImage
 import com.emusic.app.ui.components.formatDuration
 import kotlinx.coroutines.delay
 
@@ -62,8 +63,10 @@ fun PlayerScreen(
     LaunchedEffect(state.currentTrack) { positionMs = 0L }
 
     // Color dominante de la carátula → gradiente de fondo dinámico.
+    // Usamos la miniatura original (siempre existe) para el color; maxresdefault
+    // puede dar 404 y dejaría el gradiente sin color, sobre todo en descargas.
     val dominant = rememberDominantColor(
-        track?.hqThumbnail ?: track?.displayThumbnail,
+        track?.displayThumbnail?.takeIf { it.isNotEmpty() } ?: track?.hqThumbnail,
         MaterialTheme.colorScheme.surfaceVariant
     )
     val background = MaterialTheme.colorScheme.background
@@ -191,11 +194,23 @@ fun PlayerScreen(
                     .clip(RoundedCornerShape(20.dp)),
                 contentAlignment = Alignment.Center
             ) {
-                AsyncImage(
-                    model = track?.hqThumbnail ?: track?.displayThumbnail,
+                // Intentamos la carátula HQ (maxresdefault). Para muchos vídeos —y para
+                // las descargas, cuya miniatura guardada es mqdefault— esa resolución no
+                // existe (404), así que en error caemos a la miniatura original, que es la
+                // misma que sí se ve en la lista.
+                SubcomposeAsyncImage(
+                    model = track?.hqThumbnail,
                     contentDescription = "Carátula",
                     modifier = Modifier.fillMaxSize(),
-                    contentScale = ContentScale.Crop
+                    contentScale = ContentScale.Crop,
+                    error = {
+                        AsyncImage(
+                            model = track?.displayThumbnail,
+                            contentDescription = "Carátula",
+                            modifier = Modifier.fillMaxSize(),
+                            contentScale = ContentScale.Crop
+                        )
+                    }
                 )
                 if (state.error != null) {
                     Box(
@@ -272,7 +287,24 @@ fun PlayerScreen(
                     modifier = Modifier.size(44.dp)
                 ) {
                     if (extras.isDownloading) {
-                        CircularProgressIndicator(modifier = Modifier.size(20.dp), strokeWidth = 2.dp)
+                        if (extras.downloadProgress > 0) {
+                            // Anillo determinado + porcentaje numérico (10%, 70%, ...).
+                            Box(contentAlignment = Alignment.Center) {
+                                CircularProgressIndicator(
+                                    progress = { extras.downloadProgress / 100f },
+                                    modifier = Modifier.size(34.dp),
+                                    strokeWidth = 2.5.dp
+                                )
+                                Text(
+                                    "${extras.downloadProgress}",
+                                    style = MaterialTheme.typography.labelSmall,
+                                    fontSize = 9.sp,
+                                    color = MaterialTheme.colorScheme.primary
+                                )
+                            }
+                        } else {
+                            CircularProgressIndicator(modifier = Modifier.size(20.dp), strokeWidth = 2.dp)
+                        }
                     } else {
                         Icon(
                             if (extras.downloadDone) Icons.Default.DownloadDone else Icons.Default.Download,

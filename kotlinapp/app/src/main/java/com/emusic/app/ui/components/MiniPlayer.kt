@@ -80,16 +80,16 @@ fun MiniPlayer(
                     )
                 }
 
-                IconButton(onClick = onPrevious, modifier = Modifier.size(38.dp)) {
-                    Icon(Icons.Default.SkipPrevious, "Anterior", modifier = Modifier.size(22.dp))
+                IconButton(onClick = onPrevious, modifier = Modifier.size(48.dp)) {
+                    Icon(Icons.Default.SkipPrevious, "Anterior", modifier = Modifier.size(30.dp))
                 }
                 FilledIconButton(
                     onClick = onPlayPause,
-                    modifier = Modifier.size(40.dp)
+                    modifier = Modifier.size(52.dp)
                 ) {
                     if (state.isBuffering) {
                         CircularProgressIndicator(
-                            modifier = Modifier.size(18.dp),
+                            modifier = Modifier.size(22.dp),
                             color = MaterialTheme.colorScheme.onPrimary,
                             strokeWidth = 2.dp
                         )
@@ -97,12 +97,12 @@ fun MiniPlayer(
                         Icon(
                             if (state.isPlaying) Icons.Default.Pause else Icons.Default.PlayArrow,
                             if (state.isPlaying) "Pausar" else "Reproducir",
-                            modifier = Modifier.size(22.dp)
+                            modifier = Modifier.size(30.dp)
                         )
                     }
                 }
-                IconButton(onClick = onNext, modifier = Modifier.size(38.dp)) {
-                    Icon(Icons.Default.SkipNext, "Siguiente", modifier = Modifier.size(22.dp))
+                IconButton(onClick = onNext, modifier = Modifier.size(48.dp)) {
+                    Icon(Icons.Default.SkipNext, "Siguiente", modifier = Modifier.size(30.dp))
                 }
             }
 

@@ -92,6 +92,16 @@ class MusicController @Inject constructor(
                 isBuffering = controller?.playbackState == Player.STATE_BUFFERING
             )
             updateCurrentTrackFromMediaItem(mediaItem)
+
+            // Auto-salto a una pista REMOTA (placeholder emusic://) que aún se está
+            // resolviendo (5-7s): mostrar el skeleton. Caso típico: se acaban las descargas
+            // locales y continúa con recomendadas. Solo si realmente está buffering, para
+            // no parpadear en transiciones gapless ya cacheadas.
+            val needsResolve = mediaItem?.localConfiguration?.uri?.scheme == MusicService.SCHEME
+            if (needsResolve && controller?.playbackState == Player.STATE_BUFFERING) {
+                localPlayback = false
+                markLoadingForIndex(controller?.currentMediaItemIndex ?: C.INDEX_UNSET)
+            }
             maybeClearLoading()
         }
 

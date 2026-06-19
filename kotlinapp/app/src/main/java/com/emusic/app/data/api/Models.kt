@@ -50,17 +50,20 @@ data class Track(
     /** Reescribe la URL de miniatura a la resolución [quality] de YouTube. */
     private fun upgradeThumbnailTo(quality: String): String {
         val thumb = displayThumbnail
+        // 1) Si es una URL estándar de YouTube (i.ytimg.com/.../mqdefault.jpg), reescribir la resolución.
         if (thumb.isNotEmpty()) {
             listOf("default", "mqdefault", "hqdefault", "sddefault", "maxresdefault").forEach { q ->
                 val token = "/$q."
                 val i = thumb.indexOf(token)
                 if (i >= 0) return thumb.substring(0, i) + "/$quality" + thumb.substring(i + token.length - 1)
             }
-            return thumb // no es una URL de miniatura de YouTube → dejarla tal cual
         }
+        // 2) Si no (p.ej. la miniatura de búsqueda es un proxy de 120x120), construir la URL
+        //    real desde el videoId (11 chars). Antes esto no pasaba y se veía pixelado.
         val vid = videoId
-        // Solo construir URL de YouTube si videoId es un ID real (11 chars), no un content:// uri.
-        return if (vid.length == 11) "https://i.ytimg.com/vi/$vid/$quality.jpg" else thumb
+        if (vid.length == 11) return "https://i.ytimg.com/vi/$vid/$quality.jpg"
+        // 3) Último recurso: lo que haya (p.ej. descargas, cuyo videoId es un content:// uri).
+        return thumb
     }
 }
 

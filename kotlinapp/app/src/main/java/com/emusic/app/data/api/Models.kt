@@ -40,9 +40,12 @@ data class Track(
     /**
      * Miniatura de calidad media-alta que SÍ existe siempre en YouTube (480×360),
      * a diferencia de maxresdefault (1280×720) que da 404 en muchos vídeos. Se usa como
-     * respaldo en el reproductor para que las descargas no se vean pixeladas.
+     * base instantánea en el reproductor para que nunca se vea blanco ni pixelado.
      */
     val sdThumbnail: String get() = upgradeThumbnailTo("hqdefault")
+
+    /** Calidad alta intermedia (640×480). Suele existir; mejor respaldo si maxres da 404. */
+    val sddThumbnail: String get() = upgradeThumbnailTo("sddefault")
 
     /** Reescribe la URL de miniatura a la resolución [quality] de YouTube. */
     private fun upgradeThumbnailTo(quality: String): String {

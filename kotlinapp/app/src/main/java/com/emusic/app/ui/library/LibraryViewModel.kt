@@ -7,6 +7,8 @@ import com.emusic.app.data.api.Playlist
 import com.emusic.app.data.api.Track
 import android.content.IntentSender
 import com.emusic.app.data.download.DeleteOutcome
+import com.emusic.app.data.download.DownloadManager
+import com.emusic.app.data.download.DownloadState
 import com.emusic.app.data.download.DownloadedTrack
 import com.emusic.app.data.download.DownloadsRepository
 import com.emusic.app.data.repository.MusicRepository
@@ -35,11 +37,15 @@ data class LibraryUiState(
 @HiltViewModel
 class LibraryViewModel @Inject constructor(
     private val repository: MusicRepository,
-    private val downloadsRepository: DownloadsRepository
+    private val downloadsRepository: DownloadsRepository,
+    private val downloadManager: DownloadManager
 ) : ViewModel() {
 
     private val _state = MutableStateFlow(LibraryUiState())
     val state: StateFlow<LibraryUiState> = _state.asStateFlow()
+
+    /** Descarga en curso (para mostrarla con % y foto en la pestaña Descargas). */
+    val activeDownload: StateFlow<DownloadState> = downloadManager.state
 
     // Para borrar archivos no creados por esta instalación, el sistema exige confirmación:
     // emitimos el IntentSender y la pantalla lo lanza con el launcher de la Activity.
@@ -47,7 +53,19 @@ class LibraryViewModel @Inject constructor(
     val deleteConsent: SharedFlow<IntentSender> = _deleteConsent.asSharedFlow()
     private var pendingDeleteUri: String? = null
 
-    init { loadAll() }
+    init {
+        loadAll()
+        // Cuando una descarga termina, refrescar la lista para que aparezca el archivo nuevo.
+        viewModelScope.launch {
+            var lastDone: String? = null
+            downloadManager.state.collect { ds ->
+                if (ds.lastDoneVideoId != null && ds.lastDoneVideoId != lastDone) {
+                    lastDone = ds.lastDoneVideoId
+                    _state.value = _state.value.copy(downloads = downloadsRepository.getDownloads())
+                }
+            }
+        }
+    }
 
     fun setTab(tab: LibraryTab) {
         _state.value = _state.value.copy(tab = tab)

@@ -24,6 +24,9 @@ import javax.inject.Singleton
 /** Estado global de la descarga en curso (una a la vez; uso personal). */
 data class DownloadState(
     val videoId: String? = null,
+    val title: String = "",
+    val artist: String = "",
+    val thumbnailUrl: String = "",
     val isDownloading: Boolean = false,
     /** 0..100. -1 = en curso pero sin tamaño conocido (indeterminado). */
     val progress: Int = 0,
@@ -51,7 +54,14 @@ class DownloadManager @Inject constructor(
     /** Inicia la descarga del track. Si ya hay una en curso, no hace nada. */
     fun download(track: Track) {
         if (_state.value.isDownloading) return
-        _state.value = DownloadState(videoId = track.videoId, isDownloading = true, progress = 0)
+        _state.value = DownloadState(
+            videoId = track.videoId,
+            title = track.title,
+            artist = track.displayArtist,
+            thumbnailUrl = track.displayThumbnail,
+            isDownloading = true,
+            progress = 0
+        )
         scope.launch {
             val ok = downloadToMediaStore(track) { pct ->
                 _state.update { if (it.videoId == track.videoId) it.copy(progress = pct) else it }

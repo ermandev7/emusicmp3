@@ -42,11 +42,26 @@ using (var scope = app.Services.CreateScope())
         catch { /* columna ya existe */ }
     }
 
+    // Tabla de exclusiones ("no recomendar") — creada aquí porque EnsureCreated
+    // no añade tablas nuevas si la BD ya existe.
+    try
+    {
+        db.Database.ExecuteSqlRaw(@"CREATE TABLE IF NOT EXISTS Exclusions (
+            Id INTEGER NOT NULL CONSTRAINT PK_Exclusions PRIMARY KEY AUTOINCREMENT,
+            UserId TEXT NOT NULL DEFAULT '',
+            VideoId TEXT NOT NULL DEFAULT '',
+            Artist TEXT NOT NULL DEFAULT '',
+            CreatedAt TEXT NOT NULL DEFAULT ''
+        )");
+    }
+    catch { /* ya existe */ }
+
     // Crear indices para UserId
     string[] indices = {
         "CREATE INDEX IF NOT EXISTS IX_History_UserId ON History(UserId)",
         "CREATE INDEX IF NOT EXISTS IX_Favorites_UserId ON Favorites(UserId)",
         "CREATE INDEX IF NOT EXISTS IX_Playlists_UserId ON Playlists(UserId)",
+        "CREATE INDEX IF NOT EXISTS IX_Exclusions_UserId ON Exclusions(UserId)",
     };
     foreach (var sql in indices)
     {

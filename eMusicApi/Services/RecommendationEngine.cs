@@ -12,6 +12,8 @@ public class UserProfile
     public List<KeyValuePair<string, double>> TopArtists { get; init; } = new();
     public List<KeyValuePair<string, double>> TopGenres { get; init; } = new();
     public HashSet<string> PlayedVideoIds { get; init; } = new();
+    /// <summary>Artistas marcados como favoritos (señal explícita).</summary>
+    public HashSet<string> FavoriteArtists { get; init; } = new();
 }
 
 public class RecommendationEngine
@@ -116,9 +118,14 @@ public class RecommendationEngine
     //  IDF(t) = ln((N+1)/(df+1)) + 1
     //  ProfileVector[t] = TF(t) × IDF(t)
 
-    public UserProfile BuildProfile(List<History> history)
+    // Peso de un favorito (corazón). Señal explícita fuerte, sin decay temporal:
+    // equivale a una canción bastante escuchada.
+    private const double FavoriteWeight = 8.0;
+
+    public UserProfile BuildProfile(List<History> history, List<Favorite>? favorites = null)
     {
-        if (history.Count == 0)
+        favorites ??= new List<Favorite>();
+        if (history.Count == 0 && favorites.Count == 0)
             return new UserProfile();
 
         var tokenFreq = new Dictionary<string, double>();
@@ -126,40 +133,34 @@ public class RecommendationEngine
         var artistWeights = new Dictionary<string, double>();
         var genreWeights = new Dictionary<string, double>();
         var playedIds = new HashSet<string>();
+        var favoriteArtists = new HashSet<string>();
         var now = DateTime.UtcNow;
 
-        foreach (var entry in history)
+        // Acumula una "canción" (del historial o favorita) en los vectores del perfil.
+        void Accumulate(string videoId, string title, string artist, double weight)
         {
-            playedIds.Add(entry.VideoId);
+            if (!string.IsNullOrEmpty(videoId)) playedIds.Add(videoId);
 
-            double daysSince = Math.Max(0, (now - entry.PlayedAt).TotalDays);
-            double recency = Math.Exp(-0.05 * daysSince);
-            double skipPenalty = entry.SkippedEarly ? 0.3 : 1.0;
-            double downloadBonus = entry.IsDownloaded ? 1.5 : 1.0;
-            double weight = entry.PlayCount * recency * skipPenalty * downloadBonus;
-
-            var tokens = Tokenize(entry.Title);
-            var uniqueTokens = new HashSet<string>(tokens);
-
+            var tokens = Tokenize(title);
             foreach (var token in tokens)
             {
                 tokenFreq.TryGetValue(token, out double cur);
                 tokenFreq[token] = cur + weight;
             }
-            foreach (var token in uniqueTokens)
+            foreach (var token in new HashSet<string>(tokens))
             {
                 tokenDocFreq.TryGetValue(token, out int df);
                 tokenDocFreq[token] = df + 1;
             }
 
-            var artist = NormalizeArtist(entry.Artist);
-            if (artist.Length > 0)
+            var normArtist = NormalizeArtist(artist);
+            if (normArtist.Length > 0)
             {
-                artistWeights.TryGetValue(artist, out double cur);
-                artistWeights[artist] = cur + weight;
+                artistWeights.TryGetValue(normArtist, out double cur);
+                artistWeights[normArtist] = cur + weight;
             }
 
-            var genre = DetectGenre(entry.Title, entry.Artist);
+            var genre = DetectGenre(title, artist);
             if (genre != null)
             {
                 genreWeights.TryGetValue(genre, out double cur);
@@ -167,7 +168,25 @@ public class RecommendationEngine
             }
         }
 
-        int n = history.Count;
+        foreach (var entry in history)
+        {
+            double daysSince = Math.Max(0, (now - entry.PlayedAt).TotalDays);
+            double recency = Math.Exp(-0.05 * daysSince);
+            double skipPenalty = entry.SkippedEarly ? 0.3 : 1.0;
+            double downloadBonus = entry.IsDownloaded ? 1.5 : 1.0;
+            double weight = entry.PlayCount * recency * skipPenalty * downloadBonus;
+            Accumulate(entry.VideoId, entry.Title, entry.Artist, weight);
+        }
+
+        // Favoritos: peso fuerte y constante. También registramos sus artistas.
+        foreach (var fav in favorites)
+        {
+            Accumulate(fav.Id, fav.Title, fav.Artist, FavoriteWeight);
+            var na = NormalizeArtist(fav.Artist);
+            if (na.Length > 0) favoriteArtists.Add(na);
+        }
+
+        int n = history.Count + favorites.Count;
         var profileVector = new Dictionary<string, double>();
         foreach (var (token, tf) in tokenFreq)
         {
@@ -181,7 +200,8 @@ public class RecommendationEngine
             TokenVector = profileVector,
             TopArtists = artistWeights.OrderByDescending(kv => kv.Value).Take(5).ToList(),
             TopGenres = genreWeights.OrderByDescending(kv => kv.Value).Take(3).ToList(),
-            PlayedVideoIds = playedIds
+            PlayedVideoIds = playedIds,
+            FavoriteArtists = favoriteArtists
         };
     }
 
@@ -233,7 +253,13 @@ public class RecommendationEngine
         if (genre != null && profile.TopGenres.Any(g => g.Key == genre))
             genreBonus = 0.2;
 
-        return cosineSim + artistBonus + genreBonus;
+        // Refuerzo explícito si el artista es uno de los favoritos del usuario.
+        double favoriteBonus = 0;
+        if (normArtist.Length > 0 && profile.FavoriteArtists.Count > 0 &&
+            profile.FavoriteArtists.Any(fa => fa == normArtist || fa.Contains(normArtist) || normArtist.Contains(fa)))
+            favoriteBonus = 0.25;
+
+        return cosineSim + artistBonus + genreBonus + favoriteBonus;
     }
 
     // ──────────────── Generación de queries ────────────────

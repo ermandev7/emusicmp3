@@ -1,0 +1,3 @@
+-keep class com.emusic.app.data.api.** { *; }
+-keepattributes Signature
+-keepattributes *Annotation*

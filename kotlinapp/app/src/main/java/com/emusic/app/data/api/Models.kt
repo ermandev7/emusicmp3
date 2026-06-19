@@ -35,19 +35,30 @@ data class Track(
             return url.trimStart('/')
         }
 
-    val hqThumbnail: String
-        get() {
-            val thumb = displayThumbnail
-            if (thumb.isNotEmpty()) {
-                listOf("default", "mqdefault", "hqdefault", "sddefault").forEach { q ->
-                    val token = "/$q."
-                    val i = thumb.indexOf(token)
-                    if (i >= 0) return thumb.substring(0, i) + "/maxresdefault" + thumb.substring(i + token.length - 1)
-                }
+    val hqThumbnail: String get() = upgradeThumbnailTo("maxresdefault")
+
+    /**
+     * Miniatura de calidad media-alta que SÍ existe siempre en YouTube (480×360),
+     * a diferencia de maxresdefault (1280×720) que da 404 en muchos vídeos. Se usa como
+     * respaldo en el reproductor para que las descargas no se vean pixeladas.
+     */
+    val sdThumbnail: String get() = upgradeThumbnailTo("hqdefault")
+
+    /** Reescribe la URL de miniatura a la resolución [quality] de YouTube. */
+    private fun upgradeThumbnailTo(quality: String): String {
+        val thumb = displayThumbnail
+        if (thumb.isNotEmpty()) {
+            listOf("default", "mqdefault", "hqdefault", "sddefault", "maxresdefault").forEach { q ->
+                val token = "/$q."
+                val i = thumb.indexOf(token)
+                if (i >= 0) return thumb.substring(0, i) + "/$quality" + thumb.substring(i + token.length - 1)
             }
-            val vid = videoId
-            return if (vid.isNotEmpty()) "https://i.ytimg.com/vi/$vid/maxresdefault.jpg" else thumb
+            return thumb // no es una URL de miniatura de YouTube → dejarla tal cual
         }
+        val vid = videoId
+        // Solo construir URL de YouTube si videoId es un ID real (11 chars), no un content:// uri.
+        return if (vid.length == 11) "https://i.ytimg.com/vi/$vid/$quality.jpg" else thumb
+    }
 }
 
 data class SearchResponse(val items: List<Track> = emptyList())

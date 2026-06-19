@@ -2,6 +2,7 @@ package com.emusic.app
 
 import android.Manifest
 import android.content.Intent
+import android.os.Build
 import android.os.Bundle
 import androidx.activity.ComponentActivity
 import androidx.activity.compose.setContent
@@ -51,10 +52,18 @@ class MainActivity : ComponentActivity() {
         super.onCreate(savedInstanceState)
         enableEdgeToEdge()
 
+        // Permiso de lectura de medios para VER todas las descargas en el dispositivo
+        // (no solo las que esta instalación creó). API 33+ usa READ_MEDIA_AUDIO; antes,
+        // READ_EXTERNAL_STORAGE.
+        val mediaPerm = if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.TIRAMISU)
+            Manifest.permission.READ_MEDIA_AUDIO
+        else
+            Manifest.permission.READ_EXTERNAL_STORAGE
         permissionLauncher.launch(
             arrayOf(
                 Manifest.permission.RECORD_AUDIO,
-                Manifest.permission.POST_NOTIFICATIONS
+                Manifest.permission.POST_NOTIFICATIONS,
+                mediaPerm
             )
         )
 

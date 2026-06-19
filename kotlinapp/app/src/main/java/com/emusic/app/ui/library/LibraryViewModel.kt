@@ -5,12 +5,17 @@ import androidx.lifecycle.viewModelScope
 import com.emusic.app.data.api.GenreStat
 import com.emusic.app.data.api.Playlist
 import com.emusic.app.data.api.Track
+import android.content.IntentSender
+import com.emusic.app.data.download.DeleteOutcome
 import com.emusic.app.data.download.DownloadedTrack
 import com.emusic.app.data.download.DownloadsRepository
 import com.emusic.app.data.repository.MusicRepository
 import dagger.hilt.android.lifecycle.HiltViewModel
+import kotlinx.coroutines.flow.MutableSharedFlow
 import kotlinx.coroutines.flow.MutableStateFlow
+import kotlinx.coroutines.flow.SharedFlow
 import kotlinx.coroutines.flow.StateFlow
+import kotlinx.coroutines.flow.asSharedFlow
 import kotlinx.coroutines.flow.asStateFlow
 import kotlinx.coroutines.launch
 import javax.inject.Inject
@@ -35,6 +40,12 @@ class LibraryViewModel @Inject constructor(
 
     private val _state = MutableStateFlow(LibraryUiState())
     val state: StateFlow<LibraryUiState> = _state.asStateFlow()
+
+    // Para borrar archivos no creados por esta instalación, el sistema exige confirmación:
+    // emitimos el IntentSender y la pantalla lo lanza con el launcher de la Activity.
+    private val _deleteConsent = MutableSharedFlow<IntentSender>(extraBufferCapacity = 1)
+    val deleteConsent: SharedFlow<IntentSender> = _deleteConsent.asSharedFlow()
+    private var pendingDeleteUri: String? = null
 
     init { loadAll() }
 
@@ -73,7 +84,22 @@ class LibraryViewModel @Inject constructor(
 
     fun deleteDownload(uri: String) {
         viewModelScope.launch {
-            downloadsRepository.deleteDownload(uri)
+            when (val outcome = downloadsRepository.deleteDownload(uri)) {
+                is DeleteOutcome.NeedsConsent -> {
+                    pendingDeleteUri = uri
+                    _deleteConsent.emit(outcome.intentSender)
+                }
+                else -> _state.value = _state.value.copy(downloads = downloadsRepository.getDownloads())
+            }
+        }
+    }
+
+    /** Resultado del diálogo de confirmación del sistema (flujo NeedsConsent). */
+    fun onDeleteConsentResult(granted: Boolean) {
+        viewModelScope.launch {
+            val uri = pendingDeleteUri
+            pendingDeleteUri = null
+            if (granted && uri != null) downloadsRepository.confirmDeleted(uri)
             _state.value = _state.value.copy(downloads = downloadsRepository.getDownloads())
         }
     }

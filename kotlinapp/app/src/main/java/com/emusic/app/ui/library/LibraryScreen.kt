@@ -1,5 +1,9 @@
 package com.emusic.app.ui.library
 
+import android.app.Activity
+import androidx.activity.compose.rememberLauncherForActivityResult
+import androidx.activity.result.IntentSenderRequest
+import androidx.activity.result.contract.ActivityResultContracts
 import androidx.compose.foundation.clickable
 import androidx.compose.foundation.horizontalScroll
 import androidx.compose.foundation.layout.*
@@ -62,6 +66,18 @@ fun LibraryScreen(
         }
         lifecycleOwner.lifecycle.addObserver(observer)
         onDispose { lifecycleOwner.lifecycle.removeObserver(observer) }
+    }
+
+    // Borrar archivos no creados por esta instalación requiere el diálogo del sistema.
+    val deleteConsentLauncher = rememberLauncherForActivityResult(
+        ActivityResultContracts.StartIntentSenderForResult()
+    ) { result ->
+        viewModel.onDeleteConsentResult(result.resultCode == Activity.RESULT_OK)
+    }
+    LaunchedEffect(Unit) {
+        viewModel.deleteConsent.collect { sender ->
+            deleteConsentLauncher.launch(IntentSenderRequest.Builder(sender).build())
+        }
     }
 
     Scaffold(

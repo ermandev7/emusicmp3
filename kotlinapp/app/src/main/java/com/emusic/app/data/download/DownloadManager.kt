@@ -153,10 +153,14 @@ class DownloadManager @Inject constructor(
             resolver.update(uri, values, null, null)
 
             // Guardar artista + carátula (MediaStore no los conserva bien) indexados por
-            // la URI de contenido (estable; coincide con la que reconstruye DownloadsRepository).
+            // la URI de contenido. Guardamos una carátula HD de YouTube (sddefault 640x480)
+            // construida desde el videoId real: la miniatura de búsqueda es un proxy de
+            // 120x120 que se vería pixelado a pantalla completa. Tras descargar, el videoId
+            // pasa a ser un content:// uri y ya no se podría reconstruir.
+            val hdThumb = track.sddThumbnail.ifBlank { track.displayThumbnail }
             metadataStore.save(
                 uri.toString(),
-                DownloadMeta(track.title, track.displayArtist, track.displayThumbnail)
+                DownloadMeta(track.title, track.displayArtist, hdThumb)
             )
 
             android.util.Log.d("DownloadManager", "Descarga OK: $safeName.${target.extension}")

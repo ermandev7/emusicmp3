@@ -2,7 +2,9 @@ package com.emusic.app.data.download
 
 import android.content.ContentUris
 import android.content.Context
+import android.content.IntentSender
 import android.net.Uri
+import android.os.Build
 import android.provider.MediaStore
 import dagger.hilt.android.qualifiers.ApplicationContext
 import kotlinx.coroutines.Dispatchers
@@ -19,6 +21,16 @@ data class DownloadedTrack(
     val thumbnailUrl: String = ""
 )
 
+/** Resultado de intentar borrar una descarga. */
+sealed interface DeleteOutcome {
+    /** Borrada directamente (archivo propio). */
+    object Deleted : DeleteOutcome
+    /** No se pudo (error). */
+    object Failed : DeleteOutcome
+    /** Archivo no creado por esta instalación → el sistema pide confirmación. */
+    data class NeedsConsent(val intentSender: IntentSender) : DeleteOutcome
+}
+
 /**
  * Lee los archivos descargados por eMusic desde MediaStore. La reproducción es
  * 100% local: no toca la API ni la red.
@@ -29,36 +41,61 @@ class DownloadsRepository @Inject constructor(
     private val metadataStore: DownloadMetadataStore
 ) {
     /**
-     * Borra una descarga del almacenamiento. eMusic creó estos archivos vía MediaStore,
-     * así que es el propietario y puede eliminarlos directamente (sin consentimiento extra).
-     * Devuelve true si se borró una fila.
+     * Borra una descarga del almacenamiento (fila de MediaStore + archivo físico).
+     * Para archivos que esta instalación creó, se borra directamente. Para archivos de
+     * instalaciones anteriores (no propios), el sistema pide confirmación → NeedsConsent.
      */
-    suspend fun deleteDownload(uri: String): Boolean = withContext(Dispatchers.IO) {
+    suspend fun deleteDownload(uri: String): DeleteOutcome = withContext(Dispatchers.IO) {
+        val u = Uri.parse(uri)
         try {
-            metadataStore.remove(uri) // los metadatos están indexados por la URI
-            context.contentResolver.delete(Uri.parse(uri), null, null) > 0
-        } catch (_: Exception) {
-            false
+            val rows = context.contentResolver.delete(u, null, null)
+            android.util.Log.d("DownloadsRepo", "deleteDownload uri=$uri rows=$rows")
+            if (rows > 0) {
+                metadataStore.remove(uri)
+                DeleteOutcome.Deleted
+            } else DeleteOutcome.Failed
+        } catch (e: SecurityException) {
+            // Archivo no creado por esta instalación: en API 30+ se pide confirmación al
+            // usuario con un diálogo del sistema; al aceptar se borra de verdad.
+            android.util.Log.w("DownloadsRepo", "deleteDownload requiere consentimiento: ${e.message}")
+            if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.R) {
+                try {
+                    val pi = MediaStore.createDeleteRequest(context.contentResolver, listOf(u))
+                    DeleteOutcome.NeedsConsent(pi.intentSender)
+                } catch (e2: Exception) {
+                    android.util.Log.e("DownloadsRepo", "createDeleteRequest falló: ${e2.message}")
+                    DeleteOutcome.Failed
+                }
+            } else DeleteOutcome.Failed
+        } catch (e: Exception) {
+            android.util.Log.e("DownloadsRepo", "deleteDownload falló uri=$uri: ${e.message}", e)
+            DeleteOutcome.Failed
         }
     }
+
+    /** Limpia los metadatos tras un borrado confirmado por el usuario (flujo NeedsConsent). */
+    suspend fun confirmDeleted(uri: String) = metadataStore.remove(uri)
 
     suspend fun getDownloads(): List<DownloadedTrack> = withContext(Dispatchers.IO) {
         val meta = metadataStore.getAll()
         val result = mutableListOf<DownloadedTrack>()
         // Audio en Music/eMusic (mp3/m4a/ogg).
-        result += query(
+        val audio = query(
             collection = MediaStore.Audio.Media.EXTERNAL_CONTENT_URI,
             titleCol = MediaStore.Audio.Media.TITLE,
             artistCol = MediaStore.Audio.Media.ARTIST,
             meta = meta
         )
         // Otros (webm/opus) guardados en Download/eMusic.
-        result += query(
+        val downloads = query(
             collection = MediaStore.Downloads.EXTERNAL_CONTENT_URI,
             titleCol = MediaStore.MediaColumns.DISPLAY_NAME,
             artistCol = null,
             meta = meta
         )
+        result += audio
+        result += downloads
+        android.util.Log.d("DownloadsRepo", "getDownloads audio=${audio.size} downloads=${downloads.size} total=${result.size}")
         result.sortedBy { it.title.lowercase() }
     }
 

@@ -204,8 +204,10 @@ fun PlayerScreen(
                     modifier = Modifier.fillMaxSize(),
                     contentScale = ContentScale.Crop,
                     error = {
+                        // hqdefault (480×360) siempre existe; mucho mejor que la miniatura
+                        // mqdefault (320×180) que se veía pixelada en las descargas.
                         AsyncImage(
-                            model = track?.displayThumbnail,
+                            model = track?.sdThumbnail,
                             contentDescription = "Carátula",
                             modifier = Modifier.fillMaxSize(),
                             contentScale = ContentScale.Crop

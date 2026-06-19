@@ -142,6 +142,9 @@ class MusicController @Inject constructor(
      */
     fun playTrack(track: Track, queue: List<Track> = emptyList()) {
         val ctrl = controller ?: return
+        // Nueva sesión remota: quitar el bucle que pudo activar la reproducción de
+        // descargas sin conexión (si no, las recomendadas se repetirían en bucle).
+        ctrl.repeatMode = Player.REPEAT_MODE_OFF
         val q = queue.ifEmpty { listOf(track) }
         val index = q.indexOfFirst { it.videoId == track.videoId }.coerceAtLeast(0)
         // Actualizar estado ANTES de setMediaItems para que onMediaItemTransition
@@ -207,6 +210,7 @@ class MusicController @Inject constructor(
     fun playLocal(tracks: List<DownloadedTrack>, startIndex: Int) {
         val ctrl = controller ?: return
         if (tracks.isEmpty()) return
+        ctrl.repeatMode = Player.REPEAT_MODE_OFF // parte sin bucle; se decide al añadir cola
         val idx = startIndex.coerceIn(0, tracks.size - 1)
         val items = tracks.map { dt ->
             MediaItem.Builder()
@@ -248,6 +252,23 @@ class MusicController @Inject constructor(
         ctrl.setMediaItems(items, idx, 0L)
         ctrl.prepare()
         ctrl.play()
+    }
+
+    /**
+     * Añade tracks remotos al final de la cola actual (resueltos bajo demanda). Se usa
+     * para continuar con recomendadas cuando se acaban las descargas que se están
+     * reproduciendo. Conviven sin problema con las URIs content:// locales.
+     */
+    fun appendTracks(tracks: List<Track>) {
+        val ctrl = controller ?: return
+        if (tracks.isEmpty()) return
+        ctrl.addMediaItems(tracks.map { it.toMediaItem() })
+        _state.value = _state.value.copy(queue = _state.value.queue + tracks)
+    }
+
+    /** Repite toda la cola en bucle (descargas sin conexión: no hay recomendadas que añadir). */
+    fun setRepeatAll() {
+        controller?.repeatMode = Player.REPEAT_MODE_ALL
     }
 
     /** Feedback inmediato mientras se busca/resuelve por voz (spinner en el botón play). */

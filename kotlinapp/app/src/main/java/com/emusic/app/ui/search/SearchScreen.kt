@@ -19,6 +19,7 @@ import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.focus.FocusRequester
 import androidx.compose.ui.focus.focusRequester
+import androidx.compose.ui.platform.LocalFocusManager
 import androidx.compose.ui.text.input.ImeAction
 import androidx.compose.ui.unit.dp
 import androidx.hilt.navigation.compose.hiltViewModel
@@ -41,6 +42,14 @@ fun SearchScreen(
     val voiceState by voiceAssistant.state.collectAsStateWithLifecycle()
     val recentSearches by viewModel.recentSearches.collectAsStateWithLifecycle()
     val focusRequester = remember { FocusRequester() }
+    val focusManager = LocalFocusManager.current
+
+    // Buscar y, además, soltar el foco del campo → oculta el teclado para ver toda la
+    // lista de resultados. El teclado vuelve a salir solo al tocar el cuadro de búsqueda.
+    val runSearch: () -> Unit = {
+        viewModel.search()
+        focusManager.clearFocus()
+    }
 
     // Los comandos de voz los maneja MainActivity (único punto, sin carreras):
     // "reproduce X" reproduce, y los de transporte controlan la reproducción.
@@ -71,7 +80,7 @@ fun SearchScreen(
                     placeholder = { Text("Buscar canciones...", style = MaterialTheme.typography.bodyMedium) },
                     singleLine = true,
                     keyboardOptions = KeyboardOptions(imeAction = ImeAction.Search),
-                    keyboardActions = KeyboardActions(onSearch = { viewModel.search() }),
+                    keyboardActions = KeyboardActions(onSearch = { runSearch() }),
                     trailingIcon = {
                         if (state.query.isNotEmpty()) {
                             IconButton(onClick = { viewModel.clear() }, modifier = Modifier.size(36.dp)) {
@@ -94,6 +103,7 @@ fun SearchScreen(
                 )
                 IconButton(
                     onClick = {
+                        focusManager.clearFocus() // oculta el teclado al usar la voz
                         if (voiceState.isListening) voiceAssistant.stopListening()
                         else voiceAssistant.startDirectSearch()
                     },
@@ -106,7 +116,7 @@ fun SearchScreen(
                                else MaterialTheme.colorScheme.onSurfaceVariant
                     )
                 }
-                IconButton(onClick = { viewModel.search() }, modifier = Modifier.size(40.dp)) {
+                IconButton(onClick = { runSearch() }, modifier = Modifier.size(40.dp)) {
                     Icon(Icons.Default.Search, "Buscar", modifier = Modifier.size(22.dp))
                 }
             }
@@ -168,7 +178,7 @@ fun SearchScreen(
                         } else {
                             RecentSearches(
                                 recent = recentSearches,
-                                onSearch = { viewModel.searchQuery(it) },
+                                onSearch = { viewModel.searchQuery(it); focusManager.clearFocus() },
                                 onRemove = { viewModel.removeRecent(it) }
                             )
                         }
@@ -196,7 +206,10 @@ fun SearchScreen(
     }
 
     LaunchedEffect(Unit) {
-        focusRequester.requestFocus()
+        // Auto-enfocar (y mostrar teclado) solo al abrir la búsqueda por primera vez.
+        // Al volver con resultados ya cargados NO se enfoca, para que el teclado no tape
+        // la lista; sale solo cuando el usuario toca el cuadro de búsqueda.
+        if (!state.hasSearched) focusRequester.requestFocus()
     }
 }
 

@@ -50,7 +50,7 @@ data class Track(
     /** Reescribe la URL de miniatura a la resolución [quality] de YouTube. */
     private fun upgradeThumbnailTo(quality: String): String {
         val thumb = displayThumbnail
-        // 1) Si es una URL estándar de YouTube (i.ytimg.com/.../mqdefault.jpg), reescribir la resolución.
+        // 1) URL estándar de YouTube (i.ytimg.com/.../mqdefault.jpg) → reescribir la resolución.
         if (thumb.isNotEmpty()) {
             listOf("default", "mqdefault", "hqdefault", "sddefault", "maxresdefault").forEach { q ->
                 val token = "/$q."
@@ -58,11 +58,24 @@ data class Track(
                 if (i >= 0) return thumb.substring(0, i) + "/$quality" + thumb.substring(i + token.length - 1)
             }
         }
-        // 2) Si no (p.ej. la miniatura de búsqueda es un proxy de 120x120), construir la URL
-        //    real desde el videoId (11 chars). Antes esto no pasaba y se veía pixelado.
+        // 2) videoId real (11 chars) → URL HD de YouTube (búsqueda/streaming).
         val vid = videoId
         if (vid.length == 11) return "https://i.ytimg.com/vi/$vid/$quality.jpg"
-        // 3) Último recurso: lo que haya (p.ej. descargas, cuyo videoId es un content:// uri).
+        // 3) Miniatura proxy de googleusercontent (=w120-h120-...): subir el tamaño en píxeles.
+        //    Cubre las DESCARGAS (su videoId es un content:// uri y no se puede reconstruir),
+        //    incluidas las antiguas guardadas en 120x120.
+        if (thumb.isNotEmpty()) {
+            val sizeRegex = Regex("=w\\d+-h\\d+")
+            if (sizeRegex.containsMatchIn(thumb)) {
+                val px = when (quality) {
+                    "maxresdefault" -> 720
+                    "sddefault" -> 600
+                    else -> 480
+                }
+                return sizeRegex.replace(thumb, "=w$px-h$px")
+            }
+        }
+        // 4) Último recurso: lo que haya.
         return thumb
     }
 }

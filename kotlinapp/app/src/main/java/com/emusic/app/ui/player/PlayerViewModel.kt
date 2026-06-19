@@ -102,8 +102,17 @@ class PlayerViewModel @Inject constructor(
         }
     }
 
-    fun playDownloads(tracks: List<com.emusic.app.data.download.DownloadedTrack>, index: Int) =
+    fun playDownloads(tracks: List<com.emusic.app.data.download.DownloadedTrack>, index: Int) {
         controller.playLocal(tracks, index)
+        // Al terminar las descargas, continuar con recomendadas (como en el resto de la
+        // app). getRecommendations falla y devuelve vacío si no hay internet → en ese
+        // caso ponemos las descargas en bucle para que la música no pare.
+        viewModelScope.launch {
+            val recs = repository.getRecommendations(30).filter { it.videoId.isNotEmpty() }
+            if (recs.isNotEmpty()) controller.appendTracks(recs)
+            else controller.setRepeatAll()
+        }
+    }
 
     fun seekToIndex(index: Int) = controller.seekToIndex(index)
     fun moveQueueItem(from: Int, to: Int) = controller.moveQueueItem(from, to)

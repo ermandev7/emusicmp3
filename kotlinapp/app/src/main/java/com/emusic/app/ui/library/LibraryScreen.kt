@@ -29,6 +29,7 @@ import androidx.compose.ui.layout.ContentScale
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
+import androidx.compose.ui.unit.sp
 import androidx.hilt.navigation.compose.hiltViewModel
 import androidx.lifecycle.Lifecycle
 import androidx.lifecycle.LifecycleEventObserver
@@ -37,6 +38,7 @@ import androidx.lifecycle.compose.collectAsStateWithLifecycle
 import coil.compose.AsyncImage
 import com.emusic.app.data.api.Playlist
 import com.emusic.app.data.api.Track
+import com.emusic.app.data.download.DownloadState
 import com.emusic.app.data.download.DownloadedTrack
 import com.emusic.app.ui.components.NowPlayingBars
 import com.emusic.app.ui.components.TrackItem
@@ -54,6 +56,7 @@ fun LibraryScreen(
 ) {
     val state by viewModel.state.collectAsStateWithLifecycle()
     val playerState by playerViewModel.state.collectAsStateWithLifecycle()
+    val activeDownload by viewModel.activeDownload.collectAsStateWithLifecycle()
     var showCreatePlaylist by remember { mutableStateOf(false) }
     var newPlaylistName by remember { mutableStateOf("") }
 
@@ -137,6 +140,7 @@ fun LibraryScreen(
                     )
                     LibraryTab.Downloads -> DownloadsList(
                         downloads = state.downloads,
+                        activeDownload = activeDownload,
                         currentUri = playerState.currentTrack?.videoId,
                         isPlaying = playerState.isPlaying,
                         onClick = { index ->
@@ -285,15 +289,78 @@ private fun PlaylistItem(
     )
 }
 
+/** Fila de la descarga en curso, con foto, título/artista y el % de avance. */
+@Composable
+private fun ActiveDownloadItem(state: DownloadState) {
+    ListItem(
+        headlineContent = {
+            Text(
+                state.title.ifEmpty { "Descargando…" },
+                maxLines = 1, overflow = TextOverflow.Ellipsis,
+                color = MaterialTheme.colorScheme.primary
+            )
+        },
+        supportingContent = {
+            val pctText = if (state.progress > 0) "Descargando ${state.progress}%" else "Descargando…"
+            Column {
+                Text(
+                    if (state.artist.isNotEmpty()) "${state.artist} · $pctText" else pctText,
+                    maxLines = 1, overflow = TextOverflow.Ellipsis,
+                    style = MaterialTheme.typography.labelSmall
+                )
+                Spacer(Modifier.height(4.dp))
+                if (state.progress > 0) {
+                    LinearProgressIndicator(
+                        progress = { state.progress / 100f },
+                        modifier = Modifier.fillMaxWidth().height(3.dp)
+                    )
+                } else {
+                    LinearProgressIndicator(modifier = Modifier.fillMaxWidth().height(3.dp))
+                }
+            }
+        },
+        leadingContent = {
+            Box(contentAlignment = Alignment.Center) {
+                if (state.thumbnailUrl.isNotEmpty()) {
+                    AsyncImage(
+                        model = state.thumbnailUrl,
+                        contentDescription = null,
+                        modifier = Modifier.size(48.dp).clip(RoundedCornerShape(4.dp)),
+                        contentScale = ContentScale.Crop
+                    )
+                } else {
+                    Icon(Icons.Default.Download, null, modifier = Modifier.size(40.dp),
+                        tint = MaterialTheme.colorScheme.onSurfaceVariant)
+                }
+            }
+        },
+        trailingContent = {
+            if (state.progress > 0) {
+                Box(contentAlignment = Alignment.Center) {
+                    CircularProgressIndicator(
+                        progress = { state.progress / 100f },
+                        modifier = Modifier.size(34.dp), strokeWidth = 2.5.dp
+                    )
+                    Text("${state.progress}", style = MaterialTheme.typography.labelSmall, fontSize = 9.sp)
+                }
+            } else {
+                CircularProgressIndicator(modifier = Modifier.size(22.dp), strokeWidth = 2.dp)
+            }
+        }
+    )
+}
+
 @Composable
 private fun DownloadsList(
     downloads: List<DownloadedTrack>,
+    activeDownload: DownloadState,
     currentUri: String?,
     isPlaying: Boolean,
     onClick: (Int) -> Unit,
     onDelete: (DownloadedTrack) -> Unit
 ) {
     var pendingDelete by remember { mutableStateOf<DownloadedTrack?>(null) }
+    val showActive = activeDownload.isDownloading && activeDownload.videoId != null
 
     pendingDelete?.let { dt ->
         AlertDialog(
@@ -311,7 +378,7 @@ private fun DownloadsList(
         )
     }
 
-    if (downloads.isEmpty()) {
+    if (downloads.isEmpty() && !showActive) {
         Box(Modifier.fillMaxSize(), contentAlignment = Alignment.Center) {
             Column(horizontalAlignment = Alignment.CenterHorizontally) {
                 Icon(
@@ -330,6 +397,9 @@ private fun DownloadsList(
         }
     } else {
         LazyColumn {
+            if (showActive) {
+                item { ActiveDownloadItem(activeDownload) }
+            }
             itemsIndexed(downloads) { index, dt ->
                 val isCurrent = currentUri == dt.uri
                 ListItem(

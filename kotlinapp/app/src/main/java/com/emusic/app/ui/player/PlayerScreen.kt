@@ -194,21 +194,26 @@ fun PlayerScreen(
                     .clip(RoundedCornerShape(20.dp)),
                 contentAlignment = Alignment.Center
             ) {
-                // Intentamos la carátula HQ (maxresdefault). Para muchos vídeos —y para
-                // las descargas, cuya miniatura guardada es mqdefault— esa resolución no
-                // existe (404), así que en error caemos a la miniatura original, que es la
-                // misma que sí se ve en la lista.
+                // Carátula PROGRESIVA: se muestra ya una versión decente y se reemplaza por
+                // una de máxima calidad en cuanto carga (sin blanco ni pixelado).
+                //  · Capa base: hqdefault (480×360), siempre existe → instantánea.
+                //  · Capa superior: maxresdefault (1280×720); si no existe (404), sddefault
+                //    (640×480). Mientras carga, se ve la base; al cargar, la tapa con nitidez.
+                AsyncImage(
+                    model = track?.sdThumbnail,
+                    contentDescription = "Carátula",
+                    modifier = Modifier.fillMaxSize(),
+                    contentScale = ContentScale.Crop
+                )
                 SubcomposeAsyncImage(
                     model = track?.hqThumbnail,
-                    contentDescription = "Carátula",
+                    contentDescription = null,
                     modifier = Modifier.fillMaxSize(),
                     contentScale = ContentScale.Crop,
                     error = {
-                        // hqdefault (480×360) siempre existe; mucho mejor que la miniatura
-                        // mqdefault (320×180) que se veía pixelada en las descargas.
                         AsyncImage(
-                            model = track?.sdThumbnail,
-                            contentDescription = "Carátula",
+                            model = track?.sddThumbnail,
+                            contentDescription = null,
                             modifier = Modifier.fillMaxSize(),
                             contentScale = ContentScale.Crop
                         )

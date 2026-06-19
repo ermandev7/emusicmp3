@@ -29,7 +29,9 @@ import javax.inject.Inject
 data class PlayerUiExtras(
     val isFavorite: Boolean = false,
     val isDownloading: Boolean = false,
-    val downloadDone: Boolean = false
+    val downloadDone: Boolean = false,
+    /** Progreso de descarga 0..100. -1 = en curso pero sin tamaño conocido (indeterminado). */
+    val downloadProgress: Int = 0
 )
 
 @HiltViewModel
@@ -76,20 +78,25 @@ class PlayerViewModel @Inject constructor(
     fun downloadTrack() {
         val track = state.value.currentTrack ?: return
         if (_extras.value.isDownloading) return
-        _extras.value = _extras.value.copy(isDownloading = true, downloadDone = false)
+        _extras.value = _extras.value.copy(isDownloading = true, downloadDone = false, downloadProgress = 0)
         viewModelScope.launch {
-            val ok = withContext(Dispatchers.IO) { downloadToMediaStore(track) }
+            val ok = withContext(Dispatchers.IO) {
+                downloadToMediaStore(track) { pct ->
+                    // El progreso llega desde el hilo de IO; StateFlow es thread-safe.
+                    _extras.value = _extras.value.copy(downloadProgress = pct)
+                }
+            }
             if (ok) {
                 repository.addHistory(track, isDownloaded = true)
-                _extras.value = _extras.value.copy(isDownloading = false, downloadDone = true)
+                _extras.value = _extras.value.copy(isDownloading = false, downloadDone = true, downloadProgress = 0)
             } else {
-                _extras.value = _extras.value.copy(isDownloading = false)
+                _extras.value = _extras.value.copy(isDownloading = false, downloadProgress = 0)
             }
         }
     }
 
     /** Descarga el mejor audio a la carpeta Music/eMusic. Devuelve true si tuvo éxito. */
-    private suspend fun downloadToMediaStore(track: Track): Boolean {
+    private suspend fun downloadToMediaStore(track: Track, onProgress: (Int) -> Unit = {}): Boolean {
         val resolver = context.contentResolver
         var uri: android.net.Uri? = null
         return try {
@@ -142,10 +149,27 @@ class PlayerViewModel @Inject constructor(
                 uri = null
                 return false
             }
+            val total = conn.contentLengthLong
+            onProgress(if (total > 0) 0 else -1)
             resolver.openOutputStream(uri)?.use { out ->
-                conn.inputStream.use { input -> input.copyTo(out) }
+                conn.inputStream.use { input ->
+                    val buffer = ByteArray(64 * 1024)
+                    var downloaded = 0L
+                    var lastPct = 0
+                    while (true) {
+                        val read = input.read(buffer)
+                        if (read < 0) break
+                        out.write(buffer, 0, read)
+                        downloaded += read
+                        if (total > 0) {
+                            val pct = ((downloaded * 100) / total).toInt().coerceIn(0, 100)
+                            if (pct != lastPct) { lastPct = pct; onProgress(pct) }
+                        }
+                    }
+                }
             }
             conn.disconnect()
+            onProgress(100)
 
             // Marcar como completo y visible.
             values.clear()

@@ -1,7 +1,9 @@
 package com.emusic.app.ui.library
 
 import androidx.compose.foundation.clickable
+import androidx.compose.foundation.horizontalScroll
 import androidx.compose.foundation.layout.*
+import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.foundation.lazy.items
 import androidx.compose.foundation.lazy.itemsIndexed
@@ -20,6 +22,7 @@ import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
 import androidx.compose.ui.layout.ContentScale
+import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
 import androidx.hilt.navigation.compose.hiltViewModel
@@ -62,7 +65,6 @@ fun LibraryScreen(
     }
 
     Scaffold(
-        topBar = { TopAppBar(title = { Text("Mi Biblioteca") }) },
         floatingActionButton = {
             if (state.tab == LibraryTab.Playlists) {
                 FloatingActionButton(onClick = { showCreatePlaylist = true }) {
@@ -72,32 +74,26 @@ fun LibraryScreen(
         }
     ) { padding ->
         Column(modifier = Modifier.padding(padding)) {
-            TabRow(selectedTabIndex = state.tab.ordinal) {
-                Tab(
-                    selected = state.tab == LibraryTab.Favorites,
-                    onClick = { viewModel.setTab(LibraryTab.Favorites) },
-                    text = { Text("Favoritos") },
-                    icon = { Icon(Icons.Default.Favorite, null, Modifier.size(18.dp)) }
-                )
-                Tab(
-                    selected = state.tab == LibraryTab.History,
-                    onClick = { viewModel.setTab(LibraryTab.History) },
-                    text = { Text("Historial") },
-                    icon = { Icon(Icons.Default.History, null, Modifier.size(18.dp)) }
-                )
-                Tab(
-                    selected = state.tab == LibraryTab.Downloads,
-                    onClick = { viewModel.setTab(LibraryTab.Downloads) },
-                    text = { Text("Descargas") },
-                    icon = { Icon(Icons.Default.Download, null, Modifier.size(18.dp)) }
-                )
-                Tab(
-                    selected = state.tab == LibraryTab.Playlists,
-                    onClick = { viewModel.setTab(LibraryTab.Playlists) },
-                    text = { Text("Playlists") },
-                    icon = { Icon(Icons.Default.QueueMusic, null, Modifier.size(18.dp)) }
-                )
+            Text(
+                "Mi Biblioteca",
+                style = MaterialTheme.typography.headlineSmall,
+                fontWeight = FontWeight.Bold,
+                modifier = Modifier.padding(start = 20.dp, end = 20.dp, top = 4.dp, bottom = 10.dp)
+            )
+
+            // Selector compacto de pestañas (chips deslizables) en lugar de un TabRow alto.
+            Row(
+                modifier = Modifier
+                    .horizontalScroll(rememberScrollState())
+                    .padding(horizontal = 16.dp),
+                horizontalArrangement = Arrangement.spacedBy(8.dp)
+            ) {
+                LibraryTabChip(LibraryTab.Favorites, "Favoritos", Icons.Default.Favorite, state.tab, viewModel::setTab)
+                LibraryTabChip(LibraryTab.History, "Historial", Icons.Default.History, state.tab, viewModel::setTab)
+                LibraryTabChip(LibraryTab.Downloads, "Descargas", Icons.Default.Download, state.tab, viewModel::setTab)
+                LibraryTabChip(LibraryTab.Playlists, "Playlists", Icons.Default.QueueMusic, state.tab, viewModel::setTab)
             }
+            Spacer(Modifier.height(10.dp))
 
             if (state.isLoading) {
                 TrackListSkeleton()
@@ -169,6 +165,22 @@ fun LibraryScreen(
             }
         )
     }
+}
+
+@Composable
+private fun LibraryTabChip(
+    tab: LibraryTab,
+    label: String,
+    icon: androidx.compose.ui.graphics.vector.ImageVector,
+    selected: LibraryTab,
+    onSelect: (LibraryTab) -> Unit
+) {
+    FilterChip(
+        selected = selected == tab,
+        onClick = { onSelect(tab) },
+        label = { Text(label) },
+        leadingIcon = { Icon(icon, null, Modifier.size(18.dp)) }
+    )
 }
 
 @Composable

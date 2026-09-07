@@ -25,6 +25,8 @@ import com.emusic.app.MainActivity
 import com.emusic.app.data.api.Track
 import com.emusic.app.data.api.bestAudioUrl
 import com.emusic.app.data.repository.MusicRepository
+import com.emusic.app.data.repository.toAppTrack
+import com.emusic.shared.radio.RadioEngine
 import com.google.common.collect.ImmutableList
 import com.google.common.util.concurrent.Futures
 import com.google.common.util.concurrent.ListenableFuture
@@ -55,6 +57,14 @@ class MusicService : MediaLibraryService() {
 
     @Inject lateinit var repository: MusicRepository
 
+    /**
+     * "Modo radio": se activa cuando la cola arrancó de una búsqueda (manual, por voz o
+     * Android Auto/Asistente) en vez de una sección curada (Favoritos, Historial, Para ti,
+     * Playlists). La lógica vive en el módulo `shared` para que la app de iPhone use
+     * exactamente la misma; acá solo queda lo que depende del reproductor.
+     */
+    @Inject lateinit var radio: RadioEngine
+
     private lateinit var player: ExoPlayer
     private lateinit var mediaSession: MediaLibrarySession
     private val serviceScope = CoroutineScope(SupervisorJob() + Dispatchers.Main)
@@ -70,19 +80,6 @@ class MusicService : MediaLibraryService() {
     private var cachedFavorites: List<Track> = emptyList()
     private var cachedHistory: List<Track> = emptyList()
 
-    /**
-     * "Modo radio": activo cuando la cola actual arrancó de una búsqueda (manual,
-     * por voz o Android Auto/Asistente) en vez de una sección curada (Favoritos,
-     * Historial, Para ti, Playlists). Mientras está activo, [maybeExtendRadio] va
-     * agregando canciones recomendadas por el algoritmo (mismo endpoint que "Para
-     * ti") a medida que la cola se acerca al final, en lugar de depender del orden
-     * crudo de resultados de búsqueda.
-     */
-    private var radioMode = false
-    private var radioLimit = RADIO_BASE_LIMIT
-    private val radioSeenIds = mutableSetOf<String>()
-    private var radioExtending = false
-
     companion object {
         private const val TAG = "MusicService"
         const val ROOT_ID = "ROOT"
@@ -94,9 +91,6 @@ class MusicService : MediaLibraryService() {
 
         /** Marca en RequestMetadata.extras: esta cola arranca "modo radio" (ver [LibrarySessionCallback]). */
         const val EXTRA_RADIO_SEED = "com.emusic.app.RADIO_SEED"
-        private const val RADIO_BASE_LIMIT = 20
-        private const val RADIO_STEP = 20
-        private const val RADIO_MAX_ATTEMPTS = 4
 
         /** URI placeholder que [ResolvingDataSource] convierte en la URL real. */
         fun placeholderUri(videoId: String): Uri =
@@ -212,35 +206,25 @@ class MusicService : MediaLibraryService() {
 
     /** Activa el modo radio y reinicia sus contadores (nueva sesión de búsqueda). */
     private fun startRadio(seedArtist: String) {
-        radioMode = true
-        radioLimit = RADIO_BASE_LIMIT
-        radioSeenIds.clear()
+        radio.start()
         maybeExtendRadio(seedArtist)
     }
 
     private fun stopRadio() {
-        radioMode = false
+        radio.stop()
     }
 
     /**
-     * Si estamos en modo radio y a la cola le quedan pocas canciones, agrega más.
-     * Prioridad:
-     *  1) Más canciones del MISMO artista que está sonando (búsqueda por nombre de
-     *     artista, la misma llamada que ya usa el buscador) — sigue el género/estilo
-     *     real de lo que se está escuchando, no un perfil genérico.
-     *  2) Si ese artista ya no da más candidatos nuevos, recurre a las recomendadas
-     *     generales del algoritmo (GET /api/recommendation, igual que "Para ti").
-     *     Sube el `limit` en cada vuelta (20, 40, 60...) para evitar la caché de 30
-     *     min del backend, sin tocar la API.
+     * Si estamos en modo radio y a la cola le quedan pocas canciones, le pide la próxima
+     * tanda a [RadioEngine] (módulo `shared`, mismo código que va a usar iOS) y la encola.
+     * Acá solo queda lo específico de ExoPlayer: leer la cola actual y agregar los items.
      *
-     * @param seedArtistOverride artista a usar en la búsqueda; si es null, se toma
-     * del track que está sonando en este momento (caso: extensión disparada por
+     * @param seedArtistOverride artista a usar en la búsqueda; si es null, se toma del
+     * track que está sonando en este momento (caso: extensión disparada por
      * onMediaItemTransition, ya con el player actualizado).
      */
     private fun maybeExtendRadio(seedArtistOverride: String? = null) {
-        if (!radioMode || radioExtending) return
-        if (player.mediaItemCount - player.currentMediaItemIndex > 3) return
-        radioExtending = true
+        if (!radio.shouldExtend(player.mediaItemCount - player.currentMediaItemIndex)) return
         serviceScope.launch(Dispatchers.IO) {
             try {
                 val existingIds = withContext(Dispatchers.Main) {
@@ -250,39 +234,16 @@ class MusicService : MediaLibraryService() {
                     ?: withContext(Dispatchers.Main) { player.currentMediaItem?.mediaMetadata?.artist?.toString() }
                     ?: ""
 
-                var fresh: List<Track> = if (seedArtist.isNotBlank()) {
-                    runCatching { repository.search(seedArtist) }.getOrDefault(emptyList())
-                        .filter { it.videoId.isNotEmpty() && it.videoId !in existingIds && it.videoId !in radioSeenIds }
-                } else emptyList()
-
-                if (fresh.isEmpty()) {
-                    var attempts = 0
-                    while (attempts < RADIO_MAX_ATTEMPTS) {
-                        val candidates = repository.getRecommendations(radioLimit)
-                        fresh = candidates.filter {
-                            it.videoId.isNotEmpty() && it.videoId !in existingIds && it.videoId !in radioSeenIds
-                        }
-                        // Si ya salió algo nuevo, o el pool de candidatos ya no creció con
-                        // este límite (se agotó lo que el algoritmo puede ofrecer), paramos.
-                        if (fresh.isNotEmpty() || candidates.size < radioLimit) break
-                        radioLimit += RADIO_STEP
-                        attempts++
-                    }
-                }
-
-                if (fresh.isEmpty()) {
-                    Log.d(TAG, "Radio: sin candidatos nuevos (artista='$seedArtist', limit=$radioLimit)")
+                val batch = radio.nextBatch(seedArtist, existingIds).map { it.toAppTrack() }
+                if (batch.isEmpty()) {
+                    Log.d(TAG, "Radio: sin candidatos nuevos (artista='$seedArtist')")
                     return@launch
                 }
-                val toAdd = fresh.shuffled().take(10)
-                radioSeenIds.addAll(toAdd.map { it.videoId })
-                val items = toAdd.map { it.toMediaItem(placeholderUri(it.videoId)) }
+                val items = batch.map { it.toMediaItem(placeholderUri(it.videoId)) }
                 withContext(Dispatchers.Main) { player.addMediaItems(items) }
                 Log.d(TAG, "Radio: agregadas ${items.size} (artista='$seedArtist')")
             } catch (e: Exception) {
                 Log.e(TAG, "Radio: fallo extendiendo cola", e)
-            } finally {
-                radioExtending = false
             }
         }
     }

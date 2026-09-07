@@ -8,6 +8,8 @@ import com.emusic.shared.network.MusicApiClient
 import com.emusic.shared.network.PipedFallbackClient
 import com.emusic.shared.network.createEMusicHttpClient
 import com.emusic.shared.network.createPipedFallbackHttpClient
+import com.emusic.shared.radio.NetworkRadioSource
+import com.emusic.shared.radio.RadioEngine
 import dagger.Module
 import dagger.Provides
 import dagger.hilt.InstallIn
@@ -69,4 +71,12 @@ object NetworkModule {
         api: MusicApiClient,
         fallback: PipedFallbackClient
     ): EMusicNetworkClient = EMusicNetworkClient(api, fallback)
+
+    /** Modo radio: la lógica vive en `shared`, la comparte con la app de iPhone. */
+    @Singleton
+    @Provides
+    fun provideRadioEngine(
+        network: EMusicNetworkClient,
+        api: MusicApiClient
+    ): RadioEngine = RadioEngine(NetworkRadioSource(network, api))
 }

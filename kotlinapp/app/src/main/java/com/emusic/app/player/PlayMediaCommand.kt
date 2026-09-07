@@ -40,8 +40,10 @@ class PlayMediaCommand @Inject constructor(
                 delay(150)
             }
         }
-        controller.playTrack(tracks.first(), tracks)
-        Log.d(TAG, "PLAY_MEDIA reproduciendo '${tracks.first().title}' (${tracks.size} en cola)")
+        // radioSeed = true: modo radio (recomendadas del algoritmo), igual que la
+        // búsqueda manual y la búsqueda por voz.
+        controller.playTrack(tracks.first(), radioSeed = true)
+        Log.d(TAG, "PLAY_MEDIA reproduciendo '${tracks.first().title}' (modo radio)")
         return true
     }
 

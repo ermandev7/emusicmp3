@@ -15,3 +15,4 @@ dependencyResolutionManagement {
 
 rootProject.name = "eMusicAndroid"
 include(":app")
+include(":shared")

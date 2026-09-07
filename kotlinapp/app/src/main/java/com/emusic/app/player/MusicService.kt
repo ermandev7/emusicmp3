@@ -211,11 +211,11 @@ class MusicService : MediaLibraryService() {
         items.singleOrNull()?.requestMetadata?.extras?.getBoolean(EXTRA_RADIO_SEED, false) == true
 
     /** Activa el modo radio y reinicia sus contadores (nueva sesión de búsqueda). */
-    private fun startRadio() {
+    private fun startRadio(seedArtist: String) {
         radioMode = true
         radioLimit = RADIO_BASE_LIMIT
         radioSeenIds.clear()
-        maybeExtendRadio()
+        maybeExtendRadio(seedArtist)
     }
 
     private fun stopRadio() {
@@ -223,12 +223,21 @@ class MusicService : MediaLibraryService() {
     }
 
     /**
-     * Si estamos en modo radio y a la cola le quedan pocas canciones, pide más
-     * recomendadas al algoritmo (mismo endpoint que "Para ti", GET /api/recommendation)
-     * y las agrega al final. Sube el `limit` en cada vuelta (20, 40, 60...) para evitar
-     * la caché de 30 min del backend y traer candidatos nuevos sin tocar la API.
+     * Si estamos en modo radio y a la cola le quedan pocas canciones, agrega más.
+     * Prioridad:
+     *  1) Más canciones del MISMO artista que está sonando (búsqueda por nombre de
+     *     artista, la misma llamada que ya usa el buscador) — sigue el género/estilo
+     *     real de lo que se está escuchando, no un perfil genérico.
+     *  2) Si ese artista ya no da más candidatos nuevos, recurre a las recomendadas
+     *     generales del algoritmo (GET /api/recommendation, igual que "Para ti").
+     *     Sube el `limit` en cada vuelta (20, 40, 60...) para evitar la caché de 30
+     *     min del backend, sin tocar la API.
+     *
+     * @param seedArtistOverride artista a usar en la búsqueda; si es null, se toma
+     * del track que está sonando en este momento (caso: extensión disparada por
+     * onMediaItemTransition, ya con el player actualizado).
      */
-    private fun maybeExtendRadio() {
+    private fun maybeExtendRadio(seedArtistOverride: String? = null) {
         if (!radioMode || radioExtending) return
         if (player.mediaItemCount - player.currentMediaItemIndex > 3) return
         radioExtending = true
@@ -237,28 +246,39 @@ class MusicService : MediaLibraryService() {
                 val existingIds = withContext(Dispatchers.Main) {
                     (0 until player.mediaItemCount).map { player.getMediaItemAt(it).mediaId }.toSet()
                 }
-                var fresh: List<Track> = emptyList()
-                var attempts = 0
-                while (attempts < RADIO_MAX_ATTEMPTS) {
-                    val candidates = repository.getRecommendations(radioLimit)
-                    fresh = candidates.filter {
-                        it.videoId.isNotEmpty() && it.videoId !in existingIds && it.videoId !in radioSeenIds
-                    }
-                    // Si ya salió algo nuevo, o el pool de candidatos ya no creció con
-                    // este límite (se agotó lo que el algoritmo puede ofrecer), paramos.
-                    if (fresh.isNotEmpty() || candidates.size < radioLimit) break
-                    radioLimit += RADIO_STEP
-                    attempts++
-                }
+                val seedArtist = seedArtistOverride
+                    ?: withContext(Dispatchers.Main) { player.currentMediaItem?.mediaMetadata?.artist?.toString() }
+                    ?: ""
+
+                var fresh: List<Track> = if (seedArtist.isNotBlank()) {
+                    runCatching { repository.search(seedArtist) }.getOrDefault(emptyList())
+                        .filter { it.videoId.isNotEmpty() && it.videoId !in existingIds && it.videoId !in radioSeenIds }
+                } else emptyList()
+
                 if (fresh.isEmpty()) {
-                    Log.d(TAG, "Radio: sin recomendadas nuevas por ahora (limit=$radioLimit)")
+                    var attempts = 0
+                    while (attempts < RADIO_MAX_ATTEMPTS) {
+                        val candidates = repository.getRecommendations(radioLimit)
+                        fresh = candidates.filter {
+                            it.videoId.isNotEmpty() && it.videoId !in existingIds && it.videoId !in radioSeenIds
+                        }
+                        // Si ya salió algo nuevo, o el pool de candidatos ya no creció con
+                        // este límite (se agotó lo que el algoritmo puede ofrecer), paramos.
+                        if (fresh.isNotEmpty() || candidates.size < radioLimit) break
+                        radioLimit += RADIO_STEP
+                        attempts++
+                    }
+                }
+
+                if (fresh.isEmpty()) {
+                    Log.d(TAG, "Radio: sin candidatos nuevos (artista='$seedArtist', limit=$radioLimit)")
                     return@launch
                 }
-                val toAdd = fresh.take(15)
+                val toAdd = fresh.shuffled().take(10)
                 radioSeenIds.addAll(toAdd.map { it.videoId })
                 val items = toAdd.map { it.toMediaItem(placeholderUri(it.videoId)) }
                 withContext(Dispatchers.Main) { player.addMediaItems(items) }
-                Log.d(TAG, "Radio: agregadas ${items.size} recomendadas (limit=$radioLimit)")
+                Log.d(TAG, "Radio: agregadas ${items.size} (artista='$seedArtist')")
             } catch (e: Exception) {
                 Log.e(TAG, "Radio: fallo extendiendo cola", e)
             } finally {
@@ -352,7 +372,8 @@ class MusicService : MediaLibraryService() {
                 // App Actions)? Si no, es una lista curada de la app (Home/Favoritos/
                 // Historial/Playlists/Cola) → se respeta tal cual, sin modo radio.
                 if (isRadioSeed(mediaItems)) {
-                    startRadio()
+                    val seedArtist = mediaItems.first().mediaMetadata.artist?.toString().orEmpty()
+                    startRadio(seedArtist)
                 } else {
                     stopRadio()
                 }
@@ -376,7 +397,7 @@ class MusicService : MediaLibraryService() {
                     )
                     Log.d(TAG, "onAddMediaItems search: 1 semilla para '$searchQuery' (modo radio)")
                     future.set(listOf(seedItem))
-                    startRadio()
+                    startRadio(first.displayArtist)
                     if (first.videoId.isNotEmpty()) launch { repository.addHistory(first) }
                 } catch (e: Exception) {
                     Log.e(TAG, "Búsqueda falló", e)

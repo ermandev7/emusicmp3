@@ -88,11 +88,17 @@ class PlayerViewModel @Inject constructor(
         downloadManager.download(track)
     }
 
-    fun playTrack(track: Track, queue: List<Track> = emptyList()) {
+    /**
+     * @param radioSeed true si [track] viene de un resultado de búsqueda (o similar)
+     * y no de una lista curada (Favoritos/Historial/Playlists/Home): activa "modo
+     * radio" en el servicio, que arma el resto de la cola con recomendadas del
+     * algoritmo en vez de seguir el orden crudo de la búsqueda. Ver MusicService.
+     */
+    fun playTrack(track: Track, queue: List<Track> = emptyList(), radioSeed: Boolean = false) {
         lastCheckedVideoId = null
         _extras.value = PlayerUiExtras()
         // El controller marca loadingTrack (skeleton) y resuelve la URL bajo demanda.
-        controller.playTrack(track, queue)
+        controller.playTrack(track, queue, radioSeed)
 
         viewModelScope.launch {
             repository.addHistory(track)

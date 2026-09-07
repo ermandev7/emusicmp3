@@ -15,9 +15,15 @@ FROM mcr.microsoft.com/dotnet/aspnet:9.0 AS runtime
 WORKDIR /app
 
 # Instalar Python3 + yt-dlp como extractor nativo de emergencia
+# + ffmpeg (yt-dlp lo necesita para extraer/convertir muchos formatos de audio)
+# + unzip (requerido por el instalador de Deno)
+# + Deno (runtime JS que yt-dlp usa para resolver el cifrado de firmas de YouTube;
+#   sin esto, YouTube devuelve URLs con firma invalida -> HTTP 403 al reproducir)
 RUN apt-get update && \
-    apt-get install -y --no-install-recommends python3 python3-pip curl && \
-    pip3 install yt-dlp --break-system-packages && \
+    apt-get install -y --no-install-recommends python3 python3-pip curl ffmpeg unzip && \
+    pip3 install -U yt-dlp --break-system-packages && \
+    curl -fsSL https://deno.land/install.sh | sh && \
+    ln -sf /root/.deno/bin/deno /usr/local/bin/deno && \
     apt-get clean && rm -rf /var/lib/apt/lists/*
 
 # Copiar la app compilada

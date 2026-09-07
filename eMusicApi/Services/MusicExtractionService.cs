@@ -600,7 +600,7 @@ public class MusicExtractionService
                 {
                     new
                     {
-                        url = audioUrl,
+                        url = RewriteToOwnProxy(audioUrl),
                         format = "webm",
                         quality = "bestaudio",
                         mimeType = "audio/webm",
@@ -663,7 +663,7 @@ public class MusicExtractionService
         {
             new
             {
-                url = stream.Url,
+                url = RewriteToOwnProxy(stream.Url),
                 format = stream.Container.Name,
                 quality = $"{stream.Bitrate.KiloBitsPerSecond:F0}kbps",
                 mimeType = $"audio/{stream.Container.Name.ToLower()}",
@@ -719,6 +719,51 @@ public class MusicExtractionService
         };
 
         return JsonSerializer.Serialize(result, new JsonSerializerOptions { PropertyNamingPolicy = JsonNamingPolicy.CamelCase });
+    }
+
+    /// <summary>
+    /// Reescribe URLs directas de googlevideo.com para que pasen por nuestro
+    /// proxy (proxy.emusicmp3.duckdns.org / ytproxy de Piped) en vez de ir
+    /// directo al CDN de Google.
+    ///
+    /// Motivo: Google firma esas URLs atadas a la IP publica que hizo la
+    /// extraccion (parametro &ip=). Si el cliente (movil) esta en la misma
+    /// red que el servidor (WiFi de casa) funciona porque comparten la
+    /// misma IP publica saliente, pero en datos moviles el telefono tiene
+    /// una IP distinta y Google devuelve 403 -> la app interpretaba esto
+    /// como fin de cancion y saltaba a la siguiente.
+    ///
+    /// Al pasar por nuestro proxy, es SIEMPRE la Pi quien le pide el audio
+    /// a Google (con la IP correcta), sin importar en que red este el
+    /// cliente final.
+    ///
+    /// IMPORTANTE: no se reparsea ni se vuelve a codificar el query string
+    /// original (sig/lsig van firmados byte a byte) - solo se cambia el
+    /// host y se agrega "&host=" al final, tal como ya lo hace piped-backend.
+    /// </summary>
+    private static string RewriteToOwnProxy(string url)
+    {
+        if (string.IsNullOrEmpty(url)) return url;
+        if (url.Contains("proxy.emusicmp3.duckdns.org")) return url; // ya viene proxied (Piped)
+        if (!url.Contains("googlevideo.com")) return url; // solo nos interesa el CDN de Google
+
+        try
+        {
+            var schemeIdx = url.IndexOf("://", StringComparison.Ordinal);
+            if (schemeIdx < 0) return url;
+            var afterScheme = url.Substring(schemeIdx + 3);
+            var pathIdx = afterScheme.IndexOf('/');
+            if (pathIdx < 0) return url;
+            var host = afterScheme.Substring(0, pathIdx);
+            var pathAndQuery = afterScheme.Substring(pathIdx); // "/videoplayback?..."
+
+            var separator = pathAndQuery.Contains('?') ? "&" : "?";
+            return $"https://proxy.emusicmp3.duckdns.org{pathAndQuery}{separator}host={host}";
+        }
+        catch
+        {
+            return url; // si algo sale mal, devolver la original sin tocar
+        }
     }
 
     private static string BuildErrorJson(string message)

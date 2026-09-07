@@ -1,95 +1,60 @@
 package com.emusic.app.data.repository
 
 import com.emusic.app.data.api.*
+import com.emusic.shared.network.EMusicNetworkClient
+import com.emusic.shared.network.MusicApiClient
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.withContext
 import javax.inject.Inject
 import javax.inject.Singleton
 
+/**
+ * Fase 4 KMP: antes usaba Retrofit (ApiService) + un fallback a instancias públicas de
+ * Piped (FallbackApiService) armados a mano acá. Ahora delega toda esa lógica a
+ * `shared` (EMusicNetworkClient/MusicApiClient, con Ktor) — el mismo código que la app
+ * de iPhone va a compartir. La API pública de esta clase (tipos y comportamiento) no
+ * cambia: sigue devolviendo los modelos de com.emusic.app.data.api de siempre, así que
+ * ningún ViewModel ni el MusicService necesitan tocarse.
+ */
 @Singleton
 class MusicRepository @Inject constructor(
-    private val api: ApiService,
-    private val fallbackApi: FallbackApiService
+    private val network: EMusicNetworkClient,
+    private val api: MusicApiClient
 ) {
 
     suspend fun search(query: String): List<Track> = withContext(Dispatchers.IO) {
-        try {
-            val res = api.search(query)
-            if (res.isSuccessful) {
-                val items = res.body()?.items?.filter {
-                    (it.type.isEmpty() || it.type == "stream") && it.title.isNotEmpty()
-                } ?: emptyList()
-                if (items.isNotEmpty()) return@withContext items
-            }
-        } catch (_: Exception) {}
-
-        // Fallbacks públicos de Piped
-        val fallbacks = listOf(
-            "https://pipedapi.kavin.rocks",
-            "https://pipedapi.colby.land",
-            "https://piped-api.garudalinux.org",
-            "https://api.piped.yt"
-        )
-        for (base in fallbacks) {
-            try {
-                val res = fallbackApi.search(base, query)
-                if (res.isSuccessful) {
-                    val items = res.body()?.items?.filter {
-                        (it.type.isEmpty() || it.type == "stream") && it.title.isNotEmpty()
-                    } ?: emptyList()
-                    if (items.isNotEmpty()) return@withContext items
-                }
-            } catch (_: Exception) {}
-        }
-        emptyList()
+        network.search(query).map { it.toAppTrack() }
     }
 
     suspend fun getStream(videoId: String): StreamInfo? = withContext(Dispatchers.IO) {
-        try {
-            val res = api.getStream(videoId)
-            if (res.isSuccessful && res.body()?.audioStreams?.isNotEmpty() == true)
-                return@withContext res.body()
-        } catch (_: Exception) {}
-
-        val fallbacks = listOf(
-            "https://pipedapi.kavin.rocks",
-            "https://pipedapi.colby.land",
-            "https://piped-api.garudalinux.org",
-            "https://api.piped.yt"
-        )
-        for (base in fallbacks) {
-            try {
-                val res = fallbackApi.getStream(base, videoId)
-                if (res.isSuccessful && res.body()?.audioStreams?.isNotEmpty() == true)
-                    return@withContext res.body()
-            } catch (_: Exception) {}
-        }
-        null
+        network.getStream(videoId)?.toAppStreamInfo()
     }
 
     suspend fun prefetch(videoIds: List<String>) {
-        try { api.prefetch(PrefetchRequest(videoIds.take(3))) } catch (_: Exception) {}
+        try { api.prefetch(videoIds.take(3)) } catch (_: Exception) {}
     }
 
     suspend fun getTrending(): List<Track> = withContext(Dispatchers.IO) {
         try {
-            api.getTrending().body()?.items?.filter { it.title.isNotEmpty() } ?: emptyList()
+            api.getTrending().items.filter { it.title.isNotEmpty() }.map { it.toAppTrack() }
         } catch (_: Exception) { emptyList() }
     }
 
     suspend fun getFavorites(): List<Track> = withContext(Dispatchers.IO) {
-        try { api.getFavorites().body()?.map { it.toTrack() } ?: emptyList() } catch (_: Exception) { emptyList() }
+        try { api.getFavorites().map { it.toAppTrack() } } catch (_: Exception) { emptyList() }
     }
 
     suspend fun addFavorite(track: Track) {
         try {
-            api.addFavorite(AddFavoriteRequest(
-                title = track.title,
-                artist = track.displayArtist,
-                thumbnailUrl = track.displayThumbnail,
-                duration = track.duration,
-                videoId = track.videoId
-            ))
+            api.addFavorite(
+                com.emusic.shared.api.AddFavoriteRequest(
+                    title = track.title,
+                    artist = track.displayArtist,
+                    thumbnailUrl = track.displayThumbnail,
+                    duration = track.duration,
+                    videoId = track.videoId
+                )
+            )
         } catch (_: Exception) {}
     }
 
@@ -98,39 +63,38 @@ class MusicRepository @Inject constructor(
     }
 
     suspend fun isFavorite(videoId: String): Boolean = withContext(Dispatchers.IO) {
-        try { api.isFavorite(videoId).isSuccessful } catch (_: Exception) { false }
+        try { api.isFavorite(videoId) } catch (_: Exception) { false }
     }
 
     suspend fun getHistory(): List<Track> = withContext(Dispatchers.IO) {
-        try {
-            api.getHistory().body()?.map { it.toTrack() } ?: emptyList()
-        } catch (_: Exception) { emptyList() }
+        try { api.getHistory().map { it.toAppTrack() } } catch (_: Exception) { emptyList() }
     }
 
     suspend fun getMostPlayed(limit: Int = 20): List<Track> = withContext(Dispatchers.IO) {
         try {
-            api.getHistory().body()
-                ?.sortedByDescending { it.playCount }
-                ?.take(limit)
-                ?.map { it.toTrack() }
-                ?: emptyList()
+            api.getHistory()
+                .sortedByDescending { it.playCount }
+                .take(limit)
+                .map { it.toAppTrack() }
         } catch (_: Exception) { emptyList() }
     }
 
     suspend fun getTopGenres(): List<GenreStat> = withContext(Dispatchers.IO) {
-        try { api.getTopGenres().body() ?: emptyList() } catch (_: Exception) { emptyList() }
+        try { api.getTopGenres().map { it.toAppGenreStat() } } catch (_: Exception) { emptyList() }
     }
 
     suspend fun addHistory(track: Track, isDownloaded: Boolean = false) {
         try {
-            api.addHistory(AddHistoryRequest(
-                title = track.title,
-                artist = track.displayArtist,
-                thumbnailUrl = track.displayThumbnail,
-                duration = track.duration,
-                videoId = track.videoId,
-                isDownloaded = isDownloaded
-            ))
+            api.addHistory(
+                com.emusic.shared.api.AddHistoryRequest(
+                    title = track.title,
+                    artist = track.displayArtist,
+                    thumbnailUrl = track.displayThumbnail,
+                    duration = track.duration,
+                    videoId = track.videoId,
+                    isDownloaded = isDownloaded
+                )
+            )
         } catch (_: Exception) {}
     }
 
@@ -139,23 +103,27 @@ class MusicRepository @Inject constructor(
     }
 
     suspend fun getRecommendations(limit: Int = 20): List<Track> = withContext(Dispatchers.IO) {
-        try { api.getRecommendations(limit).body()?.items ?: emptyList() } catch (_: Exception) { emptyList() }
+        try { api.getRecommendations(limit).items.map { it.toAppTrack() } } catch (_: Exception) { emptyList() }
     }
 
     suspend fun excludeRecommendation(track: Track) {
         try {
             api.excludeRecommendation(
-                ExcludeRequest(videoId = track.videoId, artist = track.displayArtist, title = track.title)
+                com.emusic.shared.api.ExcludeRequest(
+                    videoId = track.videoId,
+                    artist = track.displayArtist,
+                    title = track.title
+                )
             )
         } catch (_: Exception) {}
     }
 
     suspend fun getPlaylists(): List<Playlist> = withContext(Dispatchers.IO) {
-        try { api.getPlaylists().body() ?: emptyList() } catch (_: Exception) { emptyList() }
+        try { api.getPlaylists().map { it.toAppPlaylist() } } catch (_: Exception) { emptyList() }
     }
 
     suspend fun createPlaylist(name: String): Playlist? = withContext(Dispatchers.IO) {
-        try { api.createPlaylist(CreatePlaylistRequest(name)).body() } catch (_: Exception) { null }
+        try { api.createPlaylist(com.emusic.shared.api.CreatePlaylistRequest(name)).toAppPlaylist() } catch (_: Exception) { null }
     }
 
     suspend fun deletePlaylist(id: Int) {
@@ -164,14 +132,17 @@ class MusicRepository @Inject constructor(
 
     suspend fun addTrackToPlaylist(playlistId: Int, track: Track) {
         try {
-            api.addTrackToPlaylist(playlistId, AddToPlaylistRequest(
-                videoId = track.videoId,
-                title = track.title,
-                uploaderName = track.displayArtist,
-                thumbnail = track.displayThumbnail,
-                duration = track.duration,
-                url = track.url
-            ))
+            api.addTrackToPlaylist(
+                playlistId,
+                com.emusic.shared.api.AddToPlaylistRequest(
+                    videoId = track.videoId,
+                    title = track.title,
+                    uploaderName = track.displayArtist,
+                    thumbnail = track.displayThumbnail,
+                    duration = track.duration,
+                    url = track.url
+                )
+            )
         } catch (_: Exception) {}
     }
 

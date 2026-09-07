@@ -36,6 +36,7 @@ import kotlinx.coroutines.SupervisorJob
 import kotlinx.coroutines.cancel
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.runBlocking
+import kotlinx.coroutines.withContext
 import java.io.IOException
 import javax.inject.Inject
 
@@ -69,6 +70,19 @@ class MusicService : MediaLibraryService() {
     private var cachedFavorites: List<Track> = emptyList()
     private var cachedHistory: List<Track> = emptyList()
 
+    /**
+     * "Modo radio": activo cuando la cola actual arrancó de una búsqueda (manual,
+     * por voz o Android Auto/Asistente) en vez de una sección curada (Favoritos,
+     * Historial, Para ti, Playlists). Mientras está activo, [maybeExtendRadio] va
+     * agregando canciones recomendadas por el algoritmo (mismo endpoint que "Para
+     * ti") a medida que la cola se acerca al final, en lugar de depender del orden
+     * crudo de resultados de búsqueda.
+     */
+    private var radioMode = false
+    private var radioLimit = RADIO_BASE_LIMIT
+    private val radioSeenIds = mutableSetOf<String>()
+    private var radioExtending = false
+
     companion object {
         private const val TAG = "MusicService"
         const val ROOT_ID = "ROOT"
@@ -77,6 +91,12 @@ class MusicService : MediaLibraryService() {
         const val FAVORITES_ID = "FAVORITES"
         const val HISTORY_ID = "HISTORY"
         const val SCHEME = "emusic"
+
+        /** Marca en RequestMetadata.extras: esta cola arranca "modo radio" (ver [LibrarySessionCallback]). */
+        const val EXTRA_RADIO_SEED = "com.emusic.app.RADIO_SEED"
+        private const val RADIO_BASE_LIMIT = 20
+        private const val RADIO_STEP = 20
+        private const val RADIO_MAX_ATTEMPTS = 4
 
         /** URI placeholder que [ResolvingDataSource] convierte en la URL real. */
         fun placeholderUri(videoId: String): Uri =
@@ -149,6 +169,13 @@ class MusicService : MediaLibraryService() {
                 // Un track que llega a READY resetea el contador de saltos.
                 if (playbackState == Player.STATE_READY) autoSkipCount = 0
             }
+
+            // Modo radio: cada vez que cambia la canción (avance natural o salto
+            // manual de siguiente/anterior), si queda poca cola, pedimos más
+            // recomendadas para que nunca se corte la música.
+            override fun onMediaItemTransition(mediaItem: MediaItem?, reason: Int) {
+                maybeExtendRadio()
+            }
         })
 
         val activityIntent = PendingIntent.getActivity(
@@ -177,6 +204,87 @@ class MusicService : MediaLibraryService() {
     private suspend fun resolveStreamUrl(videoId: String): String? {
         if (videoId.isEmpty()) return null
         return repository.getStream(videoId)?.bestAudioUrl()
+    }
+
+    /** true si el item viene marcado como semilla de "modo radio" (ver [EXTRA_RADIO_SEED]). */
+    private fun isRadioSeed(items: List<MediaItem>): Boolean =
+        items.singleOrNull()?.requestMetadata?.extras?.getBoolean(EXTRA_RADIO_SEED, false) == true
+
+    /** Activa el modo radio y reinicia sus contadores (nueva sesión de búsqueda). */
+    private fun startRadio(seedArtist: String) {
+        radioMode = true
+        radioLimit = RADIO_BASE_LIMIT
+        radioSeenIds.clear()
+        maybeExtendRadio(seedArtist)
+    }
+
+    private fun stopRadio() {
+        radioMode = false
+    }
+
+    /**
+     * Si estamos en modo radio y a la cola le quedan pocas canciones, agrega más.
+     * Prioridad:
+     *  1) Más canciones del MISMO artista que está sonando (búsqueda por nombre de
+     *     artista, la misma llamada que ya usa el buscador) — sigue el género/estilo
+     *     real de lo que se está escuchando, no un perfil genérico.
+     *  2) Si ese artista ya no da más candidatos nuevos, recurre a las recomendadas
+     *     generales del algoritmo (GET /api/recommendation, igual que "Para ti").
+     *     Sube el `limit` en cada vuelta (20, 40, 60...) para evitar la caché de 30
+     *     min del backend, sin tocar la API.
+     *
+     * @param seedArtistOverride artista a usar en la búsqueda; si es null, se toma
+     * del track que está sonando en este momento (caso: extensión disparada por
+     * onMediaItemTransition, ya con el player actualizado).
+     */
+    private fun maybeExtendRadio(seedArtistOverride: String? = null) {
+        if (!radioMode || radioExtending) return
+        if (player.mediaItemCount - player.currentMediaItemIndex > 3) return
+        radioExtending = true
+        serviceScope.launch(Dispatchers.IO) {
+            try {
+                val existingIds = withContext(Dispatchers.Main) {
+                    (0 until player.mediaItemCount).map { player.getMediaItemAt(it).mediaId }.toSet()
+                }
+                val seedArtist = seedArtistOverride
+                    ?: withContext(Dispatchers.Main) { player.currentMediaItem?.mediaMetadata?.artist?.toString() }
+                    ?: ""
+
+                var fresh: List<Track> = if (seedArtist.isNotBlank()) {
+                    runCatching { repository.search(seedArtist) }.getOrDefault(emptyList())
+                        .filter { it.videoId.isNotEmpty() && it.videoId !in existingIds && it.videoId !in radioSeenIds }
+                } else emptyList()
+
+                if (fresh.isEmpty()) {
+                    var attempts = 0
+                    while (attempts < RADIO_MAX_ATTEMPTS) {
+                        val candidates = repository.getRecommendations(radioLimit)
+                        fresh = candidates.filter {
+                            it.videoId.isNotEmpty() && it.videoId !in existingIds && it.videoId !in radioSeenIds
+                        }
+                        // Si ya salió algo nuevo, o el pool de candidatos ya no creció con
+                        // este límite (se agotó lo que el algoritmo puede ofrecer), paramos.
+                        if (fresh.isNotEmpty() || candidates.size < radioLimit) break
+                        radioLimit += RADIO_STEP
+                        attempts++
+                    }
+                }
+
+                if (fresh.isEmpty()) {
+                    Log.d(TAG, "Radio: sin candidatos nuevos (artista='$seedArtist', limit=$radioLimit)")
+                    return@launch
+                }
+                val toAdd = fresh.shuffled().take(10)
+                radioSeenIds.addAll(toAdd.map { it.videoId })
+                val items = toAdd.map { it.toMediaItem(placeholderUri(it.videoId)) }
+                withContext(Dispatchers.Main) { player.addMediaItems(items) }
+                Log.d(TAG, "Radio: agregadas ${items.size} (artista='$seedArtist')")
+            } catch (e: Exception) {
+                Log.e(TAG, "Radio: fallo extendiendo cola", e)
+            } finally {
+                radioExtending = false
+            }
+        }
     }
 
     /**
@@ -229,7 +337,10 @@ class MusicService : MediaLibraryService() {
             )
         }
 
-        // Android Auto / Gemini: "pon música de X". Devuelve la cola con placeholders.
+        // Android Auto / Gemini: "pon música de X". Arranca "modo radio": solo la
+        // canción pedida, y [maybeExtendRadio] va agregando recomendadas del algoritmo
+        // a medida que se necesitan (en vez de encolar TODA la lista de resultados,
+        // que podía traer covers o versiones de otros artistas como "siguiente").
         override fun onAddMediaItems(
             mediaSession: MediaSession,
             controller: MediaSession.ControllerInfo,
@@ -238,12 +349,14 @@ class MusicService : MediaLibraryService() {
             val searchQuery = mediaItems.firstOrNull()?.requestMetadata?.searchQuery
             if (searchQuery.isNullOrEmpty()) {
                 // Si el item tocado pertenece a una sección (Para ti / Favoritos /
-                // Historial), reproducir TODA esa lista desde ahí (cola navegable).
+                // Historial), reproducir TODA esa lista desde ahí (cola navegable,
+                // sin modo radio: esas listas ya son curadas).
                 val firstId = mediaItems.firstOrNull()?.mediaId
                 if (firstId != null) {
                     val section = sequenceOf(cachedRecommendations, cachedFavorites, cachedHistory)
                         .firstOrNull { list -> list.any { it.videoId == firstId } }
                     if (section != null) {
+                        stopRadio()
                         val idx = section.indexOfFirst { it.videoId == firstId }
                         val queue = section.drop(idx)
                             .map { it.toMediaItem(placeholderUri(it.videoId)) }
@@ -255,6 +368,15 @@ class MusicService : MediaLibraryService() {
                 val safe = mediaItems
                     .map { ensurePlayableUri(it) }
                     .filter { it.localConfiguration?.uri != null }
+                // ¿Viene marcado como semilla de radio (tap en un resultado de búsqueda,
+                // App Actions)? Si no, es una lista curada de la app (Home/Favoritos/
+                // Historial/Playlists/Cola) → se respeta tal cual, sin modo radio.
+                if (isRadioSeed(mediaItems)) {
+                    val seedArtist = mediaItems.first().mediaMetadata.artist?.toString().orEmpty()
+                    startRadio(seedArtist)
+                } else {
+                    stopRadio()
+                }
                 return Futures.immediateFuture(safe)
             }
             Log.d(TAG, "onAddMediaItems search: '$searchQuery'")
@@ -266,19 +388,16 @@ class MusicService : MediaLibraryService() {
                         future.set(emptyList())
                         return@launch
                     }
-                    // Pre-resolver la URL real del primer track para que Android Auto
-                    // arranque rápido sin bloquear el hilo de carga ~9s.
+                    // Solo la primera canción encontrada: el resto de la cola la arma
+                    // maybeExtendRadio() con recomendadas, igual que en el resto de la app.
                     val first = tracks.first()
                     val firstUrl = runCatching { resolveStreamUrl(first.videoId) }.getOrNull()
-                    val resolved = tracks.mapIndexed { i, t ->
-                        if (i == 0 && !firstUrl.isNullOrEmpty()) {
-                            t.toMediaItem(Uri.parse(firstUrl))
-                        } else {
-                            t.toMediaItem(placeholderUri(t.videoId))
-                        }
-                    }
-                    Log.d(TAG, "Resueltos ${resolved.size} items para '$searchQuery'")
-                    future.set(resolved)
+                    val seedItem = first.toMediaItem(
+                        if (!firstUrl.isNullOrEmpty()) Uri.parse(firstUrl) else placeholderUri(first.videoId)
+                    )
+                    Log.d(TAG, "onAddMediaItems search: 1 semilla para '$searchQuery' (modo radio)")
+                    future.set(listOf(seedItem))
+                    startRadio(first.displayArtist)
                     if (first.videoId.isNotEmpty()) launch { repository.addHistory(first) }
                 } catch (e: Exception) {
                     Log.e(TAG, "Búsqueda falló", e)

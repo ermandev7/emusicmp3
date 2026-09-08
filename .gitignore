@@ -30,3 +30,10 @@ TestDeserialize/
 # OS Files
 .DS_Store
 Thumbs.db
+
+# Xcode / iOS
+**/xcuserdata/
+*.xcuserstate
+DerivedData/
+*.xcworkspace/xcshareddata/IDEWorkspaceChecks.plist
+kotlinapp/iosApp/build/

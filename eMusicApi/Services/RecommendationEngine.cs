@@ -40,7 +40,12 @@ public class RecommendationEngine
         "letra", "letras", "en", "vivo", "de", "la", "el", "los", "las",
         "del", "con", "para", "por", "una", "un", "que", "mi", "tu", "su",
         "y", "o", "a", "al", "se", "no", "me", "te", "lo", "le", "nos",
-        "tema", "cancion", "musica", "exitos", "mix", "vol"
+        "tema", "cancion", "musica", "exitos", "mix", "vol",
+        // Palabras funcion que se colaban con peso alto en perfiles reales
+        // (medido: "es" 69, "pa" 68, "yo" 66) y ensuciaban la afinidad.
+        "es", "yo", "pa", "si", "ya", "muy", "mas", "más", "sin", "como",
+        "cuando", "donde", "pero", "porque", "sobre", "entre", "hasta",
+        "desde", "bb", "ah", "oh", "uh", "eh"
     };
 
     private static readonly Dictionary<string, string[]> GenrePatterns = new()
@@ -277,7 +282,16 @@ public class RecommendationEngine
 
     public double ScoreCandidate(UserProfile profile, string title, string artist)
     {
-        var tokens = Tokenize($"{title} {artist}");
+        // SOLO el titulo, no el artista. El perfil SI se construye con titulo+artista
+        // (enriquece el vector), pero puntuar el candidato con el nombre del artista
+        // lo contaba dos veces: una en ArtistBonus y otra en el contenido.
+        //
+        // Medido en un perfil real: "Don Omar - Dile" sacaba contenido 0.350 (el tope)
+        // solo porque "don" y "omar" son tokens de peso ~95 en el perfil, mientras que
+        // "La T y La M" sacaba 0.096 porque su nombre no deja ningun token ("la" es
+        // stopword, "t" y "m" tienen una letra). Resultado: el artista #1 del usuario
+        // quedaba por debajo del #2 y el #3, teniendo 2.4x mas peso de escucha.
+        var tokens = Tokenize(title);
         if (tokens.Length == 0) return 0;
 
         double affinitySum = 0;
@@ -300,10 +314,18 @@ public class RecommendationEngine
                 artistBonus = ArtistBonusMax * (match.Value / topArtistW);
         }
 
+        // El bonus de genero se escala por el peso RELATIVO de ese genero en el perfil,
+        // igual que el de artista. Antes era binario: un genero residual (medido: una
+        // "ranchera" con peso 0.04 frente a 26.56 de "balada") recibia el bonus completo.
         double genreBonus = 0;
         var genre = DetectGenre(title, artist);
-        if (genre != null && profile.TopGenres.Any(g => g.Key == genre))
-            genreBonus = GenreBonusValue;
+        if (genre != null && profile.TopGenres.Count > 0)
+        {
+            double topGenreW = profile.TopGenres[0].Value;
+            var gMatch = profile.TopGenres.FirstOrDefault(g => g.Key == genre);
+            if (gMatch.Key != null && topGenreW > 0)
+                genreBonus = GenreBonusValue * (gMatch.Value / topGenreW);
+        }
 
         // Refuerzo explícito si el artista es uno de los favoritos del usuario.
         double favoriteBonus = 0;

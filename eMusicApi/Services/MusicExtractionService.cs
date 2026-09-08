@@ -504,8 +504,20 @@ public class MusicExtractionService
                 return BuildErrorJson("No se pudo obtener el stream de audio.");
             }
 
+            // Además, el mejor mp4/AAC: iOS no puede decodificar Opus/WebM. Si el elegido
+            // arriba ya es mp4 no hace falta duplicarlo.
+            var m4aStream = audioStream.Container.Name.Equals("mp4", StringComparison.OrdinalIgnoreCase)
+                ? null
+                : manifest.GetAudioOnlyStreams()
+                    .Where(s => s.Container.Name.Equals("mp4", StringComparison.OrdinalIgnoreCase))
+                    .OrderByDescending(s => s.Bitrate)
+                    .FirstOrDefault();
+
+            if (m4aStream == null && !audioStream.Container.Name.Equals("mp4", StringComparison.OrdinalIgnoreCase))
+                Console.WriteLine($"[YoutubeExplode] ⚠ Sin mp4/AAC para {videoId}: iOS no podrá reproducirlo.");
+
             // Construir JSON compatible con el formato Piped que espera la app MAUI
-            var resultJson = BuildCompatibleJson(video, audioStream);
+            var resultJson = BuildCompatibleJson(video, audioStream, m4aStream);
             if (cacheKey != null)
             {
                 resultJson = await EnrichRelatedStreamsIfEmptyAsync(resultJson, videoId);
@@ -521,6 +533,40 @@ public class MusicExtractionService
         }
     }
 
+    /// <summary>
+    /// URL directa del primer formato que matchee <paramref name="formatSelector"/>.
+    /// Devuelve null si yt-dlp falla o si ese formato no existe para el vídeo, para que
+    /// el llamador pueda seguir sin él (no lanza).
+    /// </summary>
+    private static async Task<string?> RunYtDlpGetUrlAsync(string formatSelector, string videoId)
+    {
+        try
+        {
+            var p = new System.Diagnostics.Process
+            {
+                StartInfo = new System.Diagnostics.ProcessStartInfo
+                {
+                    FileName = "yt-dlp",
+                    Arguments = $"--format {formatSelector} --get-url --no-playlist --quiet https://www.youtube.com/watch?v={videoId}",
+                    RedirectStandardOutput = true,
+                    RedirectStandardError = true,
+                    UseShellExecute = false,
+                    CreateNoWindow = true
+                }
+            };
+            p.Start();
+            var output = (await p.StandardOutput.ReadToEndAsync()).Trim();
+            await p.StandardError.ReadToEndAsync();
+            await p.WaitForExitAsync();
+            return p.ExitCode == 0 && !string.IsNullOrWhiteSpace(output) ? output : null;
+        }
+        catch (Exception ex)
+        {
+            Console.WriteLine($"[yt-dlp {formatSelector}] {ex.Message}");
+            return null;
+        }
+    }
+
     // ─────────────────────────────────────────────────────────────────
     // EXTRACTOR yt-dlp — Plan C, el más actualizado y robusto
     // ─────────────────────────────────────────────────────────────────
@@ -528,6 +574,12 @@ public class MusicExtractionService
     {
         try
         {
+            // El m4a (AAC) se pide EN PARALELO con el bestaudio de siempre.
+            // Motivo: `bestaudio` en YouTube es Opus/WebM, que ExoPlayer (Android)
+            // decodifica sin problema pero AVFoundation (iOS) no soporta en absoluto.
+            // Se lanza antes que nada para que no sume latencia al play.
+            var m4aUrlTask = RunYtDlpGetUrlAsync("bestaudio[ext=m4a]", videoId);
+
             // Obtener URL directa de audio con yt-dlp
             var urlProcess = new System.Diagnostics.Process
             {
@@ -574,6 +626,56 @@ public class MusicExtractionService
                 ? (long)d : 0L;
             var thumbnail = metaLines.Length > 2 ? metaLines[2].Trim() : "";
 
+            // El WebM/Opus va SIEMPRE PRIMERO y con el mismo bitrate declarado que antes.
+            // La app Android elige con maxByOrNull { bitrate }, que ante empate se queda con
+            // el primer elemento: su comportamiento no cambia en absoluto y el APK ya
+            // distribuido sigue funcionando igual. El m4a se agrega solo para iOS, que no
+            // puede decodificar Opus.
+            var m4aUrl = await m4aUrlTask;
+            var audioStreamsArray = string.IsNullOrWhiteSpace(m4aUrl)
+                ? new[]
+                {
+                    new
+                    {
+                        url = RewriteToOwnProxy(audioUrl),
+                        format = "webm",
+                        quality = "bestaudio",
+                        mimeType = "audio/webm",
+                        bitrate = 128000L,
+                        videoOnly = false,
+                        itag = 0,
+                        codec = "opus"
+                    }
+                }
+                : new[]
+                {
+                    new
+                    {
+                        url = RewriteToOwnProxy(audioUrl),
+                        format = "webm",
+                        quality = "bestaudio",
+                        mimeType = "audio/webm",
+                        bitrate = 128000L,
+                        videoOnly = false,
+                        itag = 0,
+                        codec = "opus"
+                    },
+                    new
+                    {
+                        url = RewriteToOwnProxy(m4aUrl!),
+                        format = "m4a",
+                        quality = "bestaudio",
+                        mimeType = "audio/mp4",
+                        bitrate = 128000L,
+                        videoOnly = false,
+                        itag = 0,
+                        codec = "aac"
+                    }
+                };
+
+            if (string.IsNullOrWhiteSpace(m4aUrl))
+                Console.WriteLine($"[yt-dlp] ⚠ Sin m4a para {videoId}: iOS no podrá reproducirlo.");
+
             // Construir JSON base con relatedStreams vacío
             var result = new
             {
@@ -596,20 +698,7 @@ public class MusicExtractionService
                 subtitles = Array.Empty<object>(),
                 relatedStreams = Array.Empty<object>(),
                 previewFrames = Array.Empty<object>(),
-                audioStreams = new[]
-                {
-                    new
-                    {
-                        url = RewriteToOwnProxy(audioUrl),
-                        format = "webm",
-                        quality = "bestaudio",
-                        mimeType = "audio/webm",
-                        bitrate = 128000L,
-                        videoOnly = false,
-                        itag = 0,
-                        codec = "opus"
-                    }
-                },
+                audioStreams = audioStreamsArray,
                 videoStreams = Array.Empty<object>()
             };
 
@@ -657,33 +746,66 @@ public class MusicExtractionService
         catch { return false; }
     }
 
-    private static string BuildCompatibleJson(YoutubeExplode.Videos.Video video, IAudioStreamInfo stream)
+    private static string BuildCompatibleJson(
+        YoutubeExplode.Videos.Video video,
+        IAudioStreamInfo stream,
+        IAudioStreamInfo? m4aStream = null)
     {
-        var audioStreams = new[]
+        // Igual que en la ruta de yt-dlp: el stream de siempre va PRIMERO y con su bitrate
+        // real, para que la app Android (maxByOrNull { bitrate }) siga eligiendo lo mismo.
+        // El m4a/AAC se agrega detrás solo para iOS, que no puede decodificar Opus/WebM.
+        var primary = new
         {
-            new
-            {
-                url = RewriteToOwnProxy(stream.Url),
-                format = stream.Container.Name,
-                quality = $"{stream.Bitrate.KiloBitsPerSecond:F0}kbps",
-                mimeType = $"audio/{stream.Container.Name.ToLower()}",
-                codec = "unknown",
-                audioTrackId = (string?)null,
-                audioTrackName = (string?)null,
-                audioTrackType = (string?)null,
-                videoOnly = false,
-                itag = 0,
-                bitrate = (long)stream.Bitrate.BitsPerSecond,
-                initStart = 0L,
-                initEnd = 0L,
-                indexStart = 0L,
-                indexEnd = 0L,
-                width = 0,
-                height = 0,
-                fps = 0,
-                contentLength = 0L
-            }
+            url = RewriteToOwnProxy(stream.Url),
+            format = stream.Container.Name,
+            quality = $"{stream.Bitrate.KiloBitsPerSecond:F0}kbps",
+            mimeType = $"audio/{stream.Container.Name.ToLower()}",
+            codec = "unknown",
+            audioTrackId = (string?)null,
+            audioTrackName = (string?)null,
+            audioTrackType = (string?)null,
+            videoOnly = false,
+            itag = 0,
+            bitrate = (long)stream.Bitrate.BitsPerSecond,
+            initStart = 0L,
+            initEnd = 0L,
+            indexStart = 0L,
+            indexEnd = 0L,
+            width = 0,
+            height = 0,
+            fps = 0,
+            contentLength = 0L
         };
+
+        var audioStreams = m4aStream == null
+            ? new[] { primary }
+            : new[]
+            {
+                primary,
+                new
+                {
+                    url = RewriteToOwnProxy(m4aStream.Url),
+                    format = m4aStream.Container.Name,
+                    quality = $"{m4aStream.Bitrate.KiloBitsPerSecond:F0}kbps",
+                    // Los reproductores esperan audio/mp4 para AAC, no audio/m4a.
+                    mimeType = "audio/mp4",
+                    codec = "unknown",
+                    audioTrackId = (string?)null,
+                    audioTrackName = (string?)null,
+                    audioTrackType = (string?)null,
+                    videoOnly = false,
+                    itag = 0,
+                    bitrate = (long)m4aStream.Bitrate.BitsPerSecond,
+                    initStart = 0L,
+                    initEnd = 0L,
+                    indexStart = 0L,
+                    indexEnd = 0L,
+                    width = 0,
+                    height = 0,
+                    fps = 0,
+                    contentLength = 0L
+                }
+            };
 
         var result = new
         {

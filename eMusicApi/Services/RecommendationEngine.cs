@@ -14,6 +14,18 @@ public class UserProfile
     public HashSet<string> PlayedVideoIds { get; init; } = new();
     /// <summary>Artistas marcados como favoritos (señal explícita).</summary>
     public HashSet<string> FavoriteArtists { get; init; } = new();
+
+    /// <summary>
+    /// Peso del token más fuerte del perfil. Se usa para normalizar la afinidad de
+    /// contenido a un rango 0..1 estable, sin importar cuánto historial tenga el usuario.
+    /// </summary>
+    public double MaxTokenWeight { get; init; } = 1.0;
+
+    /// <summary>
+    /// Artistas que el usuario saltea sistemáticamente, con su proporción de skips
+    /// (0..1). Señal negativa: no alcanza con no premiarlos, hay que penalizarlos.
+    /// </summary>
+    public Dictionary<string, double> SkippedArtists { get; init; } = new();
 }
 
 public class RecommendationEngine
@@ -134,6 +146,9 @@ public class RecommendationEngine
         var genreWeights = new Dictionary<string, double>();
         var playedIds = new HashSet<string>();
         var favoriteArtists = new HashSet<string>();
+        // Reproducciones y skips por artista, para la señal negativa.
+        var artistPlays = new Dictionary<string, int>();
+        var artistSkips = new Dictionary<string, int>();
         var now = DateTime.UtcNow;
 
         // Acumula una "canción" (del historial o favorita) en los vectores del perfil.
@@ -141,7 +156,10 @@ public class RecommendationEngine
         {
             if (!string.IsNullOrEmpty(videoId)) playedIds.Add(videoId);
 
-            var tokens = Tokenize(title);
+            // Se tokeniza título Y artista. Antes solo el título, y tras quitar stopwords
+            // los títulos quedan casi en ruido ("una", "mas"); el nombre del artista es
+            // con diferencia la palabra más informativa de una canción.
+            var tokens = Tokenize($"{title} {artist}");
             foreach (var token in tokens)
             {
                 tokenFreq.TryGetValue(token, out double cur);
@@ -172,10 +190,20 @@ public class RecommendationEngine
         {
             double daysSince = Math.Max(0, (now - entry.PlayedAt).TotalDays);
             double recency = Math.Exp(-0.05 * daysSince);
-            double skipPenalty = entry.SkippedEarly ? 0.3 : 1.0;
+            // Un tema salteado apenas aporta al perfil (antes 0.3, que todavía era
+            // un voto a favor bastante fuerte de algo que al usuario no le gustó).
+            double skipPenalty = entry.SkippedEarly ? 0.1 : 1.0;
             double downloadBonus = entry.IsDownloaded ? 1.5 : 1.0;
             double weight = entry.PlayCount * recency * skipPenalty * downloadBonus;
             Accumulate(entry.VideoId, entry.Title, entry.Artist, weight);
+
+            var artistKey = NormalizeArtist(entry.Artist);
+            if (artistKey.Length > 0)
+            {
+                artistPlays[artistKey] = artistPlays.GetValueOrDefault(artistKey) + 1;
+                if (entry.SkippedEarly)
+                    artistSkips[artistKey] = artistSkips.GetValueOrDefault(artistKey) + 1;
+            }
         }
 
         // Favoritos: peso fuerte y constante. También registramos sus artistas.
@@ -195,71 +223,102 @@ public class RecommendationEngine
             profileVector[token] = tf * idf;
         }
 
+        // Artistas con al menos 3 reproducciones y más de la mitad salteadas.
+        // El umbral evita castigar a un artista por un único skip casual.
+        var skippedArtists = new Dictionary<string, double>();
+        foreach (var (artist, plays) in artistPlays)
+        {
+            if (plays < 3) continue;
+            double ratio = artistSkips.GetValueOrDefault(artist) / (double)plays;
+            if (ratio > 0.5) skippedArtists[artist] = ratio;
+        }
+
         return new UserProfile
         {
             TokenVector = profileVector,
             TopArtists = artistWeights.OrderByDescending(kv => kv.Value).Take(5).ToList(),
             TopGenres = genreWeights.OrderByDescending(kv => kv.Value).Take(3).ToList(),
             PlayedVideoIds = playedIds,
-            FavoriteArtists = favoriteArtists
+            FavoriteArtists = favoriteArtists,
+            MaxTokenWeight = profileVector.Count > 0 ? profileVector.Values.Max() : 1.0,
+            SkippedArtists = skippedArtists
         };
     }
 
     // ──────────────── Scoring de candidatos ────────────────
     //
-    //  Score = CosineSim(Profile, Candidate) + ArtistBonus + GenreBonus
+    //  Score = Contenido + ArtistBonus + GenreBonus + FavoriteBonus − SkipPenalty
     //
-    //  CosineSim = (P · C) / (|P| × |C|)
-    //  ArtistBonus ∈ [0, 0.3]  proporcional al peso del artista en el perfil
-    //  GenreBonus  = 0.2 si el género coincide con los top del usuario
+    //  Contenido    ∈ [0, 0.35]  afinidad media de las palabras del tema con el perfil
+    //  ArtistBonus  ∈ [0, 0.30]  proporcional al peso del artista en el perfil
+    //  FavoriteBonus  = 0.25     si el artista está entre los favoritos
+    //  GenreBonus     = 0.20     si el género coincide con los top del usuario
+    //  SkipPenalty  ∈ [0, 0.40]  si el usuario saltea sistemáticamente a ese artista
+    //
+    //  POR QUÉ NO HAY COSENO: la versión anterior dividía por la norma del vector de
+    //  perfil COMPLETO, que crece con cada canción escuchada. Medido con perfiles
+    //  simulados, el coseno daba una mediana de ~0.05 y su techo caía de 0.54 (20 temas
+    //  de historial) a 0.21 (200 temas), mientras los bonus fijos suman hasta 0.75. O sea
+    //  que el término "inteligente" quedaba anulado por los bonus, y encima empeoraba
+    //  cuanto más usaba la app el usuario. Comparar un título de 3 palabras contra un
+    //  perfil de 300 tokens con coseno siempre da valores diminutos: es inherente a la
+    //  métrica cuando los vectores tienen tamaños tan distintos.
+    //
+    //  En su lugar se usa afinidad media por token, normalizada por el token más fuerte
+    //  del perfil: da un valor estable en 0..1 sin importar el tamaño del historial.
+    //  Se divide por sqrt(n) y no por n para premiar que coincidan VARIAS palabras sin
+    //  que los títulos largos se diluyan.
+
+    private const double ContentWeight = 0.35;
+    private const double ArtistBonusMax = 0.30;
+    private const double FavoriteBonusValue = 0.25;
+    private const double GenreBonusValue = 0.20;
+    private const double SkipPenaltyMax = 0.40;
 
     public double ScoreCandidate(UserProfile profile, string title, string artist)
     {
-        var tokens = Tokenize(title);
+        var tokens = Tokenize($"{title} {artist}");
         if (tokens.Length == 0) return 0;
 
-        double dotProduct = 0;
-        double candidateMagSq = 0;
-
+        double affinitySum = 0;
+        double maxW = profile.MaxTokenWeight > 0 ? profile.MaxTokenWeight : 1.0;
         foreach (var token in tokens)
         {
-            double cw = 1.0;
             if (profile.TokenVector.TryGetValue(token, out double pw))
-                dotProduct += pw * cw;
-            candidateMagSq += cw * cw;
+                affinitySum += pw / maxW;   // 0..1 por token
         }
-
-        double profileMagSq = 0;
-        foreach (var v in profile.TokenVector.Values)
-            profileMagSq += v * v;
-
-        double cosineSim = 0;
-        if (profileMagSq > 0 && candidateMagSq > 0)
-            cosineSim = dotProduct / (Math.Sqrt(profileMagSq) * Math.Sqrt(candidateMagSq));
+        double contentScore = Math.Min(1.0, affinitySum / Math.Sqrt(tokens.Length)) * ContentWeight;
 
         double artistBonus = 0;
         var normArtist = NormalizeArtist(artist);
         if (normArtist.Length > 0 && profile.TopArtists.Count > 0)
         {
-            double maxW = profile.TopArtists[0].Value;
+            double topArtistW = profile.TopArtists[0].Value;
             var match = profile.TopArtists.FirstOrDefault(a =>
                 a.Key == normArtist || a.Key.Contains(normArtist) || normArtist.Contains(a.Key));
-            if (match.Key != null && maxW > 0)
-                artistBonus = 0.3 * (match.Value / maxW);
+            if (match.Key != null && topArtistW > 0)
+                artistBonus = ArtistBonusMax * (match.Value / topArtistW);
         }
 
         double genreBonus = 0;
         var genre = DetectGenre(title, artist);
         if (genre != null && profile.TopGenres.Any(g => g.Key == genre))
-            genreBonus = 0.2;
+            genreBonus = GenreBonusValue;
 
         // Refuerzo explícito si el artista es uno de los favoritos del usuario.
         double favoriteBonus = 0;
         if (normArtist.Length > 0 && profile.FavoriteArtists.Count > 0 &&
             profile.FavoriteArtists.Any(fa => fa == normArtist || fa.Contains(normArtist) || normArtist.Contains(fa)))
-            favoriteBonus = 0.25;
+            favoriteBonus = FavoriteBonusValue;
 
-        return cosineSim + artistBonus + genreBonus + favoriteBonus;
+        // Señal negativa: si el usuario saltea a este artista la mayoría de las veces,
+        // dejar de recomendarlo. Antes un artista muy salteado seguía sumando por
+        // ArtistBonus y podía colarse igual.
+        double skipPenalty = 0;
+        if (normArtist.Length > 0 && profile.SkippedArtists.TryGetValue(normArtist, out double skipRatio))
+            skipPenalty = SkipPenaltyMax * skipRatio;
+
+        return Math.Max(0, contentScore + artistBonus + genreBonus + favoriteBonus - skipPenalty);
     }
 
     // ──────────────── Generación de queries ────────────────

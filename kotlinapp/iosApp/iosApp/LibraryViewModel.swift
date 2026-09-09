@@ -47,23 +47,45 @@ final class LibraryViewModel: ObservableObject {
     private let api = SharedClients.shared.api
 
     func loadAll() async {
+        // Sin red no se intenta siquiera: antes se lanzaban las tres llamadas igual y la
+        // pantalla se quedaba cargando hasta que cada una agotaba su tiempo de espera, una
+        // detras de otra. Descargas, que no necesita internet, quedaba inaccesible.
+        guard Connectivity.shared.isOnline else {
+            errorMessage = nil
+            isLoading = false
+            return
+        }
+
         isLoading = true
         defer { isLoading = false }
 
-        do {
-            favorites = try await api.getFavorites().map { $0.toTrack() }
-            history = try await api.getHistory().map { $0.toTrack() }
-            playlists = try await api.getPlaylists()
-            errorMessage = nil
-        } catch {
-            errorMessage = "No se pudo cargar la biblioteca: \(error.localizedDescription)"
-        }
+        // En paralelo y cada una por su cuenta: que fallen los favoritos no debe dejar sin
+        // historial ni sin playlists. Antes iban en serie dentro del mismo `do`, asi que el
+        // primer fallo se llevaba por delante las otras dos.
+        async let favs = try? api.getFavorites()
+        async let hist = try? api.getHistory()
+        async let lists = try? api.getPlaylists()
+
+        let (f, h, l) = await (favs, hist, lists)
+
+        if let f { favorites = f.map { $0.toTrack() } }
+        if let h { history = h.map { $0.toTrack() } }
+        if let l { playlists = l }
+
+        errorMessage = (f == nil && h == nil && l == nil)
+            ? "No se pudo conectar con el servidor."
+            : nil
     }
 
     /// Solo la pestaña visible, igual que `refreshCurrentTab` en Android. Se llama al
     /// cambiar de pestaña y al volver del reproductor (por ejemplo tras marcar un
     /// favorito), para que el cambio se vea sin reiniciar.
     func refreshCurrentTab() async {
+        // Descargas es local: nunca depende de la red, y por eso se puede consultar
+        // igualmente sin conexion.
+        guard tab != .downloads else { return }
+        guard Connectivity.shared.isOnline else { return }
+
         switch tab {
         case .favorites:
             if let list = try? await api.getFavorites() { favorites = list.map { $0.toTrack() } }

@@ -7,6 +7,7 @@ struct HomeScreen: View {
 
     @ObservedObject var player: PlayerEngine
     @StateObject private var viewModel = HomeViewModel()
+    @ObservedObject private var connectivity = Connectivity.shared
 
     /// Lo pone el TabView para saltar a Buscar desde la lupa de la cabecera.
     var onSearchTapped: () -> Void = {}
@@ -76,6 +77,9 @@ struct HomeScreen: View {
         }
         .task { await viewModel.loadAll() }
         .refreshable { await viewModel.loadAll() }
+        .onChange(of: connectivity.isOnline) { online in
+            if online { Task { await viewModel.loadAll() } }
+        }
     }
 
     // MARK: Cabecera
@@ -332,6 +336,13 @@ struct HomeTrackRow: View {
             }
 
             Spacer(minLength: 0)
+
+            // En Inicio el hueco de la duracion lo ocupa el menu de tres puntos, pero el
+            // ecualizador si aparece cuando esa cancion esta sonando (TrackItem.kt).
+            if isPlaying {
+                NowPlayingBars()
+                    .padding(.trailing, 4)
+            }
         }
         .padding(.leading, EMusicMetrics.trackRowHorizontalPadding)
         .padding(.vertical, EMusicMetrics.trackRowVerticalPadding)

@@ -19,6 +19,10 @@
 		DA7EA5E7D1CF6569AB8A4061 /* MiniPlayerView.swift in Sources */ = {isa = PBXBuildFile; fileRef = DA65066059B930EBFF4003B7 /* MiniPlayerView.swift */; };
 		5B8217DF01BB11106F0DF218 /* HomeViewModel.swift in Sources */ = {isa = PBXBuildFile; fileRef = 815230BD19BB508569248491 /* HomeViewModel.swift */; };
 		2EA58C000D625AF7727732FA /* HomeScreen.swift in Sources */ = {isa = PBXBuildFile; fileRef = BD5D43E127B8113CC22E82A9 /* HomeScreen.swift */; };
+		92B78EC5A83DDF7B8CEA4957 /* Connectivity.swift in Sources */ = {isa = PBXBuildFile; fileRef = BFB25C72F0E474B2D080533E /* Connectivity.swift */; };
+		403D19D0D19F9DFEC986EF07 /* DownloadManager.swift in Sources */ = {isa = PBXBuildFile; fileRef = E22123929D7DF087E9FA9184 /* DownloadManager.swift */; };
+		D0E49CF9B105FD6449F5164F /* DownloadStore.swift in Sources */ = {isa = PBXBuildFile; fileRef = 0C282138F3B3E3F9A6B342FB /* DownloadStore.swift */; };
+		100B98077488066C672B375A /* NowPlayingBars.swift in Sources */ = {isa = PBXBuildFile; fileRef = A6E40F7D6B45028EB04BDFA9 /* NowPlayingBars.swift */; };
 		A8404CAD3E17EE2D1F8A44CE /* LibraryViewModel.swift in Sources */ = {isa = PBXBuildFile; fileRef = 1888241580FCAF3F39B314FD /* LibraryViewModel.swift */; };
 		A04D8EECB023E496FBCD85A2 /* LibraryScreen.swift in Sources */ = {isa = PBXBuildFile; fileRef = 6BA582E3BA32F1E30CA7F8E1 /* LibraryScreen.swift */; };
 		4EC8289E75E60790DEAE2C39 /* UserSetupScreen.swift in Sources */ = {isa = PBXBuildFile; fileRef = 84D021F90533F511B3801E03 /* UserSetupScreen.swift */; };
@@ -42,6 +46,10 @@
 		DA65066059B930EBFF4003B7 /* MiniPlayerView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = MiniPlayerView.swift; sourceTree = "<group>"; };
 		815230BD19BB508569248491 /* HomeViewModel.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = HomeViewModel.swift; sourceTree = "<group>"; };
 		BD5D43E127B8113CC22E82A9 /* HomeScreen.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = HomeScreen.swift; sourceTree = "<group>"; };
+		BFB25C72F0E474B2D080533E /* Connectivity.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = Connectivity.swift; sourceTree = "<group>"; };
+		E22123929D7DF087E9FA9184 /* DownloadManager.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = DownloadManager.swift; sourceTree = "<group>"; };
+		0C282138F3B3E3F9A6B342FB /* DownloadStore.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = DownloadStore.swift; sourceTree = "<group>"; };
+		A6E40F7D6B45028EB04BDFA9 /* NowPlayingBars.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = NowPlayingBars.swift; sourceTree = "<group>"; };
 		1888241580FCAF3F39B314FD /* LibraryViewModel.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = LibraryViewModel.swift; sourceTree = "<group>"; };
 		6BA582E3BA32F1E30CA7F8E1 /* LibraryScreen.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = LibraryScreen.swift; sourceTree = "<group>"; };
 		84D021F90533F511B3801E03 /* UserSetupScreen.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = UserSetupScreen.swift; sourceTree = "<group>"; };
@@ -83,6 +91,10 @@
 				A6D02C25EA9C51CA71D6D476 /* iOSApp.swift */,
 				D3C0CE51A028AA6AF239F6BA /* ContentView.swift */,
 				BD5D43E127B8113CC22E82A9 /* HomeScreen.swift */,
+				BFB25C72F0E474B2D080533E /* Connectivity.swift */,
+				E22123929D7DF087E9FA9184 /* DownloadManager.swift */,
+				0C282138F3B3E3F9A6B342FB /* DownloadStore.swift */,
+				A6E40F7D6B45028EB04BDFA9 /* NowPlayingBars.swift */,
 				1888241580FCAF3F39B314FD /* LibraryViewModel.swift */,
 				6BA582E3BA32F1E30CA7F8E1 /* LibraryScreen.swift */,
 				84D021F90533F511B3801E03 /* UserSetupScreen.swift */,
@@ -199,6 +211,10 @@
 				1F3E841B2340A702ED0149F0 /* SearchViewModel.swift in Sources */,
 				E473DAC6F0886D32C836C2D7 /* Theme.swift in Sources */,
 				2EA58C000D625AF7727732FA /* HomeScreen.swift in Sources */,
+				92B78EC5A83DDF7B8CEA4957 /* Connectivity.swift in Sources */,
+				403D19D0D19F9DFEC986EF07 /* DownloadManager.swift in Sources */,
+				D0E49CF9B105FD6449F5164F /* DownloadStore.swift in Sources */,
+				100B98077488066C672B375A /* NowPlayingBars.swift in Sources */,
 				A8404CAD3E17EE2D1F8A44CE /* LibraryViewModel.swift in Sources */,
 				A04D8EECB023E496FBCD85A2 /* LibraryScreen.swift in Sources */,
 				4EC8289E75E60790DEAE2C39 /* UserSetupScreen.swift in Sources */,

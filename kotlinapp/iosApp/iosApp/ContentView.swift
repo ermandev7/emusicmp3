@@ -18,6 +18,8 @@ struct ContentView: View {
     /// Reproductor completo, abierto desde el mini reproductor.
     @State private var showPlayer = false
 
+    @ObservedObject private var connectivity = Connectivity.shared
+
     var body: some View {
         ZStack(alignment: .bottom) {
             TabView(selection: $selectedTab) {
@@ -44,6 +46,24 @@ struct ContentView: View {
 
             // Las dos burbujas, una encima de otra y con los mismos margenes.
             VStack(spacing: EMusicMetrics.bubbleGap) {
+                // Aviso de que no hay red. Va aqui, encima de las burbujas, para que se vea
+                // en las tres pestañas: sin esto, sin conexion las listas salian vacias sin
+                // decir por que, que es indistinguible de "no tienes nada guardado".
+                if !connectivity.isOnline {
+                    HStack(spacing: 8) {
+                        Image(systemName: "wifi.slash")
+                            .font(.footnote)
+                        Text("Sin conexión · solo tus descargas")
+                            .font(.footnote)
+                    }
+                    .foregroundStyle(EMusicColor.onSurface)
+                    .padding(.horizontal, 14)
+                    .padding(.vertical, 8)
+                    .background(EMusicColor.surface)
+                    .clipShape(Capsule())
+                    .transition(.move(edge: .bottom).combined(with: .opacity))
+                }
+
                 MiniPlayerView(player: player, onExpand: { showPlayer = true })
                 BottomNavBubble(selectedTab: $selectedTab)
             }
@@ -70,6 +90,7 @@ struct ContentView: View {
             )
         }
         .animation(.easeInOut(duration: 0.2), value: player.currentTrack?.videoId)
+        .animation(.easeInOut(duration: 0.25), value: connectivity.isOnline)
         .fullScreenCover(isPresented: $showPlayer) {
             PlayerScreen(player: player)
         }
@@ -117,28 +138,101 @@ struct SearchScreen: View {
                         .padding(.bottom, 8)
                 }
 
-                ScrollView {
-                    LazyVStack(spacing: 0) {
-                        ForEach(viewModel.tracks, id: \.videoId) { track in
-                            Button {
-                                // Tocar un resultado de busqueda activa el modo radio, igual
-                                // que en Android: se encola solo esta y `RadioEngine` la extiende.
-                                player.play(track: track, radioSeed: true)
-                                onTrackOpened()
-                            } label: {
-                                TrackRow(
-                                    track: track,
-                                    isPlaying: player.currentTrack?.videoId == track.videoId
-                                )
-                            }
-                            .buttonStyle(.plain)
-                        }
+                // Mientras no se haya buscado nada se muestran las recientes, no un
+                // "sin resultados" que todavia no significa nada. Igual que Android.
+                if !viewModel.hasSearched && !viewModel.isLoading {
+                    if viewModel.recentSearches.isEmpty {
+                        emptyPrompt
+                    } else {
+                        recentList
                     }
-                    // Espacio para que el mini reproductor no tape la ultima fila.
-                    Color.clear.frame(height: EMusicMetrics.bottomContentInset)
+                } else {
+                    resultsList
                 }
             }
         }
+    }
+
+    private var resultsList: some View {
+        ScrollView {
+            LazyVStack(spacing: 0) {
+                ForEach(viewModel.tracks, id: \.videoId) { track in
+                    Button {
+                        // Tocar un resultado de busqueda activa el modo radio, igual
+                        // que en Android: se encola solo esta y `RadioEngine` la extiende.
+                        player.play(track: track, radioSeed: true)
+                        onTrackOpened()
+                    } label: {
+                        TrackRow(
+                            track: track,
+                            isPlaying: player.currentTrack?.videoId == track.videoId && player.isPlaying
+                        )
+                    }
+                    .buttonStyle(.plain)
+                }
+            }
+            // Espacio para que el mini reproductor no tape la ultima fila.
+            Color.clear.frame(height: EMusicMetrics.bottomContentInset)
+        }
+    }
+
+    /// Puerto de `RecentSearches` en `SearchScreen.kt`: reloj, texto y la X para quitarla.
+    private var recentList: some View {
+        ScrollView {
+            LazyVStack(alignment: .leading, spacing: 0) {
+                Text("Búsquedas recientes")
+                    .font(.subheadline)
+                    .foregroundStyle(EMusicColor.onSurfaceVariant)
+                    .padding(.leading, 16)
+                    .padding(.top, 12)
+                    .padding(.bottom, 4)
+
+                ForEach(viewModel.recentSearches, id: \.self) { text in
+                    HStack(spacing: 16) {
+                        Button {
+                            Task { await viewModel.search(text) }
+                        } label: {
+                            HStack(spacing: 16) {
+                                Image(systemName: "clock.arrow.circlepath")
+                                    .font(.system(size: 17))
+                                    .foregroundStyle(EMusicColor.onSurfaceVariant)
+                                Text(text)
+                                    .font(.body)
+                                    .foregroundStyle(EMusicColor.onSurface)
+                                    .lineLimit(1)
+                                Spacer(minLength: 4)
+                            }
+                            .contentShape(Rectangle())
+                        }
+                        .buttonStyle(.plain)
+
+                        Button {
+                            viewModel.removeRecent(text)
+                        } label: {
+                            Image(systemName: "xmark")
+                                .font(.system(size: 15))
+                                .foregroundStyle(EMusicColor.onSurfaceVariant)
+                                .frame(width: 32, height: 32)
+                        }
+                    }
+                    .padding(.horizontal, 16)
+                    .padding(.vertical, 12)
+                }
+            }
+            Color.clear.frame(height: EMusicMetrics.bottomContentInset)
+        }
+    }
+
+    private var emptyPrompt: some View {
+        VStack(spacing: 8) {
+            Image(systemName: "magnifyingglass")
+                .font(.system(size: 48))
+                .foregroundStyle(EMusicColor.onSurfaceVariant.opacity(0.4))
+            Text("Escribe para buscar")
+                .font(.subheadline)
+                .foregroundStyle(EMusicColor.onSurfaceVariant)
+        }
+        .frame(maxWidth: .infinity, maxHeight: .infinity)
     }
 
     private var searchField: some View {
@@ -158,9 +252,7 @@ struct SearchScreen: View {
 
             if !viewModel.query.isEmpty {
                 Button {
-                    viewModel.query = ""
-                    viewModel.tracks = []
-                    viewModel.statusMessage = nil
+                    viewModel.clear()
                 } label: {
                     Image(systemName: "xmark")
                         .foregroundStyle(EMusicColor.onSurfaceVariant)
@@ -183,6 +275,9 @@ struct SearchScreen: View {
 private struct TrackRow: View {
 
     let track: Track
+
+    /// Igual que en `TrackItem.kt`, esta bandera hace dos cosas a la vez: pinta el titulo
+    /// en verde y cambia la duracion por las barritas de ecualizador.
     var isPlaying: Bool = false
 
     var body: some View {
@@ -211,9 +306,13 @@ private struct TrackRow: View {
 
             Spacer(minLength: 8)
 
-            Text(formatDuration(track.duration))
-                .font(.caption.monospacedDigit())
-                .foregroundStyle(EMusicColor.onSurfaceVariant)
+            if isPlaying {
+                NowPlayingBars()
+            } else {
+                Text(formatDuration(track.duration))
+                    .font(.caption.monospacedDigit())
+                    .foregroundStyle(EMusicColor.onSurfaceVariant)
+            }
         }
         .padding(.horizontal, EMusicMetrics.trackRowHorizontalPadding)
         .padding(.vertical, EMusicMetrics.trackRowVerticalPadding)

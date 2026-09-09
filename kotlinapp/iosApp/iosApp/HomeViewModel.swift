@@ -30,6 +30,15 @@ final class HomeViewModel: ObservableObject {
     }
 
     func loadAll() async {
+        // Sin red no se intenta: quedarse con el esqueleto puesto hasta que expire cada
+        // llamada hace que la app parezca colgada.
+        guard Connectivity.shared.isOnline else {
+            isLoading = false
+            isLoadingReco = false
+            errorMessage = nil   // el aviso de "sin conexion" ya lo pinta ContentView
+            return
+        }
+
         async let historyAndGenres: Void = loadHistoryAndGenres()
         async let reco: Void = loadRecommendations()
         _ = await (historyAndGenres, reco)

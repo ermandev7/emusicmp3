@@ -29,6 +29,12 @@ enum EMusicColor {
 
     /// Corazon de favorito activo (`PlayerScreen.kt`).
     static let favorite = Color(hex: 0xE91E63)
+
+    /// `Theme.kt` no redefine estos dos, asi que Material 3 usa los valores por defecto
+    /// de su esquema oscuro. Son los del chip seleccionado de Biblioteca: el lila de la
+    /// captura de Android.
+    static let secondaryContainer = Color(hex: 0x4A4458)
+    static let onSecondaryContainer = Color(hex: 0xE8DEF8)
 }
 
 // MARK: - Generos
@@ -123,8 +129,34 @@ enum EMusicMetrics {
     static let genreCardRadius: CGFloat = 12
     static let sectionHorizontalPadding: CGFloat = 16
 
-    /// Espacio que hay que dejar abajo para que el mini reproductor no tape la lista.
-    static let bottomContentInset: CGFloat = 100
+    // MARK: Burbujas flotantes
+    //
+    // Desviacion deliberada de Android: alli el mini reproductor es una barra pegada al
+    // borde y encima va la NavigationBar de Material. Aca el reproductor y la navegacion
+    // son dos burbujas flotantes identicas — mismos margenes, mismo alto y mismo radio.
+
+    /// Margen a los lados de las dos burbujas.
+    static let bubbleInset: CGFloat = 12
+    /// Alto de cada burbuja. El mismo para las dos: es lo que las hace parecer hermanas.
+    ///
+    /// Da para la fila de contenido (44) mas el aire de arriba y abajo (8+8) y la linea
+    /// de progreso con su separacion (7+3). Con menos alto la linea acaba pegada al borde
+    /// y parece que cuelga de la caratula.
+    static let bubbleHeight: CGFloat = 72
+
+    /// Alto de la fila de contenido dentro de la burbuja: caratula y botones.
+    static let bubbleContentHeight: CGFloat = 44
+    /// Radio generoso, pero no capsula entera: la parte plata de abajo es la que deja
+    /// apoyar la linea de progreso sin que se la coma la curva.
+    static let bubbleRadius: CGFloat = 22
+    /// Separacion entre la burbuja del reproductor y la de navegacion.
+    static let bubbleGap: CGFloat = 8
+    /// Distancia de la burbuja de navegacion al borde inferior seguro.
+    static let bubbleBottomPadding: CGFloat = 6
+
+    /// Espacio que hay que dejar al final de cada lista para que las dos burbujas no
+    /// tapen el ultimo elemento: los dos altos, la separacion y los margenes.
+    static let bottomContentInset: CGFloat = bubbleHeight * 2 + bubbleGap + bubbleBottomPadding + 16
 }
 
 // MARK: - Utilidades

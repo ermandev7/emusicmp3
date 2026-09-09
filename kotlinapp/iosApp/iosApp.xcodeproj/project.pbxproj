@@ -17,6 +17,14 @@
 		7B6CFC81C242DFD9C9003CA3 /* StreamSelection.swift in Sources */ = {isa = PBXBuildFile; fileRef = 0757BED6D31DFB37742E3E83 /* StreamSelection.swift */; };
 		A89A7BB95BBC71B89D1D1650 /* PlayerEngine.swift in Sources */ = {isa = PBXBuildFile; fileRef = 01F862D6CA9DB24182C64074 /* PlayerEngine.swift */; };
 		DA7EA5E7D1CF6569AB8A4061 /* MiniPlayerView.swift in Sources */ = {isa = PBXBuildFile; fileRef = DA65066059B930EBFF4003B7 /* MiniPlayerView.swift */; };
+		5B8217DF01BB11106F0DF218 /* HomeViewModel.swift in Sources */ = {isa = PBXBuildFile; fileRef = 815230BD19BB508569248491 /* HomeViewModel.swift */; };
+		2EA58C000D625AF7727732FA /* HomeScreen.swift in Sources */ = {isa = PBXBuildFile; fileRef = BD5D43E127B8113CC22E82A9 /* HomeScreen.swift */; };
+		A8404CAD3E17EE2D1F8A44CE /* LibraryViewModel.swift in Sources */ = {isa = PBXBuildFile; fileRef = 1888241580FCAF3F39B314FD /* LibraryViewModel.swift */; };
+		A04D8EECB023E496FBCD85A2 /* LibraryScreen.swift in Sources */ = {isa = PBXBuildFile; fileRef = 6BA582E3BA32F1E30CA7F8E1 /* LibraryScreen.swift */; };
+		4EC8289E75E60790DEAE2C39 /* UserSetupScreen.swift in Sources */ = {isa = PBXBuildFile; fileRef = 84D021F90533F511B3801E03 /* UserSetupScreen.swift */; };
+		ABE6F3506CC9C3E1CA74D783 /* Skeleton.swift in Sources */ = {isa = PBXBuildFile; fileRef = E674EA3459AA3A85970299CF /* Skeleton.swift */; };
+		A2C6A96E9B75681D3EE9B767 /* DominantColor.swift in Sources */ = {isa = PBXBuildFile; fileRef = 95FA6CD1F40F28D762815133 /* DominantColor.swift */; };
+		264887F93DBA4D96766A5638 /* PlayerScreen.swift in Sources */ = {isa = PBXBuildFile; fileRef = 56D6A5D11F758A3B7CDBC99E /* PlayerScreen.swift */; };
 /* End PBXBuildFile section */
 
 /* Begin PBXFileReference section */
@@ -32,6 +40,14 @@
 		0757BED6D31DFB37742E3E83 /* StreamSelection.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = StreamSelection.swift; sourceTree = "<group>"; };
 		01F862D6CA9DB24182C64074 /* PlayerEngine.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = PlayerEngine.swift; sourceTree = "<group>"; };
 		DA65066059B930EBFF4003B7 /* MiniPlayerView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = MiniPlayerView.swift; sourceTree = "<group>"; };
+		815230BD19BB508569248491 /* HomeViewModel.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = HomeViewModel.swift; sourceTree = "<group>"; };
+		BD5D43E127B8113CC22E82A9 /* HomeScreen.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = HomeScreen.swift; sourceTree = "<group>"; };
+		1888241580FCAF3F39B314FD /* LibraryViewModel.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = LibraryViewModel.swift; sourceTree = "<group>"; };
+		6BA582E3BA32F1E30CA7F8E1 /* LibraryScreen.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = LibraryScreen.swift; sourceTree = "<group>"; };
+		84D021F90533F511B3801E03 /* UserSetupScreen.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = UserSetupScreen.swift; sourceTree = "<group>"; };
+		E674EA3459AA3A85970299CF /* Skeleton.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = Skeleton.swift; sourceTree = "<group>"; };
+		95FA6CD1F40F28D762815133 /* DominantColor.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = DominantColor.swift; sourceTree = "<group>"; };
+		56D6A5D11F758A3B7CDBC99E /* PlayerScreen.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = PlayerScreen.swift; sourceTree = "<group>"; };
 /* End PBXFileReference section */
 
 /* Begin PBXFrameworksBuildPhase section */
@@ -66,6 +82,14 @@
 			children = (
 				A6D02C25EA9C51CA71D6D476 /* iOSApp.swift */,
 				D3C0CE51A028AA6AF239F6BA /* ContentView.swift */,
+				BD5D43E127B8113CC22E82A9 /* HomeScreen.swift */,
+				1888241580FCAF3F39B314FD /* LibraryViewModel.swift */,
+				6BA582E3BA32F1E30CA7F8E1 /* LibraryScreen.swift */,
+				84D021F90533F511B3801E03 /* UserSetupScreen.swift */,
+				E674EA3459AA3A85970299CF /* Skeleton.swift */,
+				95FA6CD1F40F28D762815133 /* DominantColor.swift */,
+				56D6A5D11F758A3B7CDBC99E /* PlayerScreen.swift */,
+				815230BD19BB508569248491 /* HomeViewModel.swift */,
 				DC3699D70214311D046FC22D /* SearchViewModel.swift */,
 				DA65066059B930EBFF4003B7 /* MiniPlayerView.swift */,
 				01F862D6CA9DB24182C64074 /* PlayerEngine.swift */,
@@ -174,6 +198,14 @@
 				D613FFC8E54E9A130E567D33 /* ContentView.swift in Sources */,
 				1F3E841B2340A702ED0149F0 /* SearchViewModel.swift in Sources */,
 				E473DAC6F0886D32C836C2D7 /* Theme.swift in Sources */,
+				2EA58C000D625AF7727732FA /* HomeScreen.swift in Sources */,
+				A8404CAD3E17EE2D1F8A44CE /* LibraryViewModel.swift in Sources */,
+				A04D8EECB023E496FBCD85A2 /* LibraryScreen.swift in Sources */,
+				4EC8289E75E60790DEAE2C39 /* UserSetupScreen.swift in Sources */,
+				ABE6F3506CC9C3E1CA74D783 /* Skeleton.swift in Sources */,
+				A2C6A96E9B75681D3EE9B767 /* DominantColor.swift in Sources */,
+				264887F93DBA4D96766A5638 /* PlayerScreen.swift in Sources */,
+				5B8217DF01BB11106F0DF218 /* HomeViewModel.swift in Sources */,
 				DA7EA5E7D1CF6569AB8A4061 /* MiniPlayerView.swift in Sources */,
 				A89A7BB95BBC71B89D1D1650 /* PlayerEngine.swift in Sources */,
 				7B6CFC81C242DFD9C9003CA3 /* StreamSelection.swift in Sources */,

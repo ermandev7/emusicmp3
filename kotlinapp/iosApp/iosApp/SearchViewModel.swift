@@ -16,6 +16,7 @@ final class SearchViewModel: ObservableObject {
     @Published var statusMessage: String?
 
     private let network = SharedClients.shared.network
+    private let api = SharedClients.shared.api
 
     func search() async {
         let trimmed = query.trimmingCharacters(in: .whitespacesAndNewlines)
@@ -29,10 +30,23 @@ final class SearchViewModel: ObservableObject {
             let results = try await network.search(query: trimmed)
             tracks = results
             statusMessage = results.isEmpty ? "Sin resultados para \"\(trimmed)\"" : nil
+            prefetchTop(results)
         } catch {
             tracks = []
             statusMessage = "Error de red: \(error.localizedDescription)"
         }
+    }
+
+    /// Le pide al backend que vaya resolviendo los 3 primeros streams, igual que
+    /// `SearchViewModel.kt` en Android. Sin esto, el primer play sale en frio: la Pi
+    /// tiene que lanzar yt-dlp en ese momento y tarda entre 5 y 15 segundos. Con la
+    /// precarga el `getStream` posterior sale de la cache de 50 min del servidor.
+    ///
+    /// No se espera el resultado: es fuego y olvido, y si falla no pasa nada.
+    private func prefetchTop(_ results: [Track]) {
+        let ids = results.prefix(3).map(\.videoId).filter { !$0.isEmpty }
+        guard !ids.isEmpty else { return }
+        Task { try? await api.prefetch(videoIds: ids) }
     }
 }
 

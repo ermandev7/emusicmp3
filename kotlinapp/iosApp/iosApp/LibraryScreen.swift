@@ -8,6 +8,11 @@ struct LibraryScreen: View {
 
     @ObservedObject var player: PlayerEngine
     @StateObject private var viewModel = LibraryViewModel()
+    @ObservedObject private var store = DownloadStore.shared
+    @ObservedObject private var downloads = DownloadManager.shared
+    @ObservedObject private var connectivity = Connectivity.shared
+
+    @State private var pendingDelete: DownloadedTrack?
 
     /// Abre el reproductor al poner algo a sonar, igual que el `onTrackClick` de Android.
     var onTrackOpened: () -> Void = {}
@@ -42,7 +47,9 @@ struct LibraryScreen: View {
                             .padding(.top, 8)
                     }
 
-                    if viewModel.isLoading {
+                    // El esqueleto de carga NUNCA tapa Descargas: esa pestaña lee del disco
+                    // y tiene que poder abrirse aunque no haya red ni respuesta del servidor.
+                    if viewModel.isLoading && viewModel.tab != .downloads {
                         TrackListSkeleton()
                             .padding(.top, 10)
                         Spacer()
@@ -83,6 +90,11 @@ struct LibraryScreen: View {
             }
         }
         .task { await viewModel.loadAll() }
+        // Al recuperar la conexion se recarga solo: si no, la pantalla se quedaria con las
+        // listas vacias que dejo el modo sin red hasta que el usuario reiniciara la app.
+        .onChange(of: connectivity.isOnline) { online in
+            if online { Task { await viewModel.loadAll() } }
+        }
         // Al volver de otra pestaña o del reproductor se refresca la lista visible, que es
         // lo que hace el observador de ON_RESUME en Android.
         .onChange(of: player.isFavorite) { _ in
@@ -95,6 +107,23 @@ struct LibraryScreen: View {
                 viewModel.createPlaylist(named: newPlaylistName)
                 newPlaylistName = ""
             }
+        }
+        // Borrar una descarga es irreversible y libera espacio: se confirma, como en Android.
+        .alert(
+            "Eliminar descarga",
+            isPresented: Binding(
+                get: { pendingDelete != nil },
+                set: { if !$0 { pendingDelete = nil } }
+            ),
+            presenting: pendingDelete
+        ) { item in
+            Button("Cancelar", role: .cancel) { pendingDelete = nil }
+            Button("Eliminar", role: .destructive) {
+                store.remove(item.videoId)
+                pendingDelete = nil
+            }
+        } message: { item in
+            Text("¿Eliminar «\(item.title)» del dispositivo? Esta acción no se puede deshacer.")
         }
     }
 
@@ -145,13 +174,7 @@ struct LibraryScreen: View {
             trackList(viewModel.history, emptyMessage: "El historial está vacío")
 
         case .downloads:
-            // Android lista aqui los archivos de DownloadsRepository. Ese subsistema
-            // (descarga en segundo plano y reproduccion offline) todavia no esta en iOS.
-            emptyState(
-                icon: "arrow.down.circle",
-                title: "No tienes descargas aún",
-                detail: "Las descargas sin conexión todavía no están disponibles en iPhone."
-            )
+            downloadsList
 
         case .playlists:
             playlistList
@@ -182,6 +205,103 @@ struct LibraryScreen: View {
             }
             .padding(.top, 10)
         }
+    }
+
+    /// Puerto de `DownloadsList` en `LibraryScreen.kt`: la descarga en curso arriba con su
+    /// porcentaje, y debajo lo que ya está en el dispositivo.
+    @ViewBuilder
+    private var downloadsList: some View {
+        let showActive = downloads.state.isDownloading
+
+        if store.downloads.isEmpty && !showActive {
+            emptyState(
+                icon: "arrow.down.circle",
+                title: "No tienes descargas aún",
+                detail: "Descarga canciones desde el reproductor."
+            )
+        } else {
+            ScrollView {
+                LazyVStack(spacing: 0) {
+                    if showActive {
+                        activeDownloadRow
+                    }
+
+                    ForEach(store.downloads) { item in
+                        HStack(spacing: 0) {
+                            Button {
+                                // Se encola la lista entera de descargas: así el siguiente
+                                // también suena sin conexión.
+                                let queue = store.downloads.map { $0.toTrack() }
+                                player.play(track: item.toTrack(), contextQueue: queue)
+                                onTrackOpened()
+                            } label: {
+                                LibraryTrackRow(
+                                    track: item.toTrack(),
+                                    isPlaying: player.currentTrack?.videoId == item.videoId && player.isPlaying
+                                )
+                            }
+                            .buttonStyle(.plain)
+
+                            Button {
+                                pendingDelete = item
+                            } label: {
+                                Image(systemName: "trash")
+                                    .foregroundStyle(EMusicColor.favorite)
+                                    .frame(width: 44, height: 44)
+                            }
+                            .padding(.trailing, 4)
+                        }
+                    }
+                }
+                Color.clear.frame(height: EMusicMetrics.bottomContentInset)
+            }
+            .padding(.top, 10)
+        }
+    }
+
+    private var activeDownloadRow: some View {
+        HStack(spacing: EMusicMetrics.trackRowSpacing) {
+            AsyncImage(url: URL(string: downloads.state.thumbnailUrl)) { image in
+                image.resizable().aspectRatio(contentMode: .fill)
+            } placeholder: {
+                Rectangle().fill(EMusicColor.surfaceVariant)
+            }
+            .frame(width: EMusicMetrics.trackThumbnailSize, height: EMusicMetrics.trackThumbnailSize)
+            .clipShape(RoundedRectangle(cornerRadius: EMusicMetrics.trackThumbnailRadius))
+
+            VStack(alignment: .leading, spacing: 4) {
+                Text(downloads.state.title.isEmpty ? "Descargando…" : downloads.state.title)
+                    .font(.body)
+                    .foregroundStyle(EMusicColor.primary)
+                    .lineLimit(1)
+
+                let pctText = downloads.state.progress > 0
+                    ? "Descargando \(downloads.state.progress)%"
+                    : "Descargando…"
+                Text(downloads.state.artist.isEmpty ? pctText : "\(downloads.state.artist) · \(pctText)")
+                    .font(.caption2)
+                    .foregroundStyle(EMusicColor.onSurfaceVariant)
+                    .lineLimit(1)
+
+                // Barra determinada solo si el servidor dijo cuánto pesa; si no,
+                // indeterminada, para no inventarse un porcentaje.
+                if downloads.state.progress > 0 {
+                    ProgressView(value: Double(downloads.state.progress), total: 100)
+                        .tint(EMusicColor.primary)
+                } else {
+                    ProgressView().progressViewStyle(.linear).tint(EMusicColor.primary)
+                }
+            }
+
+            Button { downloads.cancel() } label: {
+                Image(systemName: "xmark")
+                    .font(.footnote)
+                    .foregroundStyle(EMusicColor.onSurfaceVariant)
+                    .frame(width: 32, height: 32)
+            }
+        }
+        .padding(.horizontal, EMusicMetrics.trackRowHorizontalPadding)
+        .padding(.vertical, EMusicMetrics.trackRowVerticalPadding)
     }
 
     @ViewBuilder
@@ -361,9 +481,14 @@ struct LibraryTrackRow: View {
 
             Spacer(minLength: 8)
 
-            Text(formatDuration(track.duration))
-                .font(.caption.monospacedDigit())
-                .foregroundStyle(EMusicColor.onSurfaceVariant)
+            // Igual que `TrackItem.kt`: cuando suena, la duracion deja paso al ecualizador.
+            if isPlaying {
+                NowPlayingBars()
+            } else {
+                Text(formatDuration(track.duration))
+                    .font(.caption.monospacedDigit())
+                    .foregroundStyle(EMusicColor.onSurfaceVariant)
+            }
         }
         .padding(.horizontal, EMusicMetrics.trackRowHorizontalPadding)
         .padding(.vertical, EMusicMetrics.trackRowVerticalPadding)

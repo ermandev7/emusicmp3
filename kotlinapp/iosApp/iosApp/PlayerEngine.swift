@@ -116,7 +116,11 @@ final class PlayerEngine: ObservableObject {
     /// `PlayerViewModel.playTrack` en Android. Es lo que evita que cada cambio de
     /// cancion dispare una extraccion en frio de yt-dlp en la Pi.
     private func prefetchUpcoming() {
-        let ids = queue.dropFirst(index + 1).prefix(3).map(\.videoId).filter { !$0.isEmpty }
+        // Los que ya estan descargados se excluyen: hacer trabajar a la Pi por un tema que
+        // vamos a leer del disco es gasto puro.
+        let ids = queue.dropFirst(index + 1).prefix(3)
+            .map(\.videoId)
+            .filter { !$0.isEmpty && !DownloadStore.shared.isDownloaded($0) }
         guard !ids.isEmpty else { return }
         Task { try? await SharedClients.shared.api.prefetch(videoIds: Array(ids)) }
     }
@@ -299,7 +303,15 @@ final class PlayerEngine: ObservableObject {
         Task { await self.refreshFavorite(for: track) }
 
         let item: AVPlayerItem?
-        if let ready = preparedNext, ready.videoId == track.videoId {
+        if let local = DownloadStore.shared.localURL(for: track.videoId) {
+            // DESCARGADO: se reproduce del disco y no se toca la red. Vale para CUALQUIER
+            // lista —favoritos, historial, radio, recomendadas—, no solo para la pestaña
+            // Descargas: al ir por videoId, cualquier cola aprovecha el archivo local.
+            // En Android eso no pasa, porque alli lo descargado se identifica por su URI
+            // de MediaStore y solo se reproduce desde su propia pestaña.
+            item = makeItem(url: local)
+            currentStreamSummary = "archivo descargado"
+        } else if let ready = preparedNext, ready.videoId == track.videoId {
             // Ya resuelto y con la cabecera descargada: arranca practicamente al instante.
             item = ready.item
             currentStreamSummary = "precargado"
@@ -372,6 +384,14 @@ final class PlayerEngine: ObservableObject {
         let nextIndex = index + 1
         guard queue.indices.contains(nextIndex) else { return }
         let nextTrack = queue[nextIndex]
+
+        // Si el siguiente ya esta en disco no hay nada que resolver: se prepara directo.
+        if let local = DownloadStore.shared.localURL(for: nextTrack.videoId) {
+            let item = makeItem(url: local)
+            guard loadToken == token else { return }
+            preparedNext = (nextTrack.videoId, item)
+            return
+        }
 
         // `resolveURL` escribe currentStreamSummary, que aqui hablaria del tema
         // equivocado; se guarda y se restaura.

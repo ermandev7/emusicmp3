@@ -9,6 +9,8 @@ struct PlayerScreen: View {
     @Environment(\.dismiss) private var dismiss
 
     @StateObject private var dominant = DominantColorLoader()
+    @ObservedObject private var downloads = DownloadManager.shared
+    @ObservedObject private var store = DownloadStore.shared
 
     /// Arrastre vertical para minimizar (Android: `detectDragGestures` + `translationY`).
     @State private var dragOffsetY: CGFloat = 0
@@ -265,7 +267,47 @@ struct PlayerScreen: View {
                     .frame(width: 44, height: 44)
             }
             .animation(.easeInOut(duration: 0.2), value: player.isFavorite)
+
+            downloadButton
         }
+    }
+
+    /// Puerto del botón de descarga de `PlayerScreen.kt`: anillo con el porcentaje mientras
+    /// baja, y check cuando ya está en el dispositivo.
+    @ViewBuilder
+    private var downloadButton: some View {
+        let videoId = player.currentTrack?.videoId ?? ""
+        let isDownloaded = store.isDownloaded(videoId)
+        let isDownloading = downloads.isDownloading(videoId)
+
+        Button {
+            guard let track = player.currentTrack, !isDownloaded, !isDownloading else { return }
+            downloads.download(track)
+        } label: {
+            ZStack {
+                if isDownloading {
+                    if downloads.state.progress > 0 {
+                        // Anillo determinado + porcentaje, igual que en Android.
+                        Circle()
+                            .trim(from: 0, to: CGFloat(downloads.state.progress) / 100)
+                            .stroke(EMusicColor.primary, style: StrokeStyle(lineWidth: 2.5, lineCap: .round))
+                            .rotationEffect(.degrees(-90))
+                            .frame(width: 32, height: 32)
+                        Text("\(downloads.state.progress)")
+                            .font(.system(size: 9))
+                            .foregroundStyle(EMusicColor.primary)
+                    } else {
+                        ProgressView().tint(EMusicColor.primary)
+                    }
+                } else {
+                    Image(systemName: isDownloaded ? "arrow.down.circle.fill" : "arrow.down.circle")
+                        .font(.system(size: 24))
+                        .foregroundStyle(isDownloaded ? EMusicColor.primary : EMusicColor.onSurfaceVariant)
+                }
+            }
+            .frame(width: 44, height: 44)
+        }
+        .disabled(isDownloaded || isDownloading)
     }
 
     // MARK: Progreso

@@ -26,6 +26,17 @@ final class PlayerEngine: ObservableObject {
     @Published private(set) var duration: Double = 0
     @Published private(set) var errorMessage: String?
 
+    /// Aleatorio y repeticion, con los mismos tres estados que ExoPlayer.
+    @Published private(set) var shuffleEnabled = false
+    @Published private(set) var repeatMode: RepeatMode = .off
+
+    /// Si el tema actual esta en favoritos. Se consulta al backend en cada cambio.
+    @Published private(set) var isFavorite = false
+
+    enum RepeatMode {
+        case off, all, one
+    }
+
     /// Progreso 0...1 para la barrita del mini reproductor.
     var progress: Double {
         guard duration > 0 else { return 0 }
@@ -34,20 +45,32 @@ final class PlayerEngine: ObservableObject {
 
     // MARK: Cola
 
-    private(set) var queue: [Track] = []
-    private(set) var index: Int = 0
+    /// Publicadas para que la hoja de "Cola" se refresque sola cuando la radio la estira.
+    @Published private(set) var queue: [Track] = []
+    @Published private(set) var index: Int = 0
 
     private let player = AVPlayer()
     private let network = SharedClients.shared.network
+    private let api = SharedClients.shared.api
     private let radio = SharedClients.shared.radio
 
-    /// URL ya resuelta del proximo tema, para no esperar la llamada de red al pasar.
-    private var prefetchedNextURL: (videoId: String, url: URL)?
+    /// Orden original de la cola, para poder deshacer el aleatorio.
+    private var unshuffledQueue: [Track] = []
+
+    /// Item del proximo tema YA construido y precargando su cabecera, para que al pasar
+    /// de cancion no haya ni llamada de red ni apertura de stream. Es el equivalente de
+    /// tener toda la cola encolada en ExoPlayer.
+    private var preparedNext: (videoId: String, item: AVPlayerItem)?
+
+    /// Saltos automaticos consecutivos tras error; se resetea al sonar de verdad.
+    /// Mismo mecanismo que `autoSkipCount` en `MusicService.kt`.
+    private var autoSkipCount = 0
 
     private var timeObserver: Any?
     private var endObserver: NSObjectProtocol?
     private var failObserver: NSObjectProtocol?
     private var itemStatusCancellable: AnyCancellable?
+    private var timeControlCancellable: AnyCancellable?
     private var stallWatchdog: Task<Void, Never>?
 
     /// Formato elegido para el tema actual; se usa en los mensajes de error.
@@ -58,6 +81,13 @@ final class PlayerEngine: ObservableObject {
     private var loadToken = UUID()
 
     private init() {
+        // CLAVE PARA EL ARRANQUE. Por defecto AVPlayer espera a tener buffer suficiente
+        // para estimar que puede reproducir el tema entero sin cortes; contra la Pi eso
+        // son varios segundos de espera con la UI girando. ExoPlayer arranca con ~2.5 s
+        // de buffer y por eso Android suena antes. Poniendolo en false, AVPlayer empieza
+        // en cuanto tiene datos, igual que Android.
+        player.automaticallyWaitsToMinimizeStalling = false
+
         configureAudioSession()
         observePlayer()
         configureRemoteCommands()
@@ -78,19 +108,28 @@ final class PlayerEngine: ObservableObject {
             index = queue.firstIndex { $0.videoId == track.videoId } ?? 0
             radio.stop()
         }
+        prefetchUpcoming()
         Task { await load(trackAt: index, autoPlay: true) }
     }
 
+    /// Le pide al backend que vaya resolviendo los 3 siguientes de la cola, igual que
+    /// `PlayerViewModel.playTrack` en Android. Es lo que evita que cada cambio de
+    /// cancion dispare una extraccion en frio de yt-dlp en la Pi.
+    private func prefetchUpcoming() {
+        let ids = queue.dropFirst(index + 1).prefix(3).map(\.videoId).filter { !$0.isEmpty }
+        guard !ids.isEmpty else { return }
+        Task { try? await SharedClients.shared.api.prefetch(videoIds: Array(ids)) }
+    }
+
+    /// No toca `isPlaying` a mano: solo ordena, y el observador de `timeControlStatus`
+    /// actualiza el estado cuando el reproductor realmente arranca o para.
     func togglePlayPause() {
         guard currentTrack != nil else { return }
-        if isPlaying {
-            player.pause()
-            isPlaying = false
-        } else {
+        if player.timeControlStatus == .paused {
             player.play()
-            isPlaying = true
+        } else {
+            player.pause()
         }
-        updateNowPlayingPlaybackState()
     }
 
     func next() {
@@ -115,6 +154,132 @@ final class PlayerEngine: ObservableObject {
         updateNowPlayingPlaybackState()
     }
 
+    /// Vuelve a intentar el tema actual (boton "Reintentar" de la pantalla de reproductor).
+    func retry() {
+        Task { await load(trackAt: index, autoPlay: true) }
+    }
+
+    /// Salta a una posicion concreta de la cola (lista de "Cola" del reproductor).
+    func seekToIndex(_ i: Int) {
+        guard queue.indices.contains(i), i != index else { return }
+        index = i
+        Task { await load(trackAt: i, autoPlay: true) }
+    }
+
+    // MARK: - Aleatorio y repeticion
+
+    /// Igual que `shuffleModeEnabled` en ExoPlayer: la cancion en curso no se mueve, se
+    /// baraja lo que queda por sonar. Al desactivarlo se recupera el orden original.
+    func toggleShuffle() {
+        shuffleEnabled.toggle()
+        guard !queue.isEmpty, queue.indices.contains(index) else { return }
+        let current = queue[index]
+
+        if shuffleEnabled {
+            unshuffledQueue = queue
+            var rest = queue
+            rest.remove(at: index)
+            queue = [current] + rest.shuffled()
+            index = 0
+        } else {
+            // La radio pudo haber añadido temas mientras estaba barajada: se conservan.
+            let knownIds = Set(unshuffledQueue.map(\.videoId))
+            let added = queue.filter { !knownIds.contains($0.videoId) }
+            let restored = unshuffledQueue.isEmpty ? queue : unshuffledQueue + added
+            queue = restored
+            index = restored.firstIndex { $0.videoId == current.videoId } ?? 0
+            unshuffledQueue = []
+        }
+
+        // El "siguiente" ya no es el mismo: se descarta lo precargado y se rehace.
+        preparedNext = nil
+        let token = loadToken
+        Task { await self.prepareNext(token: token) }
+    }
+
+    /// off → all → one → off, el mismo ciclo que `MusicController.cycleRepeatMode`.
+    func cycleRepeat() {
+        switch repeatMode {
+        case .off: repeatMode = .all
+        case .all: repeatMode = .one
+        case .one: repeatMode = .off
+        }
+    }
+
+    /// Que hacer cuando un tema termina solo. Con "repetir uno" vuelve a empezar; con
+    /// "repetir todo" da la vuelta al llegar al final de la cola.
+    private func advanceAtEnd() {
+        switch repeatMode {
+        case .one:
+            seek(to: 0)
+            player.play()
+        case .all:
+            if index + 1 < queue.count {
+                next()
+            } else if !queue.isEmpty {
+                index = 0
+                Task { await load(trackAt: 0, autoPlay: true) }
+            }
+        case .off:
+            next()
+        }
+    }
+
+    // MARK: - Favoritos
+
+    /// Consulta al backend si el tema actual esta en favoritos.
+    private func refreshFavorite(for track: Track) async {
+        guard !track.videoId.isEmpty else {
+            isFavorite = false
+            return
+        }
+        let value = try? await api.isFavorite(videoId: track.videoId)
+        guard currentTrack?.videoId == track.videoId else { return }
+        isFavorite = value?.boolValue ?? false
+    }
+
+    /// Optimista: se pinta el corazon al instante y se manda al backend por detras,
+    /// igual que `PlayerViewModel.toggleFavorite` en Android.
+    func toggleFavorite() {
+        guard let track = currentTrack, !track.videoId.isEmpty else { return }
+        let wasFavorite = isFavorite
+        isFavorite = !wasFavorite
+
+        Task {
+            if wasFavorite {
+                try? await api.removeFavorite(videoId: track.videoId)
+            } else {
+                try? await api.addFavorite(
+                    request: AddFavoriteRequest(
+                        title: track.title,
+                        artist: track.displayArtist,
+                        thumbnailUrl: track.displayThumbnail,
+                        duration: track.duration,
+                        videoId: track.videoId
+                    )
+                )
+            }
+        }
+    }
+
+    /// El historial es lo que alimenta "Mas escuchadas" y todo el recomendador, asi que
+    /// se registra en cuanto empieza a cargarse el tema — igual que `PlayerViewModel`.
+    private func recordHistory(for track: Track) {
+        guard !track.videoId.isEmpty else { return }
+        Task {
+            try? await api.addHistory(
+                request: AddHistoryRequest(
+                    title: track.title,
+                    artist: track.displayArtist,
+                    thumbnailUrl: track.displayThumbnail,
+                    duration: track.duration,
+                    videoId: track.videoId,
+                    isDownloaded: false
+                )
+            )
+        }
+    }
+
     // MARK: - Carga de un tema
 
     private func load(trackAt i: Int, autoPlay: Bool) async {
@@ -130,36 +295,58 @@ final class PlayerEngine: ObservableObject {
         duration = Double(track.duration)
         stallWatchdog?.cancel()
 
-        let url: URL?
-        if let cached = prefetchedNextURL, cached.videoId == track.videoId {
-            url = cached.url
-            currentStreamSummary = "prefetch"
+        recordHistory(for: track)
+        Task { await self.refreshFavorite(for: track) }
+
+        let item: AVPlayerItem?
+        if let ready = preparedNext, ready.videoId == track.videoId {
+            // Ya resuelto y con la cabecera descargada: arranca practicamente al instante.
+            item = ready.item
+            currentStreamSummary = "precargado"
+        } else if let url = await resolveURL(for: track) {
+            item = makeItem(url: url)
         } else {
-            url = await resolveURL(for: track)
+            item = nil
         }
-        prefetchedNextURL = nil
+        preparedNext = nil
 
         // Si mientras se resolvia la URL el usuario cambio de cancion, descartamos.
         guard loadToken == token else { return }
 
-        guard let url else {
-            fail("No se pudo obtener el audio de «\(track.title)». \(currentStreamSummary)")
+        guard let item else {
+            // Igual que `onPlayerError` en Android: una pista que no resuelve no corta
+            // la reproduccion, se salta a la siguiente.
+            handleFailure("No se pudo obtener el audio de «\(track.title)». \(currentStreamSummary)")
             return
         }
 
-        let item = AVPlayerItem(url: url)
         observeStatus(of: item, token: token, track: track)
         player.replaceCurrentItem(with: item)
 
-        if autoPlay {
-            player.play()
-            isPlaying = true
-        }
+        // Solo se da la orden. `isPlaying` lo pone el observador de timeControlStatus
+        // cuando el reproductor arranca de verdad — marcarlo aqui a mano hacia que la
+        // UI y el audio se desincronizaran.
+        if autoPlay { player.play() }
 
         startStallWatchdog(token: token)
         updateNowPlayingInfo(for: track)
-        await prefetchNext()
-        await extendRadioIfNeeded()
+
+        // Ninguna de las dos debe retrasar el arranque: van en su propia tarea.
+        Task { await self.prepareNext(token: token) }
+        Task { await self.extendRadioIfNeeded() }
+    }
+
+    /// Construye el item pidiendole a AVFoundation que no precalcule la duracion exacta
+    /// (obliga a leer el fichero entero en algunos contenedores) y que se conforme con
+    /// unos segundos de buffer por delante en vez de tirar de todo el tema.
+    private func makeItem(url: URL) -> AVPlayerItem {
+        let asset = AVURLAsset(
+            url: url,
+            options: [AVURLAssetPreferPreciseDurationAndTimingKey: false]
+        )
+        let item = AVPlayerItem(asset: asset)
+        item.preferredForwardBufferDuration = 5
+        return item
     }
 
     /// Backend propio y, si falla, las instancias publicas de Piped — todo eso ya lo
@@ -178,12 +365,30 @@ final class PlayerEngine: ObservableObject {
         }
     }
 
-    private func prefetchNext() async {
+    /// Deja el siguiente tema listo del todo: URL resuelta e item creado con su cabecera
+    /// ya descargada. Es lo que en Android hace ExoPlayer solo al tener la cola entera
+    /// encolada; aca hay que hacerlo a mano porque solo tenemos un AVPlayer.
+    private func prepareNext(token: UUID) async {
         let nextIndex = index + 1
         guard queue.indices.contains(nextIndex) else { return }
         let nextTrack = queue[nextIndex]
-        guard let url = await resolveURL(for: nextTrack) else { return }
-        prefetchedNextURL = (nextTrack.videoId, url)
+
+        // `resolveURL` escribe currentStreamSummary, que aqui hablaria del tema
+        // equivocado; se guarda y se restaura.
+        let summary = currentStreamSummary
+        let url = await resolveURL(for: nextTrack)
+        currentStreamSummary = summary
+
+        guard loadToken == token, let url else { return }
+
+        let item = makeItem(url: url)
+        preparedNext = (nextTrack.videoId, item)
+
+        // Forzar la carga de la cabecera ahora, para que el cambio de cancion no
+        // tenga que abrir la conexion desde cero.
+        if let asset = item.asset as? AVURLAsset {
+            Task { _ = try? await asset.load(.isPlayable) }
+        }
     }
 
     // MARK: - Diagnostico de la reproduccion
@@ -197,31 +402,51 @@ final class PlayerEngine: ObservableObject {
                 guard let self, self.loadToken == token else { return }
                 switch status {
                 case .readyToPlay:
-                    self.isBuffering = false
-                    self.stallWatchdog?.cancel()
+                    // El buffering NO se apaga aca: de eso se encarga timeControlStatus,
+                    // que es quien sabe si ademas hay datos suficientes para sonar.
                     if let itemDuration = item.duration.seconds.isFinite ? item.duration.seconds : nil,
                        itemDuration > 0 {
                         self.duration = itemDuration
                     }
                 case .failed:
                     let reason = item.error?.localizedDescription ?? "formato no soportado"
-                    self.fail("No se pudo reproducir «\(track.title)»: \(reason). \(self.currentStreamSummary)")
+                    self.handleFailure("No se pudo reproducir «\(track.title)»: \(reason). \(self.currentStreamSummary)")
                 default:
                     break
                 }
             }
     }
 
-    /// Si a los 15 s no arrancó ni falló, avisamos igual en vez de girar indefinidamente.
+    /// Si a los 15 s no arrancó ni falló, avisamos en vez de girar indefinidamente.
+    /// La condicion mira el estado REAL del reproductor: si esta sonando no hay nada
+    /// que reportar, por lento que haya sido el arranque.
     private func startStallWatchdog(token: UUID) {
         stallWatchdog = Task { [weak self] in
             try? await Task.sleep(nanoseconds: 15_000_000_000)
-            guard let self, !Task.isCancelled, self.loadToken == token, self.isBuffering else { return }
-            self.fail("El audio no empezó a sonar. \(self.currentStreamSummary)")
+            guard let self, !Task.isCancelled, self.loadToken == token else { return }
+            guard self.player.timeControlStatus != .playing else { return }
+            self.handleFailure("El audio no empezó a sonar. \(self.currentStreamSummary)")
         }
     }
 
+    /// Puerto de `onPlayerError` en `MusicService.kt`: si una pista falla (no resuelve,
+    /// formato ilegible, se corta la red) se salta a la siguiente en vez de parar la
+    /// musica. Acotado al tamaño de la cola para no entrar en bucle si la red esta caida,
+    /// y `autoSkipCount` vuelve a cero en cuanto algo suena de verdad.
+    private func handleFailure(_ message: String) {
+        if index + 1 < queue.count, autoSkipCount < queue.count {
+            autoSkipCount += 1
+            stallWatchdog?.cancel()
+            next()
+            return
+        }
+        fail(message)
+    }
+
+    /// Ante un fallo se para el reproductor de verdad, para que el estado que ve el
+    /// usuario y lo que suena no puedan divergir.
     private func fail(_ message: String) {
+        player.pause()
         isBuffering = false
         isPlaying = false
         errorMessage = message
@@ -241,6 +466,32 @@ final class PlayerEngine: ObservableObject {
     }
 
     private func observePlayer() {
+        // FUENTE DE VERDAD del estado de reproduccion. AVPlayer publica aqui lo que
+        // realmente esta haciendo, asi que el boton del reproductor nunca puede quedar
+        // mostrando play mientras suena musica (ni al reves).
+        timeControlCancellable = player.publisher(for: \.timeControlStatus)
+            .receive(on: DispatchQueue.main)
+            .sink { [weak self] status in
+                guard let self else { return }
+                switch status {
+                case .playing:
+                    self.isPlaying = true
+                    self.isBuffering = false
+                    self.stallWatchdog?.cancel()
+                    // Sonó: se olvida la racha de saltos por error (STATE_READY en Android).
+                    self.autoSkipCount = 0
+                case .waitingToPlayAtSpecifiedRate:
+                    // Quiere sonar pero le faltan datos: eso SI es buffering real.
+                    self.isPlaying = false
+                    self.isBuffering = self.currentTrack != nil
+                case .paused:
+                    self.isPlaying = false
+                @unknown default:
+                    break
+                }
+                self.updateNowPlayingPlaybackState()
+            }
+
         let interval = CMTime(seconds: 0.5, preferredTimescale: 600)
         timeObserver = player.addPeriodicTimeObserver(forInterval: interval, queue: .main) { [weak self] time in
             guard let self else { return }
@@ -259,7 +510,7 @@ final class PlayerEngine: ObservableObject {
             object: nil,
             queue: .main
         ) { [weak self] _ in
-            Task { @MainActor in self?.next() }
+            Task { @MainActor in self?.advanceAtEnd() }
         }
 
         failObserver = NotificationCenter.default.addObserver(
@@ -269,7 +520,7 @@ final class PlayerEngine: ObservableObject {
         ) { [weak self] note in
             let error = note.userInfo?[AVPlayerItemFailedToPlayToEndTimeErrorKey] as? Error
             Task { @MainActor in
-                self?.fail("Se cortó la reproducción: \(error?.localizedDescription ?? "error desconocido")")
+                self?.handleFailure("Se cortó la reproducción: \(error?.localizedDescription ?? "error desconocido")")
             }
         }
     }

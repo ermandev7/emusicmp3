@@ -143,6 +143,14 @@ public class RecommendationEngine
     // equivale a una canción bastante escuchada.
     private const double FavoriteWeight = 8.0;
 
+    // Antes una canción escuchada UNA VEZ quedaba excluida de "siguiente canción"
+    // para siempre. Si un artista favorito solo tiene pocas canciones encontrables
+    // y ya sonaron todas, el radio se quedaba sin nada de ese artista para siempre,
+    // aunque sea justo lo que más le gusta al usuario. Pasada esta ventana, la
+    // canción vuelve a ser candidata — sigue evitando repetir lo que sonó hace
+    // poco, pero ya no la destierra de por vida.
+    private const double RecentExclusionWindowDays = 21.0;
+
     public UserProfile BuildProfile(List<History> history, List<Favorite>? favorites = null)
     {
         favorites ??= new List<Favorite>();
@@ -161,10 +169,11 @@ public class RecommendationEngine
         var now = DateTime.UtcNow;
 
         // Acumula una "canción" (del historial o favorita) en los vectores del perfil.
-        void Accumulate(string videoId, string title, string artist, double weight)
+        // Ya NO decide aquí qué se excluye de "siguiente canción": eso se hace más
+        // abajo, con ventana de tiempo para el historial y nunca para favoritos
+        // (ver comentarios en los bucles).
+        void Accumulate(string title, string artist, double weight)
         {
-            if (!string.IsNullOrEmpty(videoId)) playedIds.Add(videoId);
-
             // Se tokeniza título Y artista. Antes solo el título, y tras quitar stopwords
             // los títulos quedan casi en ruido ("una", "mas"); el nombre del artista es
             // con diferencia la palabra más informativa de una canción.
@@ -204,7 +213,13 @@ public class RecommendationEngine
             double skipPenalty = entry.SkippedEarly ? 0.1 : 1.0;
             double downloadBonus = entry.IsDownloaded ? 1.5 : 1.0;
             double weight = entry.PlayCount * recency * skipPenalty * downloadBonus;
-            Accumulate(entry.VideoId, entry.Title, entry.Artist, weight);
+            Accumulate(entry.Title, entry.Artist, weight);
+
+            // Excluir de "siguiente canción" solo lo escuchado dentro de la ventana
+            // reciente (evita repetir lo de hace un rato); pasada la ventana vuelve
+            // a ser candidata.
+            if (!string.IsNullOrEmpty(entry.VideoId) && daysSince <= RecentExclusionWindowDays)
+                playedIds.Add(entry.VideoId);
 
             var artistKey = NormalizeArtist(entry.Artist);
             if (artistKey.Length > 0)
@@ -216,9 +231,12 @@ public class RecommendationEngine
         }
 
         // Favoritos: peso fuerte y constante. También registramos sus artistas.
+        // A propósito NO se añaden a playedIds: es una señal positiva explícita, no
+        // algo que el usuario quiera dejar de escuchar — el radio puede sugerir de
+        // vez en cuando una canción que ya es favorita.
         foreach (var fav in favorites)
         {
-            Accumulate(fav.Id, fav.Title, fav.Artist, FavoriteWeight);
+            Accumulate(fav.Title, fav.Artist, FavoriteWeight);
             var na = NormalizeArtist(fav.Artist);
             if (na.Length > 0) favoriteArtists.Add(na);
         }

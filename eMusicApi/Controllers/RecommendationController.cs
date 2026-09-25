@@ -105,6 +105,16 @@ public class RecommendationController : ControllerBase
                         !excludedArtists.Contains(RecommendationEngine.NormalizeArtist(c.Artist)))
             .ToList();
 
+        // Exploración: el ranking por score era 100% determinista (mismo perfil ->
+        // mismo orden exacto siempre), así que el radio podía sonar repetitivo
+        // sesión tras sesión entre canciones casi empatadas. Se añade un jitter
+        // pequeño SOLO para decidir el orden — el score que se devuelve es el
+        // real, sin tocar — así que dos candidatos con score muy parecido pueden
+        // intercambiar posición de una vez a otra, pero uno claramente mejor
+        // (score muy por encima) nunca pierde su puesto por uno claramente peor.
+        const double explorationJitter = 0.04;
+        var rng = new Random();
+
         var scored = candidates
             .Select(c => new
             {
@@ -116,7 +126,7 @@ public class RecommendationController : ControllerBase
                 type = "stream",
                 score = Math.Round(_engine.ScoreCandidate(profile, c.Title, c.Artist), 4)
             })
-            .OrderByDescending(c => c.score)
+            .OrderByDescending(c => c.score + (rng.NextDouble() * 2 - 1) * explorationJitter)
             .ToList();
 
         // DIVERSIDAD: máximo 2 canciones por artista en el resultado final.

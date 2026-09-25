@@ -41,10 +41,77 @@ public class MusicExtractionService
 
         // Crear HttpClient con headers de navegador para YoutubeExplode
         var handler = new HttpClientHandler { AllowAutoRedirect = true };
-        var httpClient = new HttpClient(handler);
+        var httpClient = new HttpClient(handler)
+        {
+            // Sin esto, HttpClient usa 100s por defecto: si YouTube tarda en responder,
+            // GetStreamAsync podía quedarse colgado mucho más de lo previsto.
+            Timeout = TimeSpan.FromSeconds(15)
+        };
         httpClient.DefaultRequestHeaders.Add("User-Agent",
             "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 Chrome/124 Safari/537.36");
         _youtubeClient = new YoutubeClient(httpClient);
+    }
+
+    // Tiempo máximo que se deja vivo un proceso yt-dlp antes de matarlo. YouTube exige
+    // resolver un reto JavaScript para firmar las URLs de audio; normalmente tarda
+    // segundos, pero a veces se cuelga. Sin este límite, ese único proceso podía
+    // bloquear la respuesta de GetStreamAsync indefinidamente.
+    private static readonly TimeSpan YtDlpTimeout = TimeSpan.FromSeconds(15);
+
+    // Cuánto tiempo se recuerda que un vídeo falló en todos los extractores, para no
+    // repetir la cascada completa (y sus posibles esperas) en cada intento de play.
+    private static readonly TimeSpan StreamFailureCooldown = TimeSpan.FromMinutes(10);
+
+    /// <summary>
+    /// Ejecuta un proceso externo con un límite de tiempo real. Si se pasa, lo mata
+    /// (con todo el árbol de hijos que haya lanzado, p.ej. ffmpeg o deno) en vez de
+    /// dejarlo colgado consumiendo CPU/memoria de la Pi sin que nadie lo espere ya.
+    /// </summary>
+    private static async Task<(int exitCode, string stdout, string stderr, bool timedOut)> RunWithTimeoutAsync(
+        string fileName, string arguments, TimeSpan timeout)
+    {
+        using var process = new System.Diagnostics.Process
+        {
+            StartInfo = new System.Diagnostics.ProcessStartInfo
+            {
+                FileName = fileName,
+                Arguments = arguments,
+                RedirectStandardOutput = true,
+                RedirectStandardError = true,
+                UseShellExecute = false,
+                CreateNoWindow = true
+            }
+        };
+
+        process.Start();
+        var stdoutTask = process.StandardOutput.ReadToEndAsync();
+        var stderrTask = process.StandardError.ReadToEndAsync();
+        var waitTask = process.WaitForExitAsync();
+
+        if (await Task.WhenAny(waitTask, Task.Delay(timeout)) != waitTask)
+        {
+            try { process.Kill(entireProcessTree: true); } catch { /* pudo terminar justo ahora */ }
+            return (-1, "", $"yt-dlp excedió {timeout.TotalSeconds:F0}s y fue detenido.", true);
+        }
+
+        return (process.ExitCode, await stdoutTask, await stderrTask, false);
+    }
+
+    /// <summary>
+    /// Acota una tarea de extracción al cts general de GetStreamAsync: si el límite de
+    /// tiempo salta, esta rama del Task.WhenAny se resuelve enseguida como fallo (la
+    /// tarea real sigue en segundo plano hasta terminar por su cuenta, p.ej. porque
+    /// RunWithTimeoutAsync mate el proceso yt-dlp).
+    /// </summary>
+    private static async Task<(string json, string source)> BoundedBySource(
+        Task<(string json, string source)> inner, string source, CancellationToken ct)
+    {
+        var cancelSignal = new TaskCompletionSource<bool>();
+        using var registration = ct.Register(() => cancelSignal.TrySetResult(true));
+        var completed = await Task.WhenAny(inner, cancelSignal.Task);
+        if (completed == cancelSignal.Task)
+            return (BuildErrorJson("Tiempo de extracción agotado."), source);
+        return await inner;
     }
 
     // ─────────────────────────────────────────────────────────────────
@@ -313,21 +380,12 @@ public class MusicExtractionService
 
     private async Task<List<object>> RunYtDlpSearch(string searchArg, string query, bool isMusic)
     {
-        var process = new System.Diagnostics.Process
-        {
-            StartInfo = new System.Diagnostics.ProcessStartInfo
-            {
-                FileName = "yt-dlp",
-                Arguments = $"\"{searchArg}\" --flat-playlist -j --quiet --no-warnings --playlist-end 20",
-                RedirectStandardOutput = true,
-                RedirectStandardError = true,
-                UseShellExecute = false,
-                CreateNoWindow = true
-            }
-        };
-        process.Start();
-        var output = await process.StandardOutput.ReadToEndAsync();
-        await process.WaitForExitAsync();
+        var (_, output, _, timedOut) = await RunWithTimeoutAsync(
+            "yt-dlp",
+            $"\"{searchArg}\" --force-ipv4 --flat-playlist -j --quiet --no-warnings --playlist-end 20",
+            YtDlpTimeout);
+        if (timedOut)
+            Console.WriteLine($"[yt-dlp Search] ⏱ Timeout buscando '{query}'; proceso detenido.");
 
         var items = new List<object>();
         if (string.IsNullOrWhiteSpace(output)) return items;
@@ -391,11 +449,30 @@ public class MusicExtractionService
     // ─────────────────────────────────────────────────────────────────
     // STREAMS — El más crítico: extractores en PARALELO, gana el primero
     // ─────────────────────────────────────────────────────────────────
-    public async Task<string> GetStreamAsync(string videoId)
+    public Task<string> GetStreamAsync(string videoId) => GetStreamAsync(videoId, allowSubstitute: true);
+
+    /// <param name="allowSubstitute">
+    /// Si es true y el vídeo pedido resulta estar caído en todas partes (borrado,
+    /// privado, bloqueado), se intenta servir la MISMA canción desde otra fuente en
+    /// vez de devolver un error: la app nunca se entera, sigue sonando con
+    /// normalidad. Se pone en false en la llamada recursiva de esa búsqueda para no
+    /// encadenar sustituciones indefinidamente.
+    /// </param>
+    private async Task<string> GetStreamAsync(string videoId, bool allowSubstitute)
     {
         var cacheKey = $"stream_{videoId}";
         if (_cache.TryGetValue(cacheKey, out string? cached) && cached != null)
             return cached;
+
+        // Si este vídeo falló en todos los extractores hace poco (borrado, privado,
+        // bloqueado...), no repetir la cascada completa en cada intento de play:
+        // se responde el fallo al instante y se reintenta solo pasado el enfriamiento.
+        var failKey = $"stream_failed_{videoId}";
+        if (_cache.TryGetValue(failKey, out string? recentFailure) && recentFailure != null)
+        {
+            Console.WriteLine($"[Stream] {videoId} falló recientemente; devolviendo error sin reintentar todavía.");
+            return recentFailure;
+        }
 
         // Lanzar TODOS los extractores en paralelo — el primero que devuelva
         // audioStreams válidos gana. yt-dlp es el más robusto (casi nunca falla),
@@ -404,22 +481,25 @@ public class MusicExtractionService
 
         var tasks = new List<Task<(string json, string source)>>();
 
-        // yt-dlp: el más robusto, casi siempre funciona
-        tasks.Add(Task.Run(async () =>
+        // yt-dlp: el más robusto, casi siempre funciona. Se acota con el cts general
+        // para que, aunque el proceso tarde, esta rama del Task.WhenAny no bloquee
+        // más allá del límite común (el proceso en sí se mata por su cuenta si se
+        // pasa de YtDlpTimeout, ver RunWithTimeoutAsync).
+        tasks.Add(BoundedBySource(Task.Run(async () =>
         {
             var json = await ExtractWithYtDlpAsync(videoId, cacheKey: null);
             return (json, "yt-dlp");
-        }));
+        }), "yt-dlp", cts.Token));
 
         // Piped interno (Docker) — el más rápido cuando funciona
         tasks.Add(TryPipedInstanceAsync(PipedInstances[0], videoId, cts.Token));
 
         // YoutubeExplode — Plan B nativo
-        tasks.Add(Task.Run(async () =>
+        tasks.Add(BoundedBySource(Task.Run(async () =>
         {
             var json = await ExtractWithYoutubeExplodeAsync(videoId, cacheKey: null);
             return (json, "YoutubeExplode");
-        }));
+        }), "YoutubeExplode", cts.Token));
 
         // 1-2 Piped públicos (solo los que resuelven DNS)
         if (PipedInstances.Length > 1)
@@ -458,7 +538,97 @@ public class MusicExtractionService
             }
         }
 
-        return BuildErrorJson("Todos los extractores fallaron.");
+        // Nada pudo extraer audio de este vídeo. Antes de rendirnos, intentar servir
+        // la MISMA canción desde otra fuente para que el reproductor no note nada.
+        if (allowSubstitute)
+        {
+            var substitute = await TryFindSubstituteAsync(videoId);
+            if (substitute != null)
+            {
+                _cache.Set(cacheKey, substitute, TimeSpan.FromMinutes(55));
+                Console.WriteLine($"[Stream] {videoId}: servido con una fuente alternativa de la misma canción.");
+                return substitute;
+            }
+        }
+
+        var failureJson = BuildErrorJson("Todos los extractores fallaron.");
+        _cache.Set(failKey, failureJson, StreamFailureCooldown);
+        Console.WriteLine($"[Stream] {videoId}: todos los extractores fallaron (sin sustituto disponible); en enfriamiento {StreamFailureCooldown.TotalMinutes:F0} min.");
+        return failureJson;
+    }
+
+    // ─────────────────────────────────────────────────────────────────
+    // SUSTITUCIÓN — cuando un vídeo está caído en todas partes, buscar la
+    // misma canción en otra fuente para que la reproducción no se note.
+    // ─────────────────────────────────────────────────────────────────
+    private async Task<string?> TryFindSubstituteAsync(string deadVideoId)
+    {
+        var (title, author) = await GetTitleAuthorForSubstituteAsync(deadVideoId);
+        if (string.IsNullOrWhiteSpace(title))
+        {
+            Console.WriteLine($"[Substitute] Sin metadatos para {deadVideoId}; imposible buscar sustituto.");
+            return null;
+        }
+
+        var query = string.IsNullOrWhiteSpace(author) ? title : $"{author} {title}";
+        var searchJson = await SearchWithInvidiousAsync(query);
+        var candidateId = searchJson != null ? FirstVideoIdFrom(searchJson, excluding: deadVideoId) : null;
+        if (candidateId == null)
+        {
+            Console.WriteLine($"[Substitute] Sin resultados de búsqueda para '{query}' (original: {deadVideoId}).");
+            return null;
+        }
+
+        Console.WriteLine($"[Substitute] {deadVideoId} ('{title}') → probando {candidateId}");
+        var candidateStream = await GetStreamAsync(candidateId, allowSubstitute: false);
+        return HasValidAudioStreams(candidateStream) ? candidateStream : null;
+    }
+
+    /// <summary>Título y autor de un vídeo vía Invidious, aunque su audio ya no se pueda extraer.</summary>
+    private async Task<(string title, string author)> GetTitleAuthorForSubstituteAsync(string videoId)
+    {
+        foreach (var instance in InvidiousInstances.Take(3))
+        {
+            try
+            {
+                var client = _httpClientFactory.CreateClient();
+                client.Timeout = TimeSpan.FromSeconds(5);
+                var url = $"{instance}/api/v1/videos/{videoId}?fields=title,author";
+                var response = await client.GetAsync(url);
+                if (!response.IsSuccessStatusCode) continue;
+
+                var json = await response.Content.ReadAsStringAsync();
+                using var doc = JsonDocument.Parse(json);
+                var title = doc.RootElement.TryGetProperty("title", out var t) ? t.GetString() ?? "" : "";
+                var author = doc.RootElement.TryGetProperty("author", out var a) ? a.GetString() ?? "" : "";
+                if (!string.IsNullOrWhiteSpace(title))
+                    return (title, author);
+            }
+            catch (Exception ex)
+            {
+                Console.WriteLine($"[Substitute] Fallo obteniendo metadatos de {videoId} en {instance}: {ex.Message}");
+            }
+        }
+        return ("", "");
+    }
+
+    /// <summary>Primer videoId de un JSON de búsqueda {"items":[...]}, distinto de <paramref name="excluding"/>.</summary>
+    private static string? FirstVideoIdFrom(string searchJson, string excluding)
+    {
+        try
+        {
+            using var doc = JsonDocument.Parse(searchJson);
+            if (!doc.RootElement.TryGetProperty("items", out var items)) return null;
+            foreach (var item in items.EnumerateArray())
+            {
+                var url = item.TryGetProperty("url", out var u) ? u.GetString() ?? "" : "";
+                var idx = url.IndexOf("?v=", StringComparison.Ordinal);
+                var id = idx >= 0 ? url[(idx + 3)..] : "";
+                if (!string.IsNullOrEmpty(id) && id != excluding) return id;
+            }
+        }
+        catch { /* JSON inesperado: sin candidato */ }
+        return null;
     }
 
     private async Task<(string json, string source)> TryPipedInstanceAsync(
@@ -542,23 +712,14 @@ public class MusicExtractionService
     {
         try
         {
-            var p = new System.Diagnostics.Process
-            {
-                StartInfo = new System.Diagnostics.ProcessStartInfo
-                {
-                    FileName = "yt-dlp",
-                    Arguments = $"--format {formatSelector} --get-url --no-playlist --quiet https://www.youtube.com/watch?v={videoId}",
-                    RedirectStandardOutput = true,
-                    RedirectStandardError = true,
-                    UseShellExecute = false,
-                    CreateNoWindow = true
-                }
-            };
-            p.Start();
-            var output = (await p.StandardOutput.ReadToEndAsync()).Trim();
-            await p.StandardError.ReadToEndAsync();
-            await p.WaitForExitAsync();
-            return p.ExitCode == 0 && !string.IsNullOrWhiteSpace(output) ? output : null;
+            var (exitCode, output, _, timedOut) = await RunWithTimeoutAsync(
+                "yt-dlp",
+                $"--force-ipv4 --format {formatSelector} --get-url --no-playlist --quiet https://www.youtube.com/watch?v={videoId}",
+                YtDlpTimeout);
+            if (timedOut)
+                Console.WriteLine($"[yt-dlp {formatSelector}] ⏱ Timeout para {videoId}; proceso detenido.");
+            var trimmed = output.Trim();
+            return exitCode == 0 && !string.IsNullOrWhiteSpace(trimmed) ? trimmed : null;
         }
         catch (Exception ex)
         {
@@ -580,45 +741,31 @@ public class MusicExtractionService
             // Se lanza antes que nada para que no sume latencia al play.
             var m4aUrlTask = RunYtDlpGetUrlAsync("bestaudio[ext=m4a]", videoId);
 
-            // Obtener URL directa de audio con yt-dlp
-            var urlProcess = new System.Diagnostics.Process
-            {
-                StartInfo = new System.Diagnostics.ProcessStartInfo
-                {
-                    FileName = "yt-dlp",
-                    Arguments = $"--format bestaudio --get-url --no-playlist --quiet https://www.youtube.com/watch?v={videoId}",
-                    RedirectStandardOutput = true,
-                    RedirectStandardError = true,
-                    UseShellExecute = false,
-                    CreateNoWindow = true
-                }
-            };
-            urlProcess.Start();
-            var audioUrl = (await urlProcess.StandardOutput.ReadToEndAsync()).Trim();
-            var errorOut = await urlProcess.StandardError.ReadToEndAsync();
-            await urlProcess.WaitForExitAsync();
+            // Obtener URL directa de audio con yt-dlp (con límite de tiempo real: si
+            // YouTube exige resolver un reto JS y yt-dlp se queda esperando, esto lo
+            // mata en vez de dejar la petición colgada indefinidamente)
+            var (urlExitCode, audioUrlRaw, errorOut, urlTimedOut) = await RunWithTimeoutAsync(
+                "yt-dlp",
+                $"--force-ipv4 --format bestaudio --get-url --no-playlist --quiet https://www.youtube.com/watch?v={videoId}",
+                YtDlpTimeout);
+            var audioUrl = audioUrlRaw.Trim();
 
-            if (urlProcess.ExitCode != 0 || string.IsNullOrEmpty(audioUrl))
+            if (urlTimedOut)
+                Console.WriteLine($"[yt-dlp] ⏱ Timeout obteniendo audio de {videoId}; proceso detenido.");
+            if (urlExitCode != 0 || string.IsNullOrEmpty(audioUrl))
             {
                 Console.WriteLine($"[yt-dlp] ERROR: {errorOut}");
                 return BuildErrorJson($"yt-dlp falló: {errorOut}");
             }
 
             // Obtener título, duración (en segundos) y thumbnail con yt-dlp
-            var metaProcess = new System.Diagnostics.Process
-            {
-                StartInfo = new System.Diagnostics.ProcessStartInfo
-                {
-                    FileName = "yt-dlp",
-                    Arguments = $"--print title --print duration --print thumbnail --no-playlist --quiet https://www.youtube.com/watch?v={videoId}",
-                    RedirectStandardOutput = true,
-                    UseShellExecute = false,
-                    CreateNoWindow = true
-                }
-            };
-            metaProcess.Start();
-            var metaLines = (await metaProcess.StandardOutput.ReadToEndAsync()).Split('\n');
-            await metaProcess.WaitForExitAsync();
+            var (_, metaOutput, _, metaTimedOut) = await RunWithTimeoutAsync(
+                "yt-dlp",
+                $"--force-ipv4 --print title --print duration --print thumbnail --no-playlist --quiet https://www.youtube.com/watch?v={videoId}",
+                YtDlpTimeout);
+            if (metaTimedOut)
+                Console.WriteLine($"[yt-dlp] ⏱ Timeout obteniendo metadatos de {videoId}; se usarán valores por defecto.");
+            var metaLines = metaOutput.Split('\n');
 
             var title = metaLines.Length > 0 ? metaLines[0].Trim() : videoId;
             var durationSecs = metaLines.Length > 1 && double.TryParse(metaLines[1].Trim(),

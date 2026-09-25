@@ -134,7 +134,11 @@ public class HistoryController : ControllerBase
     [HttpDelete("{id}")]
     public async Task<IActionResult> Delete(int id)
     {
-        var history = await _context.History.FindAsync(id);
+        // A diferencia del resto de acciones de este fichero, esta usaba FindAsync(id)
+        // sin comprobar el dueño: cualquier usuario podía borrar una entrada de
+        // historial de otro adivinando el id (autoincremental, fácil de recorrer).
+        var userId = GetUserId();
+        var history = await _context.History.FirstOrDefaultAsync(h => h.Id == id && h.UserId == userId);
         if (history == null) return NotFound();
 
         _context.History.Remove(history);

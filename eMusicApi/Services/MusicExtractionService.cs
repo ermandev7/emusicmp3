@@ -1,11 +1,15 @@
 using System.Net.Http;
 using System.Text.Json;
+using System.Text.Json.Nodes;
 using System.Threading;
 using System.Threading.Tasks;
 using System;
 using System.Collections.Generic;
 using System.Linq;
+using Microsoft.EntityFrameworkCore;
 using Microsoft.Extensions.Caching.Memory;
+using Microsoft.Extensions.DependencyInjection;
+using eMusicApi.Data;
 using YoutubeExplode;
 using YoutubeExplode.Videos.Streams;
 
@@ -21,6 +25,10 @@ public class MusicExtractionService
     private readonly IHttpClientFactory _httpClientFactory;
     private readonly IMemoryCache _cache;
     private readonly YoutubeClient _youtubeClient;
+    // Este servicio es Singleton pero AppDbContext es Scoped: para tocar la base de
+    // datos (actualizar favoritos/listas cuando se sustituye un vídeo) hay que abrir
+    // un scope propio en cada uso, nunca inyectar AppDbContext directamente aquí.
+    private readonly IServiceScopeFactory _scopeFactory;
 
     // Instancias Piped en orden de preferencia.
     // NOTA: dentro de Docker, el backend Piped se llama "piped-backend" en la red interna.
@@ -34,10 +42,11 @@ public class MusicExtractionService
         "https://api.piped.yt"
     };
 
-    public MusicExtractionService(IHttpClientFactory httpClientFactory, IMemoryCache cache)
+    public MusicExtractionService(IHttpClientFactory httpClientFactory, IMemoryCache cache, IServiceScopeFactory scopeFactory)
     {
         _httpClientFactory = httpClientFactory;
         _cache = cache;
+        _scopeFactory = scopeFactory;
 
         // Crear HttpClient con headers de navegador para YoutubeExplode
         var handler = new HttpClientHandler { AllowAutoRedirect = true };
@@ -581,7 +590,71 @@ public class MusicExtractionService
 
         Console.WriteLine($"[Substitute] {deadVideoId} ('{title}') → probando {candidateId}");
         var candidateStream = await GetStreamAsync(candidateId, allowSubstitute: false);
-        return HasValidAudioStreams(candidateStream) ? candidateStream : null;
+        if (!HasValidAudioStreams(candidateStream)) return null;
+
+        // El sustituto funciona: actualizar el id guardado en favoritos/listas para
+        // que apunten directo a él. Así no se pierde el "me gusta" ni la posición
+        // en la lista (se cambia el id en el sitio, todo lo demás queda igual), y
+        // las próximas reproducciones no tienen que volver a buscar sustituto.
+        await RepointSavedReferencesAsync(deadVideoId, candidateId);
+
+        return candidateStream;
+    }
+
+    /// <summary>
+    /// Cuando un vídeo muerto se sustituye por otro que sí funciona, cambia el
+    /// videoId guardado en Favoritos y en las canciones de las Listas para que
+    /// apunten directo al sustituto. No se borra ni se vuelve a crear nada: se
+    /// actualiza el id en el sitio, así que el "me gusta", la fecha, la miniatura
+    /// y la posición en cada lista se conservan tal cual.
+    /// </summary>
+    private async Task RepointSavedReferencesAsync(string oldVideoId, string newVideoId)
+    {
+        try
+        {
+            using var scope = _scopeFactory.CreateScope();
+            var db = scope.ServiceProvider.GetRequiredService<AppDbContext>();
+
+            var oldFavorite = await db.Favorites.FirstOrDefaultAsync(f => f.Id == oldVideoId);
+            if (oldFavorite != null)
+            {
+                // Id es la clave primaria: si el sustituto ya estaba guardado como
+                // favorito por su cuenta, no se puede duplicar la clave, así que se
+                // quita la referencia vieja en vez de actualizarla.
+                if (await db.Favorites.AnyAsync(f => f.Id == newVideoId))
+                    db.Favorites.Remove(oldFavorite);
+                else
+                    await db.Database.ExecuteSqlInterpolatedAsync(
+                        $"UPDATE Favorites SET Id = {newVideoId} WHERE Id = {oldVideoId}");
+            }
+
+            var playlists = await db.Playlists.Where(p => p.SongsJson.Contains(oldVideoId)).ToListAsync();
+            foreach (var playlist in playlists)
+            {
+                var array = JsonNode.Parse(playlist.SongsJson ?? "[]")?.AsArray();
+                if (array == null) continue;
+                foreach (var song in array)
+                {
+                    if (song?["videoId"]?.GetValue<string>() == oldVideoId)
+                        song["videoId"] = newVideoId;
+                }
+                playlist.SongsJson = array.ToJsonString();
+            }
+
+            if (oldFavorite != null || playlists.Count > 0)
+            {
+                await db.SaveChangesAsync();
+                Console.WriteLine(
+                    $"[Substitute] Referencias actualizadas {oldVideoId} → {newVideoId}: " +
+                    $"{(oldFavorite != null ? "favorito, " : "")}{playlists.Count} lista(s).");
+            }
+        }
+        catch (Exception ex)
+        {
+            // No debe tumbar la reproducción: el sustituto ya se está sirviendo,
+            // esto es solo "curar" la referencia guardada para la próxima vez.
+            Console.WriteLine($"[Substitute] No se pudieron actualizar referencias guardadas: {ex.Message}");
+        }
     }
 
     /// <summary>Título y autor de un vídeo vía Invidious, aunque su audio ya no se pueda extraer.</summary>

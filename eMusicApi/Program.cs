@@ -1,3 +1,4 @@
+using System.Linq;
 using eMusicApi.Data;
 using eMusicApi.Services;
 using Microsoft.EntityFrameworkCore;
@@ -51,6 +52,45 @@ using (var scope = app.Services.CreateScope())
     {
         try { db.Database.ExecuteSqlRaw(sql); }
         catch { /* columna ya existe */ }
+    }
+
+    // Favorites usaba Id (=videoId) como clave primaria GLOBAL: si dos usuarios daban
+    // "me gusta" a la misma canción, el segundo chocaba con un error 500. Se recrea la
+    // tabla con clave compuesta (Id, UserId) para que cada usuario tenga sus propios
+    // favoritos independientes. Se detecta si ya está migrada (columna UserId ya
+    // forma parte de la clave primaria) para no rehacerlo en cada arranque, y todo
+    // el paso se hace en una única transacción: si algo falla a mitad, no queda a
+    // medias.
+    try
+    {
+        var userIdIsPartOfKey = db.Database
+            .SqlQueryRaw<long>("SELECT COUNT(*) AS Value FROM pragma_table_info('Favorites') WHERE name = 'UserId' AND pk > 0")
+            .AsEnumerable().FirstOrDefault() > 0;
+
+        if (!userIdIsPartOfKey)
+        {
+            using var tx = db.Database.BeginTransaction();
+            db.Database.ExecuteSqlRaw("ALTER TABLE Favorites RENAME TO Favorites_old_singlekey");
+            db.Database.ExecuteSqlRaw(@"CREATE TABLE Favorites (
+                Id TEXT NOT NULL,
+                Title TEXT NOT NULL,
+                Artist TEXT NOT NULL,
+                ThumbnailUrl TEXT NOT NULL,
+                Duration INTEGER NOT NULL,
+                UserId TEXT NOT NULL DEFAULT '',
+                CONSTRAINT PK_Favorites PRIMARY KEY (Id, UserId)
+            )");
+            db.Database.ExecuteSqlRaw(
+                "INSERT INTO Favorites (Id, Title, Artist, ThumbnailUrl, Duration, UserId) " +
+                "SELECT Id, Title, Artist, ThumbnailUrl, Duration, UserId FROM Favorites_old_singlekey");
+            db.Database.ExecuteSqlRaw("DROP TABLE Favorites_old_singlekey");
+            tx.Commit();
+            Console.WriteLine("[Migración] Favoritos: clave primaria cambiada a (Id, UserId).");
+        }
+    }
+    catch (Exception ex)
+    {
+        Console.WriteLine($"[Migración] No se pudo migrar Favoritos a clave compuesta: {ex.Message}");
     }
 
     // Tabla de exclusiones ("no recomendar") — creada aquí porque EnsureCreated

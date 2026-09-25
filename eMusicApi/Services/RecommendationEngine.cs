@@ -72,27 +72,31 @@ public class RecommendationEngine
         ["r&b"]        = new[] { "r&b", "rnb", "soul" },
     };
 
+    // Plantillas de búsqueda por género. "{year}" se sustituye por el año actual al
+    // vuelo (ver GenerateSearchQueries): antes llevaban "2024" fijo en el texto, así
+    // que dos años después seguían sesgando la búsqueda hacia música vieja en vez de
+    // lo más reciente, y el problema solo iba a más con cada año que pasara.
     private static readonly Dictionary<string, string[]> GenreSearchQueries = new()
     {
         ["salsa"]      = new[] { "salsa éxitos", "salsa romántica mix", "salsa clásica", "lo mejor de la salsa" },
         ["bachata"]    = new[] { "bachata éxitos", "bachata romántica", "bachata sensual mix" },
-        ["reggaeton"]  = new[] { "reggaeton éxitos 2024", "reggaeton mix", "perreo mix" },
+        ["reggaeton"]  = new[] { "reggaeton éxitos {year}", "reggaeton mix", "perreo mix" },
         ["cumbia"]     = new[] { "cumbia éxitos", "cumbia mix bailable", "cumbia clásica" },
         ["merengue"]   = new[] { "merengue éxitos", "merengue mix bailable" },
         ["vallenato"]  = new[] { "vallenato éxitos", "vallenato romántico mix" },
         ["rock"]       = new[] { "rock en español éxitos", "rock clásico mix", "rock latino" },
-        ["pop"]        = new[] { "pop éxitos 2024", "pop latino mix", "pop en español" },
+        ["pop"]        = new[] { "pop éxitos {year}", "pop latino mix", "pop en español" },
         ["rap"]        = new[] { "rap éxitos", "hip hop mix", "rap en español mix" },
-        ["trap"]       = new[] { "trap latino mix", "trap éxitos 2024" },
+        ["trap"]       = new[] { "trap latino mix", "trap éxitos {year}" },
         ["balada"]     = new[] { "baladas románticas mix", "baladas en español" },
         ["ranchera"]   = new[] { "rancheras éxitos", "música mexicana mix", "mariachi éxitos" },
-        ["corrido"]    = new[] { "corridos tumbados mix", "corridos éxitos 2024" },
-        ["electronic"] = new[] { "electronic dance mix", "EDM mix 2024" },
+        ["corrido"]    = new[] { "corridos tumbados mix", "corridos éxitos {year}" },
+        ["electronic"] = new[] { "electronic dance mix", "EDM mix {year}" },
         ["jazz"]       = new[] { "jazz clásico", "smooth jazz mix" },
         ["blues"]      = new[] { "blues éxitos", "blues clásico mix" },
         ["reggae"]     = new[] { "reggae éxitos", "reggae mix" },
         ["clasica"]    = new[] { "música clásica famosa", "piano clásico" },
-        ["kpop"]       = new[] { "kpop éxitos 2024", "kpop mix" },
+        ["kpop"]       = new[] { "kpop éxitos {year}", "kpop mix" },
         ["r&b"]        = new[] { "r&b éxitos", "soul music mix" },
     };
 
@@ -356,7 +360,7 @@ public class RecommendationEngine
         foreach (var genre in profile.TopGenres.Take(2))
         {
             if (GenreSearchQueries.TryGetValue(genre.Key, out var gq))
-                queries.Add(gq.OrderBy(_ => rng.Next()).First());
+                queries.Add(gq.OrderBy(_ => rng.Next()).First().Replace("{year}", DateTime.UtcNow.Year.ToString()));
         }
 
         if (profile.TopArtists.Count > 0)

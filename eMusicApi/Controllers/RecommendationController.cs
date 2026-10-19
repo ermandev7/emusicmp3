@@ -69,7 +69,7 @@ public class RecommendationController : ControllerBase
             .Select(e => RecommendationEngine.NormalizeArtist(e.Artist))
             .Where(a => !string.IsNullOrEmpty(a)).ToHashSet();
 
-        var profile = _engine.BuildProfile(history, favorites);
+        var profile = _engine.BuildProfile(history, favorites, excludedArtists);
         var queries = _engine.GenerateSearchQueries(profile);
 
         // Concurrencia limitada para no saturar la Pi.
@@ -100,9 +100,19 @@ public class RecommendationController : ControllerBase
 
         var allResults = await Task.WhenAll(searchTasks.Concat(relatedTasks));
 
-        var candidates = ParseCandidates(allResults, profile.PlayedVideoIds)
+        // Canciones ya escuchadas o favoritas por título (otra subida u otra versión
+        // de la misma canción no cuenta como recomendación nueva). Incluye las de
+        // artistas excluidos: tampoco se quieren.
+        var playedKeys = history.Select(h => RecommendationEngine.SongKey(h.Title, h.Artist))
+            .Concat(favorites.Select(f => RecommendationEngine.SongKey(f.Title, f.Artist)))
+            .Where(k => k != null).ToHashSet();
+        var playedIds = history.Select(h => h.VideoId).Concat(favorites.Select(f => f.Id))
+            .Where(v => !string.IsNullOrEmpty(v)).ToHashSet();
+
+        var candidates = ParseCandidates(allResults, playedIds)
             .Where(c => !excludedIds.Contains(c.VideoId) &&
-                        !excludedArtists.Contains(RecommendationEngine.NormalizeArtist(c.Artist)))
+                        !excludedArtists.Contains(RecommendationEngine.NormalizeArtist(c.Artist)) &&
+                        !playedKeys.Contains(RecommendationEngine.SongKey(c.Title, c.Artist)))
             .ToList();
 
         var scored = candidates
@@ -168,7 +178,14 @@ public class RecommendationController : ControllerBase
         if (history.Count == 0 && favorites.Count == 0)
             return Ok(new { message = "Sin historial ni favoritos" });
 
-        var profile = _engine.BuildProfile(history, favorites);
+        var excludedArtists = (await _db.Exclusions
+                .Where(e => e.UserId == userId)
+                .AsNoTracking()
+                .ToListAsync())
+            .Select(e => RecommendationEngine.NormalizeArtist(e.Artist))
+            .Where(a => !string.IsNullOrEmpty(a)).ToHashSet();
+
+        var profile = _engine.BuildProfile(history, favorites, excludedArtists);
 
         return Ok(new
         {

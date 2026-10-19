@@ -8,6 +8,7 @@ import android.os.SystemClock
 import android.util.Log
 import androidx.media3.common.AudioAttributes
 import androidx.media3.common.C
+import androidx.media3.common.ForwardingPlayer
 import androidx.media3.common.MediaItem
 import androidx.media3.common.MediaMetadata
 import androidx.media3.common.PlaybackException
@@ -105,6 +106,14 @@ class MusicService : MediaLibraryService() {
     private var autoSkipping = false
 
     /**
+     * Momento (elapsedRealtime) en que el usuario pulsó siguiente sin más canciones en
+     * cola; 0 = nada pendiente. Se salta con la primera ampliación de la radio que
+     * llegue antes de [SKIP_AFTER_EXTEND_TIMEOUT_MS] (puede ser una que ya estaba en
+     * marcha, así que una petición que vuelva vacía no lo anula).
+     */
+    private var skipRequestedAt = 0L
+
+    /**
      * Quien pulsa siguiente varias veces seguidas buscando una canción no está
      * diciendo "no me gusta" de cada una (ver [SkipFilter]). El skip se confirma
      * cuando la canción siguiente lleva [SKIP_CONFIRM_PLAY_MS] sonando.
@@ -154,6 +163,9 @@ class MusicService : MediaLibraryService() {
 
         /** Pasar a la siguiente antes de este tiempo cuenta como skip ("no me gusta"). */
         private const val SKIP_THRESHOLD_MS = 30_000L
+
+        /** "Siguiente" con la cola agotada: si la radio tarda más que esto, no se salta. */
+        private const val SKIP_AFTER_EXTEND_TIMEOUT_MS = 20_000L
 
         /** Un skip se confirma cuando la canción siguiente lleva este tiempo sonando. */
         private const val SKIP_CONFIRM_PLAY_MS = 8_000L
@@ -326,7 +338,7 @@ class MusicService : MediaLibraryService() {
             PendingIntent.FLAG_IMMUTABLE or PendingIntent.FLAG_UPDATE_CURRENT
         )
 
-        mediaSession = MediaLibrarySession.Builder(this, player, LibrarySessionCallback())
+        mediaSession = MediaLibrarySession.Builder(this, AlwaysSkippablePlayer(player), LibrarySessionCallback())
             .setSessionActivity(activityIntent)
             .build()
 
@@ -485,11 +497,78 @@ class MusicService : MediaLibraryService() {
                     return@launch
                 }
                 val items = batch.map { it.toMediaItem(placeholderUri(it.videoId)) }
-                withContext(Dispatchers.Main) { player.addMediaItems(items) }
+                withContext(Dispatchers.Main) {
+                    player.addMediaItems(items)
+                    // Siguiente pulsado con la cola agotada: ahora sí hay a dónde ir.
+                    val requestedAt = skipRequestedAt
+                    if (requestedAt != 0L) {
+                        skipRequestedAt = 0L
+                        val fresh = SystemClock.elapsedRealtime() - requestedAt < SKIP_AFTER_EXTEND_TIMEOUT_MS
+                        if (fresh && player.hasNextMediaItem()) player.seekToNext()
+                    }
+                }
                 Log.d(TAG, "Radio: agregadas ${items.size} (artista='$seedArtist')")
             } catch (e: Exception) {
                 Log.e(TAG, "Radio: fallo extendiendo cola", e)
             }
+        }
+    }
+
+    /**
+     * Siguiente con la cola agotada (al arrancar por voz antes de que la radio
+     * añada canciones, o al final de una lista): se pide más música al modo radio,
+     * del mismo artista primero y si no recomendadas, y se salta cuando llegue.
+     */
+    private fun skipPastEndOfQueue() {
+        skipRequestedAt = SystemClock.elapsedRealtime()
+        if (!radio.isActive) radio.start()
+        maybeExtendRadio()
+    }
+
+    /**
+     * El player que ve la sesión (Android Auto, notificación, app). Anuncia siempre
+     * "siguiente": sin canción siguiente en cola, Android Auto quitaba ⏮ ⏭ y ponía
+     * ⏪10 ⏩10, y no había forma de pasar de canción hasta que la radio añadía más.
+     */
+    private inner class AlwaysSkippablePlayer(player: Player) : ForwardingPlayer(player) {
+        override fun getAvailableCommands(): Player.Commands = withNext(super.getAvailableCommands())
+
+        private fun withNext(commands: Player.Commands): Player.Commands =
+            commands.buildUpon()
+                .add(Player.COMMAND_SEEK_TO_NEXT)
+                .add(Player.COMMAND_SEEK_TO_NEXT_MEDIA_ITEM)
+                .build()
+
+        // ForwardingPlayer reenvía onAvailableCommandsChanged con los comandos del
+        // player de verdad, no con los de getAvailableCommands(): la sesión (y Android
+        // Auto) volvía a ver la cola sin "siguiente" en cuanto cambiaba algo. Se
+        // envuelven los listeners para corregir también ese aviso.
+        private val wrappedListeners = HashMap<Player.Listener, Player.Listener>()
+
+        override fun addListener(listener: Player.Listener) {
+            val wrapped = object : Player.Listener by listener {
+                override fun onAvailableCommandsChanged(availableCommands: Player.Commands) =
+                    listener.onAvailableCommandsChanged(withNext(availableCommands))
+            }
+            wrappedListeners[listener] = wrapped
+            super.addListener(wrapped)
+        }
+
+        override fun removeListener(listener: Player.Listener) {
+            super.removeListener(wrappedListeners.remove(listener) ?: listener)
+        }
+
+        override fun isCommandAvailable(command: Int): Boolean =
+            command == Player.COMMAND_SEEK_TO_NEXT ||
+                command == Player.COMMAND_SEEK_TO_NEXT_MEDIA_ITEM ||
+                super.isCommandAvailable(command)
+
+        override fun seekToNext() {
+            if (hasNextMediaItem()) super.seekToNext() else skipPastEndOfQueue()
+        }
+
+        override fun seekToNextMediaItem() {
+            if (hasNextMediaItem()) super.seekToNextMediaItem() else skipPastEndOfQueue()
         }
     }
 

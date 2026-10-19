@@ -15,6 +15,9 @@ public class AppDbContext : DbContext
     protected override void OnModelCreating(ModelBuilder modelBuilder)
     {
         modelBuilder.Entity<History>().HasIndex(h => h.UserId);
+        // Clave compuesta: cada usuario puede tener en favoritos la misma canción
+        // que otro sin chocar (antes Id -que es el videoId- era la clave global sola).
+        modelBuilder.Entity<Favorite>().HasKey(f => new { f.Id, f.UserId });
         modelBuilder.Entity<Favorite>().HasIndex(f => f.UserId);
         modelBuilder.Entity<Playlist>().HasIndex(p => p.UserId);
         modelBuilder.Entity<Exclusion>().HasIndex(e => e.UserId);

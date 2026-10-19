@@ -14,6 +14,18 @@ public class UserProfile
     public HashSet<string> PlayedVideoIds { get; init; } = new();
     /// <summary>Artistas marcados como favoritos (señal explícita).</summary>
     public HashSet<string> FavoriteArtists { get; init; } = new();
+
+    /// <summary>
+    /// Peso del token más fuerte del perfil. Se usa para normalizar la afinidad de
+    /// contenido a un rango 0..1 estable, sin importar cuánto historial tenga el usuario.
+    /// </summary>
+    public double MaxTokenWeight { get; init; } = 1.0;
+
+    /// <summary>
+    /// Artistas que el usuario saltea sistemáticamente, con su proporción de skips
+    /// (0..1). Señal negativa: no alcanza con no premiarlos, hay que penalizarlos.
+    /// </summary>
+    public Dictionary<string, double> SkippedArtists { get; init; } = new();
 }
 
 public class RecommendationEngine
@@ -28,7 +40,12 @@ public class RecommendationEngine
         "letra", "letras", "en", "vivo", "de", "la", "el", "los", "las",
         "del", "con", "para", "por", "una", "un", "que", "mi", "tu", "su",
         "y", "o", "a", "al", "se", "no", "me", "te", "lo", "le", "nos",
-        "tema", "cancion", "musica", "exitos", "mix", "vol"
+        "tema", "cancion", "musica", "exitos", "mix", "vol",
+        // Palabras funcion que se colaban con peso alto en perfiles reales
+        // (medido: "es" 69, "pa" 68, "yo" 66) y ensuciaban la afinidad.
+        "es", "yo", "pa", "si", "ya", "muy", "mas", "más", "sin", "como",
+        "cuando", "donde", "pero", "porque", "sobre", "entre", "hasta",
+        "desde", "bb", "ah", "oh", "uh", "eh"
     };
 
     private static readonly Dictionary<string, string[]> GenrePatterns = new()
@@ -55,27 +72,31 @@ public class RecommendationEngine
         ["r&b"]        = new[] { "r&b", "rnb", "soul" },
     };
 
+    // Plantillas de búsqueda por género. "{year}" se sustituye por el año actual al
+    // vuelo (ver GenerateSearchQueries): antes llevaban "2024" fijo en el texto, así
+    // que dos años después seguían sesgando la búsqueda hacia música vieja en vez de
+    // lo más reciente, y el problema solo iba a más con cada año que pasara.
     private static readonly Dictionary<string, string[]> GenreSearchQueries = new()
     {
         ["salsa"]      = new[] { "salsa éxitos", "salsa romántica mix", "salsa clásica", "lo mejor de la salsa" },
         ["bachata"]    = new[] { "bachata éxitos", "bachata romántica", "bachata sensual mix" },
-        ["reggaeton"]  = new[] { "reggaeton éxitos 2024", "reggaeton mix", "perreo mix" },
+        ["reggaeton"]  = new[] { "reggaeton éxitos {year}", "reggaeton mix", "perreo mix" },
         ["cumbia"]     = new[] { "cumbia éxitos", "cumbia mix bailable", "cumbia clásica" },
         ["merengue"]   = new[] { "merengue éxitos", "merengue mix bailable" },
         ["vallenato"]  = new[] { "vallenato éxitos", "vallenato romántico mix" },
         ["rock"]       = new[] { "rock en español éxitos", "rock clásico mix", "rock latino" },
-        ["pop"]        = new[] { "pop éxitos 2024", "pop latino mix", "pop en español" },
+        ["pop"]        = new[] { "pop éxitos {year}", "pop latino mix", "pop en español" },
         ["rap"]        = new[] { "rap éxitos", "hip hop mix", "rap en español mix" },
-        ["trap"]       = new[] { "trap latino mix", "trap éxitos 2024" },
+        ["trap"]       = new[] { "trap latino mix", "trap éxitos {year}" },
         ["balada"]     = new[] { "baladas románticas mix", "baladas en español" },
         ["ranchera"]   = new[] { "rancheras éxitos", "música mexicana mix", "mariachi éxitos" },
-        ["corrido"]    = new[] { "corridos tumbados mix", "corridos éxitos 2024" },
-        ["electronic"] = new[] { "electronic dance mix", "EDM mix 2024" },
+        ["corrido"]    = new[] { "corridos tumbados mix", "corridos éxitos {year}" },
+        ["electronic"] = new[] { "electronic dance mix", "EDM mix {year}" },
         ["jazz"]       = new[] { "jazz clásico", "smooth jazz mix" },
         ["blues"]      = new[] { "blues éxitos", "blues clásico mix" },
         ["reggae"]     = new[] { "reggae éxitos", "reggae mix" },
         ["clasica"]    = new[] { "música clásica famosa", "piano clásico" },
-        ["kpop"]       = new[] { "kpop éxitos 2024", "kpop mix" },
+        ["kpop"]       = new[] { "kpop éxitos {year}", "kpop mix" },
         ["r&b"]        = new[] { "r&b éxitos", "soul music mix" },
     };
 
@@ -122,6 +143,14 @@ public class RecommendationEngine
     // equivale a una canción bastante escuchada.
     private const double FavoriteWeight = 8.0;
 
+    // Antes una canción escuchada UNA VEZ quedaba excluida de "siguiente canción"
+    // para siempre. Si un artista favorito solo tiene pocas canciones encontrables
+    // y ya sonaron todas, el radio se quedaba sin nada de ese artista para siempre,
+    // aunque sea justo lo que más le gusta al usuario. Pasada esta ventana, la
+    // canción vuelve a ser candidata — sigue evitando repetir lo que sonó hace
+    // poco, pero ya no la destierra de por vida.
+    private const double RecentExclusionWindowDays = 21.0;
+
     public UserProfile BuildProfile(List<History> history, List<Favorite>? favorites = null)
     {
         favorites ??= new List<Favorite>();
@@ -134,14 +163,21 @@ public class RecommendationEngine
         var genreWeights = new Dictionary<string, double>();
         var playedIds = new HashSet<string>();
         var favoriteArtists = new HashSet<string>();
+        // Reproducciones y skips por artista, para la señal negativa.
+        var artistPlays = new Dictionary<string, int>();
+        var artistSkips = new Dictionary<string, int>();
         var now = DateTime.UtcNow;
 
         // Acumula una "canción" (del historial o favorita) en los vectores del perfil.
-        void Accumulate(string videoId, string title, string artist, double weight)
+        // Ya NO decide aquí qué se excluye de "siguiente canción": eso se hace más
+        // abajo, con ventana de tiempo para el historial y nunca para favoritos
+        // (ver comentarios en los bucles).
+        void Accumulate(string title, string artist, double weight)
         {
-            if (!string.IsNullOrEmpty(videoId)) playedIds.Add(videoId);
-
-            var tokens = Tokenize(title);
+            // Se tokeniza título Y artista. Antes solo el título, y tras quitar stopwords
+            // los títulos quedan casi en ruido ("una", "mas"); el nombre del artista es
+            // con diferencia la palabra más informativa de una canción.
+            var tokens = Tokenize($"{title} {artist}");
             foreach (var token in tokens)
             {
                 tokenFreq.TryGetValue(token, out double cur);
@@ -172,16 +208,35 @@ public class RecommendationEngine
         {
             double daysSince = Math.Max(0, (now - entry.PlayedAt).TotalDays);
             double recency = Math.Exp(-0.05 * daysSince);
-            double skipPenalty = entry.SkippedEarly ? 0.3 : 1.0;
+            // Un tema salteado apenas aporta al perfil (antes 0.3, que todavía era
+            // un voto a favor bastante fuerte de algo que al usuario no le gustó).
+            double skipPenalty = entry.SkippedEarly ? 0.1 : 1.0;
             double downloadBonus = entry.IsDownloaded ? 1.5 : 1.0;
             double weight = entry.PlayCount * recency * skipPenalty * downloadBonus;
-            Accumulate(entry.VideoId, entry.Title, entry.Artist, weight);
+            Accumulate(entry.Title, entry.Artist, weight);
+
+            // Excluir de "siguiente canción" solo lo escuchado dentro de la ventana
+            // reciente (evita repetir lo de hace un rato); pasada la ventana vuelve
+            // a ser candidata.
+            if (!string.IsNullOrEmpty(entry.VideoId) && daysSince <= RecentExclusionWindowDays)
+                playedIds.Add(entry.VideoId);
+
+            var artistKey = NormalizeArtist(entry.Artist);
+            if (artistKey.Length > 0)
+            {
+                artistPlays[artistKey] = artistPlays.GetValueOrDefault(artistKey) + 1;
+                if (entry.SkippedEarly)
+                    artistSkips[artistKey] = artistSkips.GetValueOrDefault(artistKey) + 1;
+            }
         }
 
         // Favoritos: peso fuerte y constante. También registramos sus artistas.
+        // A propósito NO se añaden a playedIds: es una señal positiva explícita, no
+        // algo que el usuario quiera dejar de escuchar — el radio puede sugerir de
+        // vez en cuando una canción que ya es favorita.
         foreach (var fav in favorites)
         {
-            Accumulate(fav.Id, fav.Title, fav.Artist, FavoriteWeight);
+            Accumulate(fav.Title, fav.Artist, FavoriteWeight);
             var na = NormalizeArtist(fav.Artist);
             if (na.Length > 0) favoriteArtists.Add(na);
         }
@@ -195,71 +250,119 @@ public class RecommendationEngine
             profileVector[token] = tf * idf;
         }
 
+        // Artistas con al menos 3 reproducciones y más de la mitad salteadas.
+        // El umbral evita castigar a un artista por un único skip casual.
+        var skippedArtists = new Dictionary<string, double>();
+        foreach (var (artist, plays) in artistPlays)
+        {
+            if (plays < 3) continue;
+            double ratio = artistSkips.GetValueOrDefault(artist) / (double)plays;
+            if (ratio > 0.5) skippedArtists[artist] = ratio;
+        }
+
         return new UserProfile
         {
             TokenVector = profileVector,
             TopArtists = artistWeights.OrderByDescending(kv => kv.Value).Take(5).ToList(),
             TopGenres = genreWeights.OrderByDescending(kv => kv.Value).Take(3).ToList(),
             PlayedVideoIds = playedIds,
-            FavoriteArtists = favoriteArtists
+            FavoriteArtists = favoriteArtists,
+            MaxTokenWeight = profileVector.Count > 0 ? profileVector.Values.Max() : 1.0,
+            SkippedArtists = skippedArtists
         };
     }
 
     // ──────────────── Scoring de candidatos ────────────────
     //
-    //  Score = CosineSim(Profile, Candidate) + ArtistBonus + GenreBonus
+    //  Score = Contenido + ArtistBonus + GenreBonus + FavoriteBonus − SkipPenalty
     //
-    //  CosineSim = (P · C) / (|P| × |C|)
-    //  ArtistBonus ∈ [0, 0.3]  proporcional al peso del artista en el perfil
-    //  GenreBonus  = 0.2 si el género coincide con los top del usuario
+    //  Contenido    ∈ [0, 0.35]  afinidad media de las palabras del tema con el perfil
+    //  ArtistBonus  ∈ [0, 0.30]  proporcional al peso del artista en el perfil
+    //  FavoriteBonus  = 0.25     si el artista está entre los favoritos
+    //  GenreBonus     = 0.20     si el género coincide con los top del usuario
+    //  SkipPenalty  ∈ [0, 0.40]  si el usuario saltea sistemáticamente a ese artista
+    //
+    //  POR QUÉ NO HAY COSENO: la versión anterior dividía por la norma del vector de
+    //  perfil COMPLETO, que crece con cada canción escuchada. Medido con perfiles
+    //  simulados, el coseno daba una mediana de ~0.05 y su techo caía de 0.54 (20 temas
+    //  de historial) a 0.21 (200 temas), mientras los bonus fijos suman hasta 0.75. O sea
+    //  que el término "inteligente" quedaba anulado por los bonus, y encima empeoraba
+    //  cuanto más usaba la app el usuario. Comparar un título de 3 palabras contra un
+    //  perfil de 300 tokens con coseno siempre da valores diminutos: es inherente a la
+    //  métrica cuando los vectores tienen tamaños tan distintos.
+    //
+    //  En su lugar se usa afinidad media por token, normalizada por el token más fuerte
+    //  del perfil: da un valor estable en 0..1 sin importar el tamaño del historial.
+    //  Se divide por sqrt(n) y no por n para premiar que coincidan VARIAS palabras sin
+    //  que los títulos largos se diluyan.
+
+    private const double ContentWeight = 0.35;
+    private const double ArtistBonusMax = 0.30;
+    private const double FavoriteBonusValue = 0.25;
+    private const double GenreBonusValue = 0.20;
+    private const double SkipPenaltyMax = 0.40;
 
     public double ScoreCandidate(UserProfile profile, string title, string artist)
     {
+        // SOLO el titulo, no el artista. El perfil SI se construye con titulo+artista
+        // (enriquece el vector), pero puntuar el candidato con el nombre del artista
+        // lo contaba dos veces: una en ArtistBonus y otra en el contenido.
+        //
+        // Medido en un perfil real: "Don Omar - Dile" sacaba contenido 0.350 (el tope)
+        // solo porque "don" y "omar" son tokens de peso ~95 en el perfil, mientras que
+        // "La T y La M" sacaba 0.096 porque su nombre no deja ningun token ("la" es
+        // stopword, "t" y "m" tienen una letra). Resultado: el artista #1 del usuario
+        // quedaba por debajo del #2 y el #3, teniendo 2.4x mas peso de escucha.
         var tokens = Tokenize(title);
         if (tokens.Length == 0) return 0;
 
-        double dotProduct = 0;
-        double candidateMagSq = 0;
-
+        double affinitySum = 0;
+        double maxW = profile.MaxTokenWeight > 0 ? profile.MaxTokenWeight : 1.0;
         foreach (var token in tokens)
         {
-            double cw = 1.0;
             if (profile.TokenVector.TryGetValue(token, out double pw))
-                dotProduct += pw * cw;
-            candidateMagSq += cw * cw;
+                affinitySum += pw / maxW;   // 0..1 por token
         }
-
-        double profileMagSq = 0;
-        foreach (var v in profile.TokenVector.Values)
-            profileMagSq += v * v;
-
-        double cosineSim = 0;
-        if (profileMagSq > 0 && candidateMagSq > 0)
-            cosineSim = dotProduct / (Math.Sqrt(profileMagSq) * Math.Sqrt(candidateMagSq));
+        double contentScore = Math.Min(1.0, affinitySum / Math.Sqrt(tokens.Length)) * ContentWeight;
 
         double artistBonus = 0;
         var normArtist = NormalizeArtist(artist);
         if (normArtist.Length > 0 && profile.TopArtists.Count > 0)
         {
-            double maxW = profile.TopArtists[0].Value;
+            double topArtistW = profile.TopArtists[0].Value;
             var match = profile.TopArtists.FirstOrDefault(a =>
                 a.Key == normArtist || a.Key.Contains(normArtist) || normArtist.Contains(a.Key));
-            if (match.Key != null && maxW > 0)
-                artistBonus = 0.3 * (match.Value / maxW);
+            if (match.Key != null && topArtistW > 0)
+                artistBonus = ArtistBonusMax * (match.Value / topArtistW);
         }
 
+        // El bonus de genero se escala por el peso RELATIVO de ese genero en el perfil,
+        // igual que el de artista. Antes era binario: un genero residual (medido: una
+        // "ranchera" con peso 0.04 frente a 26.56 de "balada") recibia el bonus completo.
         double genreBonus = 0;
         var genre = DetectGenre(title, artist);
-        if (genre != null && profile.TopGenres.Any(g => g.Key == genre))
-            genreBonus = 0.2;
+        if (genre != null && profile.TopGenres.Count > 0)
+        {
+            double topGenreW = profile.TopGenres[0].Value;
+            var gMatch = profile.TopGenres.FirstOrDefault(g => g.Key == genre);
+            if (gMatch.Key != null && topGenreW > 0)
+                genreBonus = GenreBonusValue * (gMatch.Value / topGenreW);
+        }
 
         // Refuerzo explícito si el artista es uno de los favoritos del usuario.
         double favoriteBonus = 0;
         if (normArtist.Length > 0 && profile.FavoriteArtists.Count > 0 &&
             profile.FavoriteArtists.Any(fa => fa == normArtist || fa.Contains(normArtist) || normArtist.Contains(fa)))
-            favoriteBonus = 0.25;
+            favoriteBonus = FavoriteBonusValue;
 
-        return cosineSim + artistBonus + genreBonus + favoriteBonus;
+        // Señal negativa: si el usuario saltea a este artista la mayoría de las veces,
+        // dejar de recomendarlo. Antes un artista muy salteado seguía sumando por
+        // ArtistBonus y podía colarse igual.
+        double skipPenalty = 0;
+        if (normArtist.Length > 0 && profile.SkippedArtists.TryGetValue(normArtist, out double skipRatio))
+            skipPenalty = SkipPenaltyMax * skipRatio;
+
+        return Math.Max(0, contentScore + artistBonus + genreBonus + favoriteBonus - skipPenalty);
     }
 
     // ──────────────── Generación de queries ────────────────
@@ -275,7 +378,7 @@ public class RecommendationEngine
         foreach (var genre in profile.TopGenres.Take(2))
         {
             if (GenreSearchQueries.TryGetValue(genre.Key, out var gq))
-                queries.Add(gq.OrderBy(_ => rng.Next()).First());
+                queries.Add(gq.OrderBy(_ => rng.Next()).First().Replace("{year}", DateTime.UtcNow.Year.ToString()));
         }
 
         if (profile.TopArtists.Count > 0)

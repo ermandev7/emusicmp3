@@ -38,4 +38,10 @@ ENV ASPNETCORE_ENVIRONMENT=Production
 # URL del Piped backend INTERNO en Docker (red piped-docker_default)
 ENV PIPED_API_URL=http://nginx:80
 
+# Si el proceso sigue vivo pero deja de responder bien (colgado, no caído),
+# Docker lo marca "unhealthy" y lo reinicia solo -> restart:unless-stopped ya
+# cubre caídas/reinicios del Pi, esto cubre el caso "vivo pero sin responder".
+HEALTHCHECK --interval=30s --timeout=5s --start-period=15s --retries=3 \
+    CMD curl -f http://localhost:5050/health || exit 1
+
 ENTRYPOINT ["dotnet", "eMusicApi.dll"]

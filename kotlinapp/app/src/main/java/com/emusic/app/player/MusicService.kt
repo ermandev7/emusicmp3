@@ -73,12 +73,38 @@ class MusicService : MediaLibraryService() {
     private var autoSkipCount = 0
 
     /**
+     * Tope fijo de saltos automáticos consecutivos ante fallos de resolución. NO se
+     * ata al tamaño de la cola: en modo radio la cola crece sola, así que un guard
+     * relativo nunca frenaba y un corte de red transitorio hacía que el reproductor
+     * saltara por toda la cola hasta quedarse en silencio (solo se arreglaba reabriendo
+     * la app). Con un tope fijo, tras N fallos seguidos paramos limpio y el usuario
+     * puede reintentar.
+     */
+    private val maxConsecutiveAutoSkips = 5
+
+    /**
+     * Si la pista actual ya se reintentó una vez tras un fallo. Un fallo de resolución
+     * suele ser transitorio (timeout puntual, URL recién caducada): reintentar la misma
+     * pista una vez la recupera sin perderla. Si vuelve a fallar, ahí sí saltamos.
+     * Se resetea al cambiar de pista o al reproducir bien.
+     */
+    private var currentItemRetried = false
+
+    /**
      * Listas cacheadas de cada sección de Android Auto (browse + reproducción). Al
      * tocar un item buscamos en estas cachés para reproducir la lista completa.
      */
     private var cachedRecommendations: List<Track> = emptyList()
     private var cachedFavorites: List<Track> = emptyList()
     private var cachedHistory: List<Track> = emptyList()
+
+    /**
+     * Última búsqueda por voz/texto desde Android Auto (`onSearch`). Se guarda para
+     * que `onGetSearchResult` devuelva la lista y para que, al tocar un resultado,
+     * `onAddMediaItems` arranque en modo radio desde esa canción.
+     */
+    private var cachedSearch: List<Track> = emptyList()
+    private var cachedSearchQuery: String = ""
 
     companion object {
         private const val TAG = "MusicService"
@@ -88,6 +114,13 @@ class MusicService : MediaLibraryService() {
         const val FAVORITES_ID = "FAVORITES"
         const val HISTORY_ID = "HISTORY"
         const val SCHEME = "emusic"
+
+        /** "Para ti": nº de más escuchadas al frente y tamaño total de la lista. */
+        private const val PARA_TI_MOST_PLAYED = 15
+        private const val PARA_TI_TOTAL = 30
+
+        /** Resultados máximos que se muestran en una búsqueda de Android Auto. */
+        private const val SEARCH_RESULTS_LIMIT = 20
 
         /** Marca en RequestMetadata.extras: esta cola arranca "modo radio" (ver [LibrarySessionCallback]). */
         const val EXTRA_RADIO_SEED = "com.emusic.app.RADIO_SEED"
@@ -150,8 +183,25 @@ class MusicService : MediaLibraryService() {
         // de la cola para no entrar en bucle si toda la red está caída.
         player.addListener(object : Player.Listener {
             override fun onPlayerError(error: PlaybackException) {
-                Log.e(TAG, "PlayerError code=${error.errorCodeName}; intentando saltar al siguiente")
-                if (player.hasNextMediaItem() && autoSkipCount < player.mediaItemCount) {
+                if (autoSkipCount >= maxConsecutiveAutoSkips) {
+                    // Tope alcanzado: probablemente un corte de red/resolución. Paramos
+                    // limpio en vez de arrasar la cola (y de que el modo radio la siga
+                    // alimentando con pistas que también fallarán). El usuario reintenta.
+                    Log.e(TAG, "PlayerError code=${error.errorCodeName}; $autoSkipCount saltos seguidos, me detengo")
+                    player.pause()
+                    autoSkipCount = 0
+                    return
+                }
+                // Reintento transitorio: una vez por pista, sin saltar ni contar skip.
+                if (!currentItemRetried) {
+                    currentItemRetried = true
+                    Log.w(TAG, "PlayerError code=${error.errorCodeName}; reintento misma pista")
+                    player.prepare()
+                    player.play()
+                    return
+                }
+                Log.e(TAG, "PlayerError code=${error.errorCodeName}; salto ${autoSkipCount + 1}/$maxConsecutiveAutoSkips")
+                if (player.hasNextMediaItem()) {
                     autoSkipCount++
                     player.seekToNext()
                     player.prepare()
@@ -160,14 +210,19 @@ class MusicService : MediaLibraryService() {
             }
 
             override fun onPlaybackStateChanged(playbackState: Int) {
-                // Un track que llega a READY resetea el contador de saltos.
-                if (playbackState == Player.STATE_READY) autoSkipCount = 0
+                // Un track que llega a READY resetea el contador de saltos y el reintento.
+                if (playbackState == Player.STATE_READY) {
+                    autoSkipCount = 0
+                    currentItemRetried = false
+                }
             }
 
             // Modo radio: cada vez que cambia la canción (avance natural o salto
             // manual de siguiente/anterior), si queda poca cola, pedimos más
             // recomendadas para que nunca se corte la música.
             override fun onMediaItemTransition(mediaItem: MediaItem?, reason: Int) {
+                // Pista nueva: el reintento vuelve a estar disponible.
+                currentItemRetried = false
                 maybeExtendRadio()
             }
         })
@@ -183,6 +238,32 @@ class MusicService : MediaLibraryService() {
         mediaSession = MediaLibrarySession.Builder(this, player, LibrarySessionCallback())
             .setSessionActivity(activityIntent)
             .build()
+
+        // Precarga "Para ti" (más escuchadas) para que Android Auto la muestre al
+        // instante en vez del skeleton: getHistory tarda 5-7s y Auto puede caducar
+        // antes de recibir datos. Al tener la caché lista, onGetChildren responde ya.
+        refreshMostPlayedCache()
+    }
+
+    /**
+     * Refresca en background la caché de "Para ti": primero las más escuchadas
+     * (señal fuerte: lo que el usuario realmente repite, incluye favoritas que ha
+     * reproducido) y a continuación las recomendadas del algoritmo, sin duplicar.
+     * Las más escuchadas salen de getHistory ordenado por playCount (mismo endpoint
+     * que Historial, sin API nueva); las recomendadas del endpoint existente.
+     */
+    private fun refreshMostPlayedCache() {
+        serviceScope.launch(Dispatchers.IO) {
+            try {
+                val mostPlayed = repository.getMostPlayed(PARA_TI_MOST_PLAYED)
+                val recommended = repository.getRecommendations(PARA_TI_TOTAL)
+                cachedRecommendations = (mostPlayed + recommended)
+                    .distinctBy { it.videoId }
+                    .take(PARA_TI_TOTAL)
+            } catch (e: Exception) {
+                Log.e(TAG, "No se pudo precargar Para ti", e)
+            }
+        }
     }
 
     override fun onGetSession(controllerInfo: MediaSession.ControllerInfo): MediaLibrarySession = mediaSession
@@ -313,6 +394,17 @@ class MusicService : MediaLibraryService() {
                 // Historial), reproducir TODA esa lista desde ahí (cola navegable,
                 // sin modo radio: esas listas ya son curadas).
                 val firstId = mediaItems.firstOrNull()?.mediaId
+                // Resultado de búsqueda por voz/texto en Android Auto (onSearch): se
+                // trata como "pon X" → modo radio desde esa canción, igual que la
+                // búsqueda por voz directa. Va ANTES que las secciones curadas.
+                if (firstId != null) {
+                    val hit = cachedSearch.firstOrNull { it.videoId == firstId }
+                    if (hit != null) {
+                        startRadio(hit.displayArtist)
+                        if (hit.videoId.isNotEmpty()) serviceScope.launch(Dispatchers.IO) { repository.addHistory(hit) }
+                        return Futures.immediateFuture(listOf(hit.toMediaItem(placeholderUri(hit.videoId))))
+                    }
+                }
                 if (firstId != null) {
                     val section = sequenceOf(cachedRecommendations, cachedFavorites, cachedHistory)
                         .firstOrNull { list -> list.any { it.videoId == firstId } }
@@ -405,10 +497,31 @@ class MusicService : MediaLibraryService() {
                     )
                     Futures.immediateFuture(LibraryResult.ofItemList(children, params))
                 }
-                // Secciones cargadas desde la API (5-7s): carga asíncrona. Cada track
-                // es reproducible (placeholder URI → ResolvingDataSource lo resuelve).
-                RECOMMENDED_ID -> loadSection(params, "Para ti") {
-                    repository.getRecommendations(30).also { cachedRecommendations = it }
+                // "Para ti" = más escuchadas (getHistory ordenado por playCount, mismo
+                // endpoint que Historial, sin API nueva). Si la caché ya está lista
+                // (precargada en onCreate), se devuelve al instante para evitar el
+                // skeleton de Android Auto; luego se refresca en background para la
+                // próxima vez. Solo si la caché está vacía (primer arranque) se hace la
+                // carga asíncrona clásica.
+                RECOMMENDED_ID -> {
+                    val cached = cachedRecommendations
+                    if (cached.isNotEmpty()) {
+                        // Caché lista (más escuchadas + recomendadas): respuesta
+                        // instantánea, sin skeleton. Se refresca para la próxima.
+                        refreshMostPlayedCache()
+                        val items = ImmutableList.copyOf(
+                            cached.map { it.toMediaItem(placeholderUri(it.videoId)) }
+                        )
+                        Futures.immediateFuture(LibraryResult.ofItemList(items, params))
+                    } else {
+                        // Arranque en frío: devolvemos ya las más escuchadas (consulta
+                        // rápida) para no mostrar skeleton, y en paralelo construimos la
+                        // caché combinada (más escuchadas + recomendadas) para la próxima.
+                        refreshMostPlayedCache()
+                        loadSection(params, "Para ti") {
+                            repository.getMostPlayed(PARA_TI_TOTAL).also { cachedRecommendations = it }
+                        }
+                    }
                 }
                 FAVORITES_ID -> loadSection(params, "Favoritos") {
                     repository.getFavorites().also { cachedFavorites = it }
@@ -424,6 +537,51 @@ class MusicService : MediaLibraryService() {
                 }
                 else -> Futures.immediateFuture(LibraryResult.ofError(LibraryResult.RESULT_ERROR_BAD_VALUE))
             }
+        }
+
+        // Android Auto / Asistente: búsqueda por voz o teclado ("busca X", "pon X en
+        // eMusic" cuando el asistente usa el flujo search → getSearchResult). Busca en
+        // el endpoint existente, guarda los resultados y avisa al navegador.
+        override fun onSearch(
+            session: MediaLibrarySession,
+            browser: MediaSession.ControllerInfo,
+            query: String,
+            params: LibraryParams?
+        ): ListenableFuture<LibraryResult<Void>> {
+            Log.d(TAG, "onSearch: '$query'")
+            serviceScope.launch(Dispatchers.IO) {
+                val results = try {
+                    repository.search(query).take(SEARCH_RESULTS_LIMIT)
+                } catch (e: Exception) {
+                    Log.e(TAG, "onSearch falló", e)
+                    emptyList()
+                }
+                withContext(Dispatchers.Main) {
+                    cachedSearch = results
+                    cachedSearchQuery = query
+                    session.notifySearchResultChanged(browser, query, results.size, params)
+                }
+            }
+            return Futures.immediateFuture(LibraryResult.ofVoid(params))
+        }
+
+        override fun onGetSearchResult(
+            session: MediaLibrarySession,
+            browser: MediaSession.ControllerInfo,
+            query: String,
+            page: Int,
+            pageSize: Int,
+            params: LibraryParams?
+        ): ListenableFuture<LibraryResult<ImmutableList<MediaItem>>> {
+            // Si por timing piden otra query distinta a la cacheada, no devolvemos
+            // resultados viejos de otra búsqueda.
+            val source = if (query == cachedSearchQuery) cachedSearch else emptyList()
+            val from = (page * pageSize).coerceAtLeast(0)
+            val pageItems = source.drop(from).take(if (pageSize > 0) pageSize else source.size)
+            val items = ImmutableList.copyOf(
+                pageItems.map { it.toMediaItem(placeholderUri(it.videoId)) }
+            )
+            return Futures.immediateFuture(LibraryResult.ofItemList(items, params))
         }
 
         override fun onCustomCommand(

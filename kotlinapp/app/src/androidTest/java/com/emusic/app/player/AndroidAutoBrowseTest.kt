@@ -72,6 +72,17 @@ class AndroidAutoBrowseTest {
             assertThat(it.mediaMetadata.isPlayable).isTrue()
             assertThat(it.mediaMetadata.title?.toString()).isNotEmpty()
         }
+
+        // Paginación: Android Auto puede pedir la tarjeta por páginas.
+        val page0 = onMain { browser.getChildren(root.value!!.mediaId, 0, 3, suggested) }.value!!
+        val page1 = onMain { browser.getChildren(root.value!!.mediaId, 1, 3, suggested) }.value!!
+        assertThat(page0.map { it.mediaId }).isEqualTo(items.take(3).map { it.mediaId })
+        assertThat(page1.map { it.mediaId }).isEqualTo(items.drop(3).take(3).map { it.mediaId })
+
+        // El registro de diagnóstico anota lo que pidió el "coche".
+        val log = java.io.File(context.filesDir, "auto_diag.log").readText()
+        assertThat(log).contains("-> SUGGESTED")
+        assertThat(log).contains("getChildren 'SUGGESTED'")
     }
 
     @Test
@@ -135,6 +146,72 @@ class AndroidAutoBrowseTest {
         assertThat(count).isGreaterThan(1)
         assertThat(index).isEqualTo(1)
         instr.runOnMainSync { browser.clearMediaItems() }
+    }
+
+    @Test
+    fun protocoloAntiguo_comoAndroidAuto_sugerenciasReproducibles() {
+        // Android Auto no usa el cliente de Media3 sino android.media.browse.MediaBrowser
+        // con EXTRA_SUGGESTED en los rootHints; Media3 lo traduce. Se prueba esa vía.
+        val hints = android.os.Bundle().apply {
+            putBoolean(android.service.media.MediaBrowserService.BrowserRoot.EXTRA_SUGGESTED, true)
+        }
+        val connected = java.util.concurrent.CountDownLatch(1)
+        var failed = false
+        lateinit var legacy: android.media.browse.MediaBrowser
+        instr.runOnMainSync {
+            legacy = android.media.browse.MediaBrowser(
+                context,
+                ComponentName(context, MusicService::class.java),
+                object : android.media.browse.MediaBrowser.ConnectionCallback() {
+                    override fun onConnected() = connected.countDown()
+                    override fun onConnectionFailed() { failed = true; connected.countDown() }
+                },
+                hints
+            )
+            legacy.connect()
+        }
+        assertThat(connected.await(20, TimeUnit.SECONDS)).isTrue()
+        assertThat(failed).isFalse()
+
+        var rootId = ""
+        var rootSuggested = false
+        instr.runOnMainSync {
+            rootId = legacy.root
+            rootSuggested = legacy.extras?.getBoolean(
+                android.service.media.MediaBrowserService.BrowserRoot.EXTRA_SUGGESTED) == true
+        }
+        assertThat(rootId).isEqualTo(MusicService.SUGGESTED_ID)
+        assertThat(rootSuggested).isTrue()
+
+        val loaded = java.util.concurrent.CountDownLatch(1)
+        var children: List<android.media.browse.MediaBrowser.MediaItem> = emptyList()
+        instr.runOnMainSync {
+            legacy.subscribe(rootId, object : android.media.browse.MediaBrowser.SubscriptionCallback() {
+                override fun onChildrenLoaded(
+                    parentId: String,
+                    items: MutableList<android.media.browse.MediaBrowser.MediaItem>
+                ) {
+                    children = items.toList()
+                    loaded.countDown()
+                }
+            })
+        }
+        assertThat(loaded.await(60, TimeUnit.SECONDS)).isTrue()
+        instr.runOnMainSync { legacy.disconnect() }
+
+        assertThat(children).isNotEmpty()
+        children.forEach {
+            assertThat(it.isPlayable).isTrue()
+            assertThat(it.description.title?.toString()).isNotEmpty()
+        }
+
+        // Carátulas: Android Auto solo carga content:// (no https). Deben venir así y
+        // poder abrirse (el provider descarga y cachea la imagen).
+        val withArt = children.mapNotNull { it.description.iconUri }
+        assertThat(withArt).isNotEmpty()
+        withArt.forEach { assertThat(it.scheme).isEqualTo("content") }
+        val bytes = context.contentResolver.openInputStream(withArt.first())!!.use { it.readBytes() }
+        assertThat(bytes.size).isGreaterThan(1000)
     }
 
     private companion object { const val TEST_USER = "erman" }

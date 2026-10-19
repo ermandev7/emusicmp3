@@ -387,6 +387,8 @@ class MusicService : MediaLibraryService() {
                         withContext(Dispatchers.Main) {
                             mediaSession.notifyChildrenChanged(RECOMMENDED_ID, combined.size, null)
                             mediaSession.notifyChildrenChanged(SUGGESTED_ID, combined.size, null)
+                            // Auto solo se suscribe a la raíz: avisar también ahí.
+                            mediaSession.notifyChildrenChanged(ROOT_ID, 4, null)
                         }
                         diag.log("Avisado a Android Auto: Para ti cambió (${combined.size})")
                     }

@@ -135,10 +135,4 @@ class PlayerViewModel @Inject constructor(
 
     fun getPosition(): Long = controller.getPositionMs()
     fun getDuration(): Long = controller.getDurationMs()
-
-    fun markSkipped() {
-        viewModelScope.launch {
-            state.value.currentTrack?.videoId?.let { repository.markSkipped(it) }
-        }
-    }
 }

@@ -430,7 +430,7 @@ public class RecommendationEngine
     // van aquí: hay canciones reales con esos títulos y el tope de 10 min ya cubre los
     // vídeos largos.
     private static readonly Regex AlwaysJunkTitle = new(
-        @"\b(megamix|enganchad[oa]s?|compilaci[oó]n|compilation|full album|[aá]lbum completo|" +
+        @"\b(megamix|enganchad[oa]s?|mosaico|po(t-?)?po?u?rr?[ií]|compilaci[oó]n|compilation|full album|[aá]lbum completo|" +
         @"karaoke|cover|tutorial|lesson|nightcore|sped\s*up|slowed|8d\s*audio|" +
         @"greatest hits|top\s*\d+\s*(mix|canciones))\b",
         RegexOptions.IgnoreCase | RegexOptions.Compiled);

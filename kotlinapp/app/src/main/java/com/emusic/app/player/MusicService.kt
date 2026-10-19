@@ -31,6 +31,7 @@ import com.emusic.app.data.repository.toAppTrack
 import com.emusic.shared.radio.RadioEngine
 import com.google.common.collect.ImmutableList
 import com.google.common.util.concurrent.Futures
+import com.google.common.util.concurrent.MoreExecutors
 import com.google.common.util.concurrent.ListenableFuture
 import com.google.common.util.concurrent.SettableFuture
 import dagger.hilt.android.AndroidEntryPoint
@@ -73,6 +74,7 @@ class MusicService : MediaLibraryService() {
 
     private lateinit var player: ExoPlayer
     private lateinit var mediaSession: MediaLibrarySession
+    private lateinit var diag: AutoDiagLog
     private val serviceScope = CoroutineScope(SupervisorJob() + Dispatchers.Main)
 
     /** Saltos automáticos consecutivos tras error; se resetea al reproducir bien. */
@@ -183,6 +185,7 @@ class MusicService : MediaLibraryService() {
 
     override fun onCreate() {
         super.onCreate()
+        diag = AutoDiagLog(this)
 
         val httpFactory = DefaultHttpDataSource.Factory()
             .setUserAgent("Mozilla/5.0 (Linux; Android) eMusic/1.0")
@@ -346,6 +349,7 @@ class MusicService : MediaLibraryService() {
         // instante en vez del skeleton: getHistory tarda 5-7s y Auto puede caducar
         // antes de recibir datos. Al tener la caché lista, onGetChildren responde ya.
         cachedRecommendations = loadParaTiFromDisk()
+        diag.log("Servicio creado. Para ti en disco: ${cachedRecommendations.size}")
         refreshMostPlayedCache()
     }
 
@@ -358,17 +362,21 @@ class MusicService : MediaLibraryService() {
      */
     private fun refreshMostPlayedCache() {
         serviceScope.launch(Dispatchers.IO) {
+            val start = SystemClock.elapsedRealtime()
             try {
                 val mostPlayed = repository.getMostPlayed(PARA_TI_MOST_PLAYED)
                 val recommended = repository.getRecommendations(PARA_TI_TOTAL)
                 val combined = (mostPlayed + recommended)
                     .distinctBy { it.videoId }
                     .take(PARA_TI_TOTAL)
+                diag.log("Refresco Para ti: ${mostPlayed.size} más escuchadas + ${recommended.size} recomendadas " +
+                    "-> ${combined.size} en ${SystemClock.elapsedRealtime() - start} ms")
                 if (combined.isNotEmpty()) {
                     cachedRecommendations = combined
                     saveParaTiToDisk(combined)
                 }
             } catch (e: Exception) {
+                diag.log("Refresco Para ti FALLÓ: ${e.javaClass.simpleName}: ${e.message}")
                 Log.e(TAG, "No se pudo precargar Para ti", e)
             }
         }
@@ -589,8 +597,10 @@ class MusicService : MediaLibraryService() {
                     tracks.map { it.toMediaItem(placeholderUri(it.videoId)) }
                 )
                 Log.d(TAG, "$label: ${items.size} items")
+                diag.log("Carga '$label' (API): ${items.size} items")
                 future.set(LibraryResult.ofItemList(items, params))
             } catch (e: Exception) {
+                diag.log("Carga '$label' FALLÓ: ${e.javaClass.simpleName}: ${e.message}")
                 Log.e(TAG, "$label falló", e)
                 future.set(LibraryResult.ofItemList(ImmutableList.of(), params))
             }
@@ -601,6 +611,14 @@ class MusicService : MediaLibraryService() {
     // ─── Android Auto: árbol de contenido + búsqueda por voz ─────────────
 
     inner class LibrarySessionCallback : MediaLibrarySession.Callback {
+
+        override fun onConnect(
+            session: MediaSession,
+            controller: MediaSession.ControllerInfo
+        ): MediaSession.ConnectionResult {
+            diag.log("Conecta ${controller.packageName} (controllerVersion=${controller.controllerVersion})")
+            return super.onConnect(session, controller)
+        }
 
         // Requerido por MediaLibraryService: reanuda lo que esté en el player.
         override fun onPlaybackResumption(
@@ -632,6 +650,8 @@ class MusicService : MediaLibraryService() {
             mediaItems: List<MediaItem>
         ): ListenableFuture<List<MediaItem>> {
             val searchQuery = mediaItems.firstOrNull()?.requestMetadata?.searchQuery
+            diag.log("addMediaItems de ${controller.packageName}: ${mediaItems.size} items, " +
+                "query='${searchQuery.orEmpty()}' ids=${mediaItems.take(3).map { it.mediaId }}")
             if (searchQuery.isNullOrEmpty()) {
                 // Si el item tocado pertenece a una sección (Para ti / Favoritos /
                 // Historial), reproducir TODA esa lista desde ahí (cola navegable,
@@ -719,6 +739,9 @@ class MusicService : MediaLibraryService() {
                     SUGGESTED_ID to LibraryParams.Builder().setSuggested(true).build()
                 else -> ROOT_ID to params
             }
+            diag.log("getRoot de ${browser.packageName}: recent=${params?.isRecent} " +
+                "suggested=${params?.isSuggested} offline=${params?.isOffline} " +
+                "extras=${params?.extras?.keySet()} -> $rootId")
             val rootItem = MediaItem.Builder()
                 .setMediaId(rootId)
                 .setMediaMetadata(
@@ -739,6 +762,49 @@ class MusicService : MediaLibraryService() {
             parentId: String,
             page: Int,
             pageSize: Int,
+            params: LibraryParams?
+        ): ListenableFuture<LibraryResult<ImmutableList<MediaItem>>> {
+            val start = SystemClock.elapsedRealtime()
+            val all = childrenFor(parentId, params)
+            // Antes se ignoraba la paginación y cada página devolvía la lista entera.
+            return Futures.transform(all, { result ->
+                val items = result.value
+                val out = if (result.resultCode != LibraryResult.RESULT_SUCCESS || items == null) result
+                else LibraryResult.ofItemList(paged(items, page, pageSize), result.params)
+                diag.log("getChildren '$parentId' de ${browser.packageName} page=$page size=$pageSize: " +
+                    "code=${out.resultCode} items=${out.value?.size} total=${items?.size} " +
+                    "en ${SystemClock.elapsedRealtime() - start} ms")
+                out
+            }, MoreExecutors.directExecutor())
+        }
+
+        // Android Auto puede pedir un elemento suelto por su id (p. ej. una sugerencia).
+        // Sin esto Media3 respondía "no soportado".
+        override fun onGetItem(
+            session: MediaLibrarySession,
+            browser: MediaSession.ControllerInfo,
+            mediaId: String
+        ): ListenableFuture<LibraryResult<MediaItem>> {
+            val track = sequenceOf(cachedRecommendations, cachedFavorites, cachedHistory, cachedSearch)
+                .flatten().firstOrNull { it.videoId == mediaId }
+            val item = track?.toMediaItem(placeholderUri(track.videoId))
+                ?: (0 until player.mediaItemCount).map { player.getMediaItemAt(it) }.firstOrNull { it.mediaId == mediaId }
+            diag.log("getItem '$mediaId' de ${browser.packageName}: ${if (item != null) "encontrado" else "NO encontrado"}")
+            return Futures.immediateFuture(
+                if (item != null) LibraryResult.ofItem(item, null)
+                else LibraryResult.ofError(LibraryResult.RESULT_ERROR_BAD_VALUE)
+            )
+        }
+
+        private fun <T> paged(items: List<T>, page: Int, pageSize: Int): ImmutableList<T> {
+            if (pageSize <= 0 || pageSize == Int.MAX_VALUE) return ImmutableList.copyOf(items)
+            val from = page.toLong() * pageSize
+            if (from >= items.size) return ImmutableList.of()
+            return ImmutableList.copyOf(items.subList(from.toInt(), minOf(items.size, from.toInt() + pageSize)))
+        }
+
+        private fun childrenFor(
+            parentId: String,
             params: LibraryParams?
         ): ListenableFuture<LibraryResult<ImmutableList<MediaItem>>> {
             return when (parentId) {
@@ -884,9 +950,8 @@ class MusicService : MediaLibraryService() {
                 MediaMetadata.Builder()
                     .setTitle(title)
                     .setArtist(displayArtist)
-                    .setArtworkUri(
-                        if (displayThumbnail.isNotEmpty()) Uri.parse(displayThumbnail) else null
-                    )
+                    // content:// (ArtworkProvider): Android Auto no carga https.
+                    .setArtworkUri(ArtworkProvider.contentUri(displayThumbnail))
                     .setIsPlayable(true)
                     .setIsBrowsable(false)
                     .setMediaType(MediaMetadata.MEDIA_TYPE_MUSIC)

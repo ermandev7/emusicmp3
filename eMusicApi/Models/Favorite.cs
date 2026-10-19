@@ -1,10 +1,9 @@
-using System.ComponentModel.DataAnnotations;
-
 namespace eMusicApi.Models;
 
 public class Favorite
 {
-    [Key]
+    // Clave primaria compuesta (Id, UserId), definida en AppDbContext.OnModelCreating:
+    // cada usuario tiene sus propios favoritos, aunque dos coincidan en la misma canción.
     public string Id { get; set; } // videoId
     public string Title { get; set; } = string.Empty;
     public string Artist { get; set; } = string.Empty;

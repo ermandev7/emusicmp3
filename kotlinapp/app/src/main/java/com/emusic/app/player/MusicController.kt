@@ -2,12 +2,14 @@ package com.emusic.app.player
 
 import android.content.ComponentName
 import android.content.Context
+import android.os.Bundle
 import android.util.Log
 import androidx.media3.common.C
 import androidx.media3.common.MediaItem
 import androidx.media3.common.MediaMetadata
 import androidx.media3.common.PlaybackException
 import androidx.media3.common.Player
+import androidx.media3.common.Timeline
 import androidx.media3.session.MediaController
 import androidx.media3.session.SessionToken
 import com.emusic.app.data.api.Track
@@ -121,6 +123,31 @@ class MusicController @Inject constructor(
         override fun onRepeatModeChanged(repeatMode: Int) {
             _state.value = _state.value.copy(repeatMode = repeatMode)
         }
+
+        // Resincroniza la cola visible (QueueScreen) cuando cambia el timeline del
+        // player por fuera de un playTrack()/appendTracks() de esta clase: el modo
+        // radio de MusicService agrega recomendadas directo al player, y Android
+        // Auto puede reordenar/agregar también. Sin esto, "Cola actual" se quedaría
+        // desactualizada aunque la reproducción real sí avance bien.
+        override fun onTimelineChanged(timeline: Timeline, reason: Int) {
+            val ctrl = controller ?: return
+            val count = ctrl.mediaItemCount
+            if (count == 0 || count == _state.value.queue.size) return
+            val known = _state.value.queue.associateBy { it.videoId }
+            val rebuilt = (0 until count).map { i ->
+                val item = ctrl.getMediaItemAt(i)
+                known[item.mediaId] ?: run {
+                    val meta = item.mediaMetadata
+                    Track(
+                        title = meta.title?.toString() ?: "",
+                        uploaderName = meta.artist?.toString() ?: "",
+                        thumbnail = meta.artworkUri?.toString() ?: "",
+                        videoIdFromJson = item.mediaId.ifEmpty { null }
+                    )
+                }
+            }
+            _state.value = _state.value.copy(queue = rebuilt)
+        }
     }
 
     fun connect() {
@@ -150,7 +177,7 @@ class MusicController @Inject constructor(
      * Todos los items usan una URI placeholder que el servicio resuelve bajo
      * demanda, así que siguiente/anterior funcionan de forma nativa.
      */
-    fun playTrack(track: Track, queue: List<Track> = emptyList()) {
+    fun playTrack(track: Track, queue: List<Track> = emptyList(), radioSeed: Boolean = false) {
         val ctrl = controller ?: return
         // Nueva sesión remota: quitar el bucle que pudo activar la reproducción de
         // descargas sin conexión (si no, las recomendadas se repetirían en bucle).
@@ -174,7 +201,7 @@ class MusicController @Inject constructor(
             delay(30_000L)
             if (_loadingTrack.value?.videoId == track.videoId) _loadingTrack.value = null
         }
-        ctrl.setMediaItems(q.map { it.toMediaItem() }, index, 0L)
+        ctrl.setMediaItems(q.map { it.toMediaItem(radioSeed = radioSeed && q.size == 1) }, index, 0L)
         ctrl.prepare()
         ctrl.play()
     }
@@ -383,8 +410,8 @@ class MusicController @Inject constructor(
     }
 }
 
-private fun Track.toMediaItem(): MediaItem =
-    MediaItem.Builder()
+private fun Track.toMediaItem(radioSeed: Boolean = false): MediaItem {
+    val builder = MediaItem.Builder()
         .setMediaId(videoId)
         .setUri(MusicService.placeholderUri(videoId))
         .setMediaMetadata(
@@ -401,4 +428,15 @@ private fun Track.toMediaItem(): MediaItem =
                 .setMediaType(MediaMetadata.MEDIA_TYPE_MUSIC)
                 .build()
         )
-        .build()
+    // Marca esta cola como "semilla de radio": MusicService la detecta en
+    // onAddMediaItems y arranca el modo radio (recomendadas del algoritmo en vez
+    // del resto de la lista de búsqueda). Ver MusicService.EXTRA_RADIO_SEED.
+    if (radioSeed) {
+        builder.setRequestMetadata(
+            MediaItem.RequestMetadata.Builder()
+                .setExtras(Bundle().apply { putBoolean(MusicService.EXTRA_RADIO_SEED, true) })
+                .build()
+        )
+    }
+    return builder.build()
+}

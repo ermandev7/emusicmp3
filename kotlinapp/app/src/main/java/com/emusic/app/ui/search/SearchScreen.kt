@@ -190,7 +190,11 @@ fun SearchScreen(
                                     track = track,
                                     isPlaying = playerState.currentTrack?.videoId == track.videoId && playerState.isPlaying,
                                     onClick = {
-                                        playerViewModel.playTrack(track, state.results)
+                                        // radioSeed = true: solo arranca esta canción; el
+                                        // "siguiente" lo arma el modo radio con recomendadas
+                                        // del algoritmo, no con el resto de la lista de
+                                        // búsqueda (que podía traer covers/otros artistas).
+                                        playerViewModel.playTrack(track, radioSeed = true)
                                         onTrackClick()
                                     }
                                 )

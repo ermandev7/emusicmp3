@@ -13,6 +13,7 @@ eMusicApi/publish_arm64/
 # Android / Kotlin
 kotlinapp/build/
 kotlinapp/app/build/
+kotlinapp/shared/build/
 kotlinapp/.gradle/
 kotlinapp/.kotlin/
 kotlinapp/local.properties

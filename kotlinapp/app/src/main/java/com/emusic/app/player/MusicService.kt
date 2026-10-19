@@ -4,6 +4,7 @@ import android.app.PendingIntent
 import android.content.Intent
 import android.net.Uri
 import android.os.Bundle
+import android.os.SystemClock
 import android.util.Log
 import androidx.media3.common.AudioAttributes
 import androidx.media3.common.C
@@ -34,8 +35,10 @@ import com.google.common.util.concurrent.SettableFuture
 import dagger.hilt.android.AndroidEntryPoint
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.Job
 import kotlinx.coroutines.SupervisorJob
 import kotlinx.coroutines.cancel
+import kotlinx.coroutines.delay
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.runBlocking
 import kotlinx.coroutines.withContext
@@ -100,6 +103,14 @@ class MusicService : MediaLibraryService() {
     private var autoSkipping = false
 
     /**
+     * Quien pulsa siguiente varias veces seguidas buscando una canción no está
+     * diciendo "no me gusta" de cada una (ver [SkipFilter]). El skip se confirma
+     * cuando la canción siguiente lleva [SKIP_CONFIRM_PLAY_MS] sonando.
+     */
+    private val skipFilter = SkipFilter<MediaItem>(BURST_GAP_MS) { SystemClock.elapsedRealtime() }
+    private var skipConfirmJob: Job? = null
+
+    /**
      * Listas cacheadas de cada sección de Android Auto (browse + reproducción). Al
      * tocar un item buscamos en estas cachés para reproducir la lista completa.
      */
@@ -133,6 +144,12 @@ class MusicService : MediaLibraryService() {
 
         /** Pasar a la siguiente antes de este tiempo cuenta como skip ("no me gusta"). */
         private const val SKIP_THRESHOLD_MS = 30_000L
+
+        /** Un skip se confirma cuando la canción siguiente lleva este tiempo sonando. */
+        private const val SKIP_CONFIRM_PLAY_MS = 8_000L
+
+        /** Dos cambios de pista más juntos que esto = el usuario está buscando. */
+        private const val BURST_GAP_MS = 12_000L
 
         /** Marca en RequestMetadata.extras: esta cola arranca "modo radio" (ver [LibrarySessionCallback]). */
         const val EXTRA_RADIO_SEED = "com.emusic.app.RADIO_SEED"
@@ -240,12 +257,27 @@ class MusicService : MediaLibraryService() {
             }
 
             override fun onIsPlayingChanged(isPlaying: Boolean) {
-                if (isPlaying) startedItemId = player.currentMediaItem?.mediaId
+                if (isPlaying) {
+                    startedItemId = player.currentMediaItem?.mediaId
+                    // Hay un skip pendiente: se confirma si esta canción suena un rato
+                    // sin que el usuario vuelva a cambiar (no estaba buscando).
+                    if (skipFilter.pending != null) {
+                        skipConfirmJob?.cancel()
+                        skipConfirmJob = serviceScope.launch {
+                            delay(SKIP_CONFIRM_PLAY_MS)
+                            skipFilter.confirm()?.let { reportSkip(it) }
+                        }
+                    }
+                } else {
+                    // Pausa o carga: el tiempo de confirmación cuenta solo sonando.
+                    skipConfirmJob?.cancel()
+                }
             }
 
-            // Skip = el usuario pasa a otra pista (botón, notificación, Android Auto o
-            // voz) en los primeros 30 s de una que ya sonaba. "Anterior" no cuenta: es
-            // volver, no rechazar.
+            // Cambio de pista hecho por el usuario (botón, notificación, Android Auto o
+            // voz). Candidato a skip: "siguiente" en los primeros 30 s de una canción
+            // que ya sonaba. "Anterior" no es rechazo (cancela el pendiente: vuelve a
+            // ella) y elegir una canción concreta de la cola tampoco ("quiero esa").
             override fun onPositionDiscontinuity(
                 oldPosition: Player.PositionInfo,
                 newPosition: Player.PositionInfo,
@@ -260,14 +292,19 @@ class MusicService : MediaLibraryService() {
                 val newIndex = newPosition.mediaItemIndex
                 if (newIndex == oldIndex) return
                 val timeline = player.currentTimeline
-                val previousIndex = if (oldIndex < timeline.windowCount) {
-                    timeline.getPreviousWindowIndex(oldIndex, player.repeatMode, player.shuffleModeEnabled)
+                val nextIndex = if (oldIndex < timeline.windowCount) {
+                    timeline.getNextWindowIndex(oldIndex, player.repeatMode, player.shuffleModeEnabled)
                 } else C.INDEX_UNSET
-                if (newIndex == previousIndex) return
-                val skipped = oldPosition.mediaItem ?: return
-                if (skipped.mediaId != startedItemId) return
-                if (oldPosition.positionMs >= SKIP_THRESHOLD_MS) return
-                reportSkip(skipped)
+                val skipped = oldPosition.mediaItem
+                val candidate = skipped?.takeIf {
+                    newIndex == nextIndex &&
+                        it.mediaId == startedItemId &&
+                        oldPosition.positionMs < SKIP_THRESHOLD_MS
+                }
+                skipConfirmJob?.cancel()
+                if (skipFilter.onUserTrackChange(candidate)) {
+                    Log.d(TAG, "Skip descartado: el usuario está buscando canción")
+                }
             }
         })
 

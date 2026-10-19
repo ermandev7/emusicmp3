@@ -43,6 +43,8 @@ import kotlinx.coroutines.launch
 import kotlinx.coroutines.runBlocking
 import kotlinx.coroutines.withContext
 import java.io.IOException
+import org.json.JSONArray
+import org.json.JSONObject
 import javax.inject.Inject
 
 /**
@@ -130,6 +132,10 @@ class MusicService : MediaLibraryService() {
         private const val TAG = "MusicService"
         const val ROOT_ID = "ROOT"
         const val QUEUE_ID = "QUEUE"
+        /** Raíz que pide Android Auto para la tarjeta de sugerencias de su pantalla de inicio. */
+        const val SUGGESTED_ID = "SUGGESTED"
+        /** Raíz que pide el sistema para reanudar lo último ("recientes"). */
+        const val RECENT_ID = "RECENT"
         const val RECOMMENDED_ID = "RECOMMENDED"
         const val FAVORITES_ID = "FAVORITES"
         const val HISTORY_ID = "HISTORY"
@@ -141,6 +147,10 @@ class MusicService : MediaLibraryService() {
 
         /** Resultados máximos que se muestran en una búsqueda de Android Auto. */
         private const val SEARCH_RESULTS_LIMIT = 20
+
+        /** Caché en disco de la lista "Para ti" (ver saveParaTiToDisk). */
+        private const val PREFS_AUTO_CACHE = "android_auto_cache"
+        private const val KEY_PARA_TI = "para_ti"
 
         /** Pasar a la siguiente antes de este tiempo cuenta como skip ("no me gusta"). */
         private const val SKIP_THRESHOLD_MS = 30_000L
@@ -323,6 +333,7 @@ class MusicService : MediaLibraryService() {
         // Precarga "Para ti" (más escuchadas) para que Android Auto la muestre al
         // instante en vez del skeleton: getHistory tarda 5-7s y Auto puede caducar
         // antes de recibir datos. Al tener la caché lista, onGetChildren responde ya.
+        cachedRecommendations = loadParaTiFromDisk()
         refreshMostPlayedCache()
     }
 
@@ -338,13 +349,60 @@ class MusicService : MediaLibraryService() {
             try {
                 val mostPlayed = repository.getMostPlayed(PARA_TI_MOST_PLAYED)
                 val recommended = repository.getRecommendations(PARA_TI_TOTAL)
-                cachedRecommendations = (mostPlayed + recommended)
+                val combined = (mostPlayed + recommended)
                     .distinctBy { it.videoId }
                     .take(PARA_TI_TOTAL)
+                if (combined.isNotEmpty()) {
+                    cachedRecommendations = combined
+                    saveParaTiToDisk(combined)
+                }
             } catch (e: Exception) {
                 Log.e(TAG, "No se pudo precargar Para ti", e)
             }
         }
+    }
+
+    /**
+     * La tarjeta de sugerencias de Android Auto se rinde enseguida ("Contenido no
+     * disponible") y la API tarda 5-7 s, así que la última lista de "Para ti" se
+     * guarda en el teléfono: al arrancar el coche se muestra al instante y luego se
+     * refresca en segundo plano.
+     */
+    private fun saveParaTiToDisk(tracks: List<Track>) {
+        val json = JSONArray()
+        tracks.forEach { t ->
+            json.put(
+                JSONObject()
+                    .put("videoId", t.videoId)
+                    .put("title", t.title)
+                    .put("artist", t.displayArtist)
+                    .put("thumbnail", t.displayThumbnail)
+                    .put("duration", t.duration)
+            )
+        }
+        getSharedPreferences(PREFS_AUTO_CACHE, MODE_PRIVATE).edit()
+            .putString(KEY_PARA_TI, json.toString())
+            .apply()
+    }
+
+    private fun loadParaTiFromDisk(): List<Track> = try {
+        val raw = getSharedPreferences(PREFS_AUTO_CACHE, MODE_PRIVATE).getString(KEY_PARA_TI, null)
+        if (raw == null) emptyList() else {
+            val json = JSONArray(raw)
+            (0 until json.length()).map { i ->
+                val o = json.getJSONObject(i)
+                Track(
+                    title = o.optString("title"),
+                    uploaderName = o.optString("artist"),
+                    thumbnail = o.optString("thumbnail").ifEmpty { null },
+                    duration = o.optInt("duration"),
+                    videoIdFromJson = o.optString("videoId")
+                )
+            }.filter { it.videoId.isNotEmpty() }
+        }
+    } catch (e: Exception) {
+        Log.e(TAG, "Caché de Para ti ilegible", e)
+        emptyList()
     }
 
     override fun onGetSession(controllerInfo: MediaSession.ControllerInfo): MediaLibrarySession = mediaSession
@@ -571,8 +629,19 @@ class MusicService : MediaLibraryService() {
             browser: MediaSession.ControllerInfo,
             params: LibraryParams?
         ): ListenableFuture<LibraryResult<MediaItem>> {
+            // Android Auto pide raíces especiales además de la normal. Antes se
+            // ignoraban y se devolvía siempre ROOT (carpetas), así que la tarjeta
+            // "Para ti" de su pantalla de inicio, que necesita canciones reproducibles,
+            // se quedaba cargando o en "Contenido no disponible".
+            val (rootId, rootParams) = when {
+                params?.isRecent == true ->
+                    RECENT_ID to LibraryParams.Builder().setRecent(true).build()
+                params?.isSuggested == true ->
+                    SUGGESTED_ID to LibraryParams.Builder().setSuggested(true).build()
+                else -> ROOT_ID to params
+            }
             val rootItem = MediaItem.Builder()
-                .setMediaId(ROOT_ID)
+                .setMediaId(rootId)
                 .setMediaMetadata(
                     MediaMetadata.Builder()
                         .setTitle("eMusic")
@@ -582,7 +651,7 @@ class MusicService : MediaLibraryService() {
                         .build()
                 )
                 .build()
-            return Futures.immediateFuture(LibraryResult.ofItem(rootItem, params))
+            return Futures.immediateFuture(LibraryResult.ofItem(rootItem, rootParams))
         }
 
         override fun onGetChildren(
@@ -609,7 +678,9 @@ class MusicService : MediaLibraryService() {
                 // skeleton de Android Auto; luego se refresca en background para la
                 // próxima vez. Solo si la caché está vacía (primer arranque) se hace la
                 // carga asíncrona clásica.
-                RECOMMENDED_ID -> {
+                // Tarjeta de sugerencias de la pantalla de inicio de Auto: la misma
+                // lista que "Para ti" (más escuchadas + recomendadas).
+                RECOMMENDED_ID, SUGGESTED_ID -> {
                     val cached = cachedRecommendations
                     if (cached.isNotEmpty()) {
                         // Caché lista (más escuchadas + recomendadas): respuesta
@@ -634,6 +705,11 @@ class MusicService : MediaLibraryService() {
                 }
                 HISTORY_ID -> loadSection(params, "Historial") {
                     repository.getHistory().also { cachedHistory = it }
+                }
+                RECENT_ID -> {
+                    val current = player.currentMediaItem
+                    val items = if (current != null) ImmutableList.of(current) else ImmutableList.of()
+                    Futures.immediateFuture(LibraryResult.ofItemList(items, params))
                 }
                 QUEUE_ID -> {
                     val items = ImmutableList.copyOf(

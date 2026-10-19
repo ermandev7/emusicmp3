@@ -119,10 +119,16 @@ public class RecommendationController : ControllerBase
             .OrderByDescending(c => c.score)
             .ToList();
 
+        // UMBRAL de relevancia: descartar candidatos flojos. Pero si no quedan
+        // suficientes buenos, caer al pool completo para no devolver vacío.
+        const double MinScore = 0.15;
+        var good = scored.Where(c => c.score >= MinScore).ToList();
+        var pool = good.Count >= Math.Min(limit, 10) ? good : scored;
+
         // DIVERSIDAD: máximo 2 canciones por artista en el resultado final.
         var perArtist = new Dictionary<string, int>();
         var diversified = new List<object>();
-        foreach (var c in scored)
+        foreach (var c in pool)
         {
             var key = RecommendationEngine.NormalizeArtist(c.uploaderName);
             perArtist.TryGetValue(key, out int cnt);
@@ -246,6 +252,12 @@ public class RecommendationController : ControllerBase
                               : el.TryGetProperty("thumbnailUrl", out var thp2) ? thp2.GetString() ?? "" : "";
                     var duration = el.TryGetProperty("duration", out var dp) && dp.ValueKind == JsonValueKind.Number
                         ? dp.GetInt32() : 0;
+
+                    // Descartar basura (mixes/compilaciones largas, karaoke, covers,
+                    // versiones alteradas...) antes de puntuar: es la causa principal
+                    // de "me recomienda cosas que no me gustan".
+                    if (RecommendationEngine.IsJunkCandidate(title, duration)) continue;
+
                     var url = el.TryGetProperty("url", out var tup) ? tup.GetString() ?? $"/watch?v={videoId}" : $"/watch?v={videoId}";
 
                     candidates.Add((videoId, title, artist, thumb, duration, url));

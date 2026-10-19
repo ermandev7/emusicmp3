@@ -32,6 +32,9 @@ class ArtworkProvider : ContentProvider() {
         private const val TAG = "ArtworkProvider"
         private val ALLOWED_HOST_SUFFIXES = listOf("ytimg.com", "ggpht.com", "googleusercontent.com")
 
+        /** https://i.ytimg.com/vi/VIDEO_ID/CALIDAD.jpg → grupo 1 = hasta el VIDEO_ID. */
+        private val YT_THUMB = Regex("""^(https?://i\d*\.ytimg\.com/vi(?:_webp)?/[^/]+)/[a-z]+default\.(?:jpg|webp)""")
+
         /** content:// equivalente a [remoteUrl], o null si no hay o no es de un host permitido. */
         fun contentUri(remoteUrl: String?): Uri? {
             if (remoteUrl.isNullOrBlank() || !isAllowed(remoteUrl)) return null
@@ -61,10 +64,36 @@ class ArtworkProvider : ContentProvider() {
         }
         if (!isAllowed(remote)) throw FileNotFoundException("Host no permitido")
 
-        val dir = File(context!!.cacheDir, "artwork").apply { mkdirs() }
+        // "artwork-best": la caché anterior ("artwork") tenía versiones de 480×360.
+        val dir = File(context!!.cacheDir, "artwork-best").apply { mkdirs() }
         val file = File(dir, sha1(remote))
-        if (!file.exists() || file.length() == 0L) download(remote, file)
+        if (!file.exists() || file.length() == 0L) downloadBest(remote, file)
         return ParcelFileDescriptor.open(file, ParcelFileDescriptor.MODE_READ_ONLY)
+    }
+
+    /**
+     * Carátulas de YouTube (i.ytimg.com/vi/ID/CALIDAD.jpg): se intenta la mejor
+     * resolución y se baja si no existe. maxresdefault (1280×720) falta en muchos
+     * vídeos (404); hqdefault (480×360) existe siempre pero en la tarjeta grande de
+     * Android Auto se veía borrosa.
+     */
+    private fun downloadBest(remote: String, target: File) {
+        val m = YT_THUMB.find(remote)
+        if (m == null) {
+            download(remote, target)
+            return
+        }
+        val base = m.groupValues[1]
+        var last: Exception? = null
+        for (quality in listOf("maxresdefault", "sddefault", "hqdefault")) {
+            try {
+                download("$base/$quality.jpg", target)
+                return
+            } catch (e: FileNotFoundException) {
+                last = e
+            }
+        }
+        throw last ?: FileNotFoundException("Sin carátula")
     }
 
     private fun download(remote: String, target: File) {

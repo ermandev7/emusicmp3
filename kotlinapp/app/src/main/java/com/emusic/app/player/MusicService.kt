@@ -965,9 +965,9 @@ class MusicService : MediaLibraryService() {
                 MediaMetadata.Builder()
                     .setTitle(title)
                     .setArtist(displayArtist)
-                    // content:// (ArtworkProvider): Android Auto no carga https. Se usa la
-                    // hqdefault de YouTube (sdThumbnail), que existe siempre: muchas
-                    // miniaturas guardadas son enlaces del proxy de Piped que caducan (500).
+                    // content:// (ArtworkProvider): Android Auto no carga https. Carátula de
+                    // YouTube por videoId (muchas miniaturas guardadas son enlaces del proxy
+                    // de Piped que caducan); el provider baja la mejor resolución que exista.
                     .setArtworkUri(ArtworkProvider.contentUri(sdThumbnail))
                     .setIsPlayable(true)
                     .setIsBrowsable(false)

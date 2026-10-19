@@ -98,9 +98,9 @@ class MusicRepository @Inject constructor(
         } catch (_: Exception) {}
     }
 
-    suspend fun markSkipped(videoId: String) {
-        try { api.markSkipped(videoId) } catch (_: Exception) {}
-    }
+    /** true si el servidor la marcó; false si falló (p. ej. 404: la canción no está en el historial). */
+    suspend fun markSkipped(videoId: String): Boolean =
+        try { api.markSkipped(videoId); true } catch (_: Exception) { false }
 
     suspend fun getRecommendations(limit: Int = 20): List<Track> = withContext(Dispatchers.IO) {
         try { api.getRecommendations(limit).items.map { it.toAppTrack() } } catch (_: Exception) { emptyList() }

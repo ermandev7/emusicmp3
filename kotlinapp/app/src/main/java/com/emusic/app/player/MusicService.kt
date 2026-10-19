@@ -91,6 +91,15 @@ class MusicService : MediaLibraryService() {
     private var currentItemRetried = false
 
     /**
+     * Detección de skips (el usuario pasa a la siguiente en los primeros
+     * [SKIP_THRESHOLD_MS]). [startedItemId] es la pista que llegó a sonar de verdad:
+     * saltar una que todavía cargaba no cuenta. [autoSkipping] marca los saltos que
+     * hace el propio servicio tras un error, que tampoco son del usuario.
+     */
+    private var startedItemId: String? = null
+    private var autoSkipping = false
+
+    /**
      * Listas cacheadas de cada sección de Android Auto (browse + reproducción). Al
      * tocar un item buscamos en estas cachés para reproducir la lista completa.
      */
@@ -121,6 +130,9 @@ class MusicService : MediaLibraryService() {
 
         /** Resultados máximos que se muestran en una búsqueda de Android Auto. */
         private const val SEARCH_RESULTS_LIMIT = 20
+
+        /** Pasar a la siguiente antes de este tiempo cuenta como skip ("no me gusta"). */
+        private const val SKIP_THRESHOLD_MS = 30_000L
 
         /** Marca en RequestMetadata.extras: esta cola arranca "modo radio" (ver [LibrarySessionCallback]). */
         const val EXTRA_RADIO_SEED = "com.emusic.app.RADIO_SEED"
@@ -203,6 +215,7 @@ class MusicService : MediaLibraryService() {
                 Log.e(TAG, "PlayerError code=${error.errorCodeName}; salto ${autoSkipCount + 1}/$maxConsecutiveAutoSkips")
                 if (player.hasNextMediaItem()) {
                     autoSkipCount++
+                    autoSkipping = true // no es un skip del usuario
                     player.seekToNext()
                     player.prepare()
                     player.play()
@@ -224,6 +237,37 @@ class MusicService : MediaLibraryService() {
                 // Pista nueva: el reintento vuelve a estar disponible.
                 currentItemRetried = false
                 maybeExtendRadio()
+            }
+
+            override fun onIsPlayingChanged(isPlaying: Boolean) {
+                if (isPlaying) startedItemId = player.currentMediaItem?.mediaId
+            }
+
+            // Skip = el usuario pasa a otra pista (botón, notificación, Android Auto o
+            // voz) en los primeros 30 s de una que ya sonaba. "Anterior" no cuenta: es
+            // volver, no rechazar.
+            override fun onPositionDiscontinuity(
+                oldPosition: Player.PositionInfo,
+                newPosition: Player.PositionInfo,
+                reason: Int
+            ) {
+                if (reason != Player.DISCONTINUITY_REASON_SEEK) return
+                if (autoSkipping) {
+                    autoSkipping = false
+                    return
+                }
+                val oldIndex = oldPosition.mediaItemIndex
+                val newIndex = newPosition.mediaItemIndex
+                if (newIndex == oldIndex) return
+                val timeline = player.currentTimeline
+                val previousIndex = if (oldIndex < timeline.windowCount) {
+                    timeline.getPreviousWindowIndex(oldIndex, player.repeatMode, player.shuffleModeEnabled)
+                } else C.INDEX_UNSET
+                if (newIndex == previousIndex) return
+                val skipped = oldPosition.mediaItem ?: return
+                if (skipped.mediaId != startedItemId) return
+                if (oldPosition.positionMs >= SKIP_THRESHOLD_MS) return
+                reportSkip(skipped)
             }
         })
 
@@ -279,6 +323,31 @@ class MusicService : MediaLibraryService() {
     private suspend fun resolveStreamUrl(videoId: String): String? {
         if (videoId.isEmpty()) return null
         return repository.getStream(videoId)?.bestAudioUrl()
+    }
+
+    /**
+     * Avisa al servidor de un skip (endpoint existente PATCH history/{id}/skip). Si la
+     * canción no estaba en el historial (típico en una recomendada de la radio, que
+     * nunca se registra al sonar), el servidor responde 404: se registra y se marca,
+     * para que el algoritmo aprenda también de lo que se salta en la radio.
+     */
+    private fun reportSkip(item: MediaItem) {
+        val videoId = item.mediaId
+        if (videoId.isEmpty()) return
+        val md = item.mediaMetadata
+        Log.d(TAG, "Skip: ${md.artist} - ${md.title}")
+        serviceScope.launch(Dispatchers.IO) {
+            if (repository.markSkipped(videoId)) return@launch
+            repository.addHistory(
+                Track(
+                    title = md.title?.toString().orEmpty(),
+                    uploaderName = md.artist?.toString().orEmpty(),
+                    thumbnail = md.artworkUri?.toString(),
+                    videoIdFromJson = videoId
+                )
+            )
+            repository.markSkipped(videoId)
+        }
     }
 
     /** true si el item viene marcado como semilla de "modo radio" (ver [EXTRA_RADIO_SEED]). */

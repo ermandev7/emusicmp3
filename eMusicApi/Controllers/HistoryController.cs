@@ -5,6 +5,7 @@ using System.Threading.Tasks;
 using System.Collections.Generic;
 using eMusicApi.Data;
 using eMusicApi.Models;
+using eMusicApi.Services;
 
 namespace eMusicApi.Controllers;
 
@@ -13,10 +14,23 @@ namespace eMusicApi.Controllers;
 public class HistoryController : ControllerBase
 {
     private readonly AppDbContext _context;
+    private readonly MusicExtractionService _extraction;
 
-    public HistoryController(AppDbContext context)
+    public HistoryController(AppDbContext context, MusicExtractionService extraction)
     {
         _context = context;
+        _extraction = extraction;
+    }
+
+    /// <summary>
+    /// El cliente a veces registra la reproduccion antes de conocer la duracion
+    /// real del track (llega en 0). Si esa cancion se reprodujo hace poco, su
+    /// duracion real ya esta en cache (la puso GetStreamAsync) sin coste de red.
+    /// </summary>
+    private long FillDurationIfMissing(string videoId, long clientDuration)
+    {
+        if (clientDuration > 0) return clientDuration;
+        return _extraction.TryGetCachedDurationMs(videoId) ?? clientDuration;
     }
 
     private string GetUserId() =>
@@ -49,6 +63,7 @@ public class HistoryController : ControllerBase
             existing.Artist = history.Artist;
             existing.IsDownloaded = history.IsDownloaded;
             existing.SkippedEarly = false;
+            existing.Duration = FillDurationIfMissing(existing.VideoId, existing.Duration);
             if (!string.IsNullOrEmpty(history.ThumbnailUrl))
                 existing.ThumbnailUrl = history.ThumbnailUrl;
         }
@@ -56,6 +71,7 @@ public class HistoryController : ControllerBase
         {
             history.PlayCount = 1;
             history.PlayedAt = System.DateTime.UtcNow;
+            history.Duration = FillDurationIfMissing(history.VideoId, history.Duration);
             _context.History.Add(history);
         }
 

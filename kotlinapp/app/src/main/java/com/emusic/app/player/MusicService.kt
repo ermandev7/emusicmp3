@@ -137,6 +137,9 @@ class MusicService : MediaLibraryService() {
      * `onAddMediaItems` arranque en modo radio desde esa canción.
      */
     private var cachedSearch: List<Track> = emptyList()
+
+    /** Ver refreshMostPlayedCache: aviso a Android Auto una vez por arranque del servicio. */
+    private var paraTiNotifiedSinceCreate = false
     private var cachedSearchQuery: String = ""
 
     companion object {
@@ -372,8 +375,21 @@ class MusicService : MediaLibraryService() {
                 diag.log("Refresco Para ti: ${mostPlayed.size} más escuchadas + ${recommended.size} recomendadas " +
                     "-> ${combined.size} en ${SystemClock.elapsedRealtime() - start} ms")
                 if (combined.isNotEmpty()) {
+                    val changed = combined != cachedRecommendations
                     cachedRecommendations = combined
                     saveParaTiToDisk(combined)
+                    // Android Auto guarda en caché la tarjeta "Para ti" y no vuelve a pedirla
+                    // por su cuenta: hay que avisarle. Solo si la lista cambió (si no, cada
+                    // recarga de Auto dispararía otro refresco y otro aviso, en bucle), y una
+                    // vez al arrancar el servicio para que coja carátulas o datos nuevos.
+                    if (changed || !paraTiNotifiedSinceCreate) {
+                        paraTiNotifiedSinceCreate = true
+                        withContext(Dispatchers.Main) {
+                            mediaSession.notifyChildrenChanged(RECOMMENDED_ID, combined.size, null)
+                            mediaSession.notifyChildrenChanged(SUGGESTED_ID, combined.size, null)
+                        }
+                        diag.log("Avisado a Android Auto: Para ti cambió (${combined.size})")
+                    }
                 }
             } catch (e: Exception) {
                 diag.log("Refresco Para ti FALLÓ: ${e.javaClass.simpleName}: ${e.message}")
@@ -554,10 +570,9 @@ class MusicService : MediaLibraryService() {
         private val wrappedListeners = HashMap<Player.Listener, Player.Listener>()
 
         override fun addListener(listener: Player.Listener) {
-            val wrapped = object : Player.Listener by listener {
-                override fun onAvailableCommandsChanged(availableCommands: Player.Commands) =
-                    listener.onAvailableCommandsChanged(withNext(availableCommands))
-            }
+            // Ojo: no usar `object : Player.Listener by listener`. Kotlin no delega los
+            // métodos default de Java y se perdían todos los avisos menos este.
+            val wrapped = CommandsFixingListener(listener, ::withNext)
             wrappedListeners[listener] = wrapped
             super.addListener(wrapped)
         }
@@ -950,8 +965,10 @@ class MusicService : MediaLibraryService() {
                 MediaMetadata.Builder()
                     .setTitle(title)
                     .setArtist(displayArtist)
-                    // content:// (ArtworkProvider): Android Auto no carga https.
-                    .setArtworkUri(ArtworkProvider.contentUri(displayThumbnail))
+                    // content:// (ArtworkProvider): Android Auto no carga https. Se usa la
+                    // hqdefault de YouTube (sdThumbnail), que existe siempre: muchas
+                    // miniaturas guardadas son enlaces del proxy de Piped que caducan (500).
+                    .setArtworkUri(ArtworkProvider.contentUri(sdThumbnail))
                     .setIsPlayable(true)
                     .setIsBrowsable(false)
                     .setMediaType(MediaMetadata.MEDIA_TYPE_MUSIC)

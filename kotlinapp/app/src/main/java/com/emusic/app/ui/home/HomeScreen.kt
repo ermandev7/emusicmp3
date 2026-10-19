@@ -107,7 +107,9 @@ fun HomeScreen(
                                 modifier = Modifier.weight(1f),
                                 onClick = {
                                     viewModel.searchGenre(genre.name, genre.query) { results ->
-                                        playerViewModel.playTrack(results.first(), results)
+                                        // Es una búsqueda por género (misma llamada que el
+                                        // buscador): modo radio, no la lista cruda.
+                                        playerViewModel.playTrack(results.first(), radioSeed = true)
                                         onTrackClick()
                                     }
                                 }

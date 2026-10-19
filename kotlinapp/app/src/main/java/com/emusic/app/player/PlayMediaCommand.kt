@@ -34,14 +34,21 @@ class PlayMediaCommand @Inject constructor(
 
         // El MusicController se conecta de forma asíncrona en MainActivity.onCreate;
         // si el intent llegó muy pronto, esperar brevemente a que esté listo.
-        if (!controller.isConnected()) {
-            repeat(20) {
-                if (controller.isConnected()) return@repeat
-                delay(150)
-            }
+        // (Antes usaba `return@repeat`, que solo salta a la siguiente vuelta y no
+        // corta la espera.)
+        var waited = 0
+        while (!controller.isConnected() && waited < 20) {
+            delay(150)
+            waited++
         }
-        controller.playTrack(tracks.first(), tracks)
-        Log.d(TAG, "PLAY_MEDIA reproduciendo '${tracks.first().title}' (${tracks.size} en cola)")
+        if (!controller.isConnected()) {
+            Log.w(TAG, "PLAY_MEDIA: MusicController sin conectar tras ${waited * 150}ms")
+            return false
+        }
+        // radioSeed = true: modo radio (recomendadas del algoritmo), igual que la
+        // búsqueda manual y la búsqueda por voz.
+        controller.playTrack(tracks.first(), radioSeed = true)
+        Log.d(TAG, "PLAY_MEDIA reproduciendo '${tracks.first().title}' (modo radio)")
         return true
     }
 

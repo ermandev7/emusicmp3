@@ -151,9 +151,26 @@ public class RecommendationEngine
     // poco, pero ya no la destierra de por vida.
     private const double RecentExclusionWindowDays = 21.0;
 
-    public UserProfile BuildProfile(List<History> history, List<Favorite>? favorites = null)
+    /// <param name="excludedArtists">
+    /// Artistas marcados "no recomendar" (normalizados). Se quitan del perfil: medido en
+    /// un perfil real, los 3 artistas más escuchados estaban excluidos y seguían
+    /// dominando top artistas, género y búsquedas ("música similar a X"), así que se
+    /// recomendaba "más de lo mismo" que el usuario había rechazado.
+    /// </param>
+    public UserProfile BuildProfile(List<History> history, List<Favorite>? favorites = null,
+        ISet<string>? excludedArtists = null)
     {
         favorites ??= new List<Favorite>();
+        if (excludedArtists is { Count: > 0 })
+        {
+            bool IsExcluded(string artist)
+            {
+                var na = NormalizeArtist(artist);
+                return na.Length > 0 && excludedArtists.Any(ex => ArtistMatches(ex, na));
+            }
+            history = history.Where(h => !IsExcluded(h.Artist)).ToList();
+            favorites = favorites.Where(f => !IsExcluded(f.Artist)).ToList();
+        }
         if (history.Count == 0 && favorites.Count == 0)
             return new UserProfile();
 
@@ -330,8 +347,7 @@ public class RecommendationEngine
         if (normArtist.Length > 0 && profile.TopArtists.Count > 0)
         {
             double topArtistW = profile.TopArtists[0].Value;
-            var match = profile.TopArtists.FirstOrDefault(a =>
-                a.Key == normArtist || a.Key.Contains(normArtist) || normArtist.Contains(a.Key));
+            var match = profile.TopArtists.FirstOrDefault(a => ArtistMatches(a.Key, normArtist));
             if (match.Key != null && topArtistW > 0)
                 artistBonus = ArtistBonusMax * (match.Value / topArtistW);
         }
@@ -352,7 +368,7 @@ public class RecommendationEngine
         // Refuerzo explícito si el artista es uno de los favoritos del usuario.
         double favoriteBonus = 0;
         if (normArtist.Length > 0 && profile.FavoriteArtists.Count > 0 &&
-            profile.FavoriteArtists.Any(fa => fa == normArtist || fa.Contains(normArtist) || normArtist.Contains(fa)))
+            profile.FavoriteArtists.Any(fa => ArtistMatches(fa, normArtist)))
             favoriteBonus = FavoriteBonusValue;
 
         // Señal negativa: si el usuario saltea a este artista la mayoría de las veces,
@@ -363,6 +379,86 @@ public class RecommendationEngine
             skipPenalty = SkipPenaltyMax * skipRatio;
 
         return Math.Max(0, contentScore + artistBonus + genreBonus + favoriteBonus - skipPenalty);
+    }
+
+    // ──────────────── Helpers de matching / calidad ────────────────
+
+    /// <summary>
+    /// Coincidencia de artista: igualdad normalizada o aparición como palabra completa.
+    /// Antes era Contains en los dos sentidos, que daba falsos positivos ("mora" dentro
+    /// de "morat" se llevaba el bonus de artista). Exige longitud ≥3 para lo parcial.
+    /// </summary>
+    public static bool ArtistMatches(string a, string b)
+    {
+        if (a.Length == 0 || b.Length == 0) return false;
+        if (a == b) return true;
+        if (a.Length < 3 || b.Length < 3) return false;
+        var (shorter, longer) = a.Length <= b.Length ? (a, b) : (b, a);
+        return Regex.IsMatch(longer, $@"\b{Regex.Escape(shorter)}\b");
+    }
+
+    /// <summary>
+    /// Clave de "misma canción" independiente del vídeo: tokens del título sin
+    /// paréntesis, palabras vacías ni el nombre del artista. Sirve para no recomendar
+    /// otra subida (o una versión de otro canal) de algo escuchado hace poco. Devuelve
+    /// null si el título es demasiado corto para comparar sin falsos positivos.
+    /// </summary>
+    public static string? SongKey(string title, string artist)
+    {
+        var artistTokens = new HashSet<string>(Tokenize(artist));
+        var tokens = Tokenize(title).Where(t => !artistTokens.Contains(t)).Distinct().OrderBy(t => t).ToList();
+        return tokens.Count >= 2 ? string.Join(' ', tokens) : null;
+    }
+
+    /// <summary>
+    /// Claves de canción del historial reciente (misma ventana que PlayedVideoIds). Como
+    /// con los videoIds, pasada la ventana la canción vuelve a ser candidata.
+    /// </summary>
+    public static HashSet<string> RecentSongKeys(IEnumerable<History> history)
+    {
+        var now = DateTime.UtcNow;
+        return history
+            .Where(h => (now - h.PlayedAt).TotalDays <= RecentExclusionWindowDays)
+            .Select(h => SongKey(h.Title, h.Artist))
+            .Where(k => k != null)
+            .Select(k => k!)
+            .ToHashSet();
+    }
+
+    // Siempre basura, sea cual sea la duración: karaoke, covers, versiones alteradas,
+    // tutoriales, popurrís y compilaciones. Las duraciones ("1 hora", "24 horas") NO
+    // van aquí: hay canciones reales con esos títulos y el tope de 10 min ya cubre los
+    // vídeos largos.
+    private static readonly Regex AlwaysJunkTitle = new(
+        @"\b(megamix|enganchad[oa]s?|compilaci[oó]n|compilation|full album|[aá]lbum completo|" +
+        @"karaoke|cover|tutorial|lesson|nightcore|sped\s*up|slowed|8d\s*audio|" +
+        @"greatest hits|top\s*\d+\s*(mix|canciones))\b",
+        RegexOptions.IgnoreCase | RegexOptions.Compiled);
+
+    // "mix" solo es basura cuando es un mix de verdad (largo, o con año/volumen/
+    // "bailable"/"éxitos"...). Así no caen "Little Mix" ni versiones tipo
+    // "Ven Bailalo (Reggaeton Mix)" de duración normal.
+    private static readonly Regex MixWord = new(@"\bmix\b", RegexOptions.IgnoreCase | RegexOptions.Compiled);
+    private static readonly Regex MixContext = new(
+        @"\b((19|20)\d\d|vol\.?\s*\d+|bailable|[eé]xitos|lo mejor|cumbias|baladas|salsas|bachatas)\b",
+        RegexOptions.IgnoreCase | RegexOptions.Compiled);
+
+    // Popurrí: varias canciones en un título ("A / B / C").
+    private static readonly Regex Medley = new(@"\s/\s.+\s/\s", RegexOptions.Compiled);
+
+    /// <summary>
+    /// true si el candidato es "basura" para recomendación: duración inválida o larga
+    /// (mix o compilación), título con patrones no deseados, popurrí o mix. Medido en la
+    /// API real: colaba mixes de 20-45 min ("Mix Cumbias 2000 Lo Mejor", 2816 s).
+    /// Duración 0 = desconocida (algunas fuentes no la traen): se juzga solo por título,
+    /// para no vaciar el descubrimiento si una fuente entera viene sin duración.
+    /// </summary>
+    public static bool IsJunkCandidate(string title, int durationSeconds)
+    {
+        if (durationSeconds > 600) return true; // >10 min = mix/compilación
+        if (string.IsNullOrWhiteSpace(title)) return true;
+        if (AlwaysJunkTitle.IsMatch(title) || Medley.IsMatch(title)) return true;
+        return MixWord.IsMatch(title) && (durationSeconds > 300 || MixContext.IsMatch(title));
     }
 
     // ──────────────── Generación de queries ────────────────

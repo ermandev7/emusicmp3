@@ -177,12 +177,12 @@ public class MusicExtractionService
     // ─────────────────────────────────────────────────────────────────
     // BÚSQUEDA con Invidious API — Plan B, REST rápida sin JavaScript
     // ─────────────────────────────────────────────────────────────────
+    // yt.artemislena.eu e invidious.fdn.fr quitadas el 27/09/2026: totalmente
+    // inalcanzables (DNS/red), solo anadian ~12s de espera muerta por peticion.
     private static readonly string[] InvidiousInstances =
     [
         "https://inv.nadeko.net",
         "https://invidious.nerdvpn.de",
-        "https://yt.artemislena.eu",
-        "https://invidious.fdn.fr",
         "https://invidious.privacyredirect.com"
     ];
 
@@ -460,6 +460,30 @@ public class MusicExtractionService
     // ─────────────────────────────────────────────────────────────────
     public Task<string> GetStreamAsync(string videoId) => GetStreamAsync(videoId, allowSubstitute: true);
 
+    /// <summary>
+    /// Duracion real (en milisegundos) de un video, SOLO si ya esta en cache por
+    /// haberse reproducido hace poco (no dispara ninguna llamada de red nueva).
+    /// Lo usa HistoryController para corregir el caso en que el cliente registra
+    /// una reproduccion con Duration=0 (p.ej. si registra antes de conocer la
+    /// duracion real del track).
+    /// </summary>
+    public long? TryGetCachedDurationMs(string videoId)
+    {
+        if (!_cache.TryGetValue($"stream_{videoId}", out string? cached) || string.IsNullOrEmpty(cached))
+            return null;
+        try
+        {
+            using var doc = JsonDocument.Parse(cached);
+            if (doc.RootElement.TryGetProperty("duration", out var durEl) && durEl.ValueKind == JsonValueKind.Number)
+            {
+                var seconds = durEl.GetDouble();
+                if (seconds > 0) return (long)(seconds * 1000);
+            }
+        }
+        catch { /* JSON de error cacheado, no un stream valido: se ignora */ }
+        return null;
+    }
+
     /// <param name="allowSubstitute">
     /// Si es true y el vídeo pedido resulta estar caído en todas partes (borrado,
     /// privado, bloqueado), se intenta servir la MISMA canción desde otra fuente en
@@ -467,7 +491,7 @@ public class MusicExtractionService
     /// normalidad. Se pone en false en la llamada recursiva de esa búsqueda para no
     /// encadenar sustituciones indefinidamente.
     /// </param>
-    private async Task<string> GetStreamAsync(string videoId, bool allowSubstitute)
+    private async Task<string> GetStreamAsync(string videoId, bool allowSubstitute, bool isPrefetch = false)
     {
         var cacheKey = $"stream_{videoId}";
         if (_cache.TryGetValue(cacheKey, out string? cached) && cached != null)
@@ -530,12 +554,33 @@ public class MusicExtractionService
                     _cache.Set(cacheKey, json, TimeSpan.FromMinutes(55));
                     Console.WriteLine($"[Stream] OK via {source} (paralelo) para {videoId}");
                     cts.Cancel(); // Cancelar el resto
-                    // Enriquecer related streams en background (no bloquea el play)
+                    // Enriquecer related streams en background (no bloquea el play) y
+                    // precalentar (prefetch) las 2 canciones mas probables de sonar despues.
+                    // Arregla el caso "una cancion tarda 4-5s en resolver (p.ej. necesita
+                    // yt-dlp porque Piped no le saca audio) y el reproductor la salta por
+                    // tardar": si ya llego precalentada desde que sonaba la anterior, el
+                    // play es instantaneo sin importar cuanto tarde esa cancion en concreto.
+                    // Se aplica siempre, para cualquier cancion, no solo para las que ya
+                    // sabemos que son lentas.
                     _ = Task.Run(async () =>
                     {
                         var enriched = await EnrichRelatedStreamsIfEmptyAsync(json, videoId);
                         if (enriched != json)
                             _cache.Set(cacheKey, enriched, TimeSpan.FromMinutes(55));
+
+                        // Solo desde una reproduccion real: si esta llamada YA es un
+                        // precalentado, no encadenar mas (evita una cascada sin limite que
+                        // multiplica las peticiones a YouTube y dispara su bloqueo por
+                        // "demasiadas peticiones" — nos paso el 29/09, ver commit).
+                        if (!isPrefetch)
+                        {
+                            foreach (var relatedId in ExtractRelatedVideoIds(enriched, max: 2))
+                            {
+                                if (relatedId == videoId) continue;
+                                if (_cache.TryGetValue($"stream_{relatedId}", out string? _)) continue; // ya calentada
+                                _ = GetStreamAsync(relatedId, allowSubstitute: true, isPrefetch: true); // fire-and-forget, un solo nivel
+                            }
+                        }
                     });
                     return json;
                 }
@@ -685,6 +730,27 @@ public class MusicExtractionService
         return ("", "");
     }
 
+    /// <summary>Hasta <paramref name="max"/> videoIds de relatedStreams (JSON de /streams enriquecido), en orden.</summary>
+    private static List<string> ExtractRelatedVideoIds(string enrichedStreamJson, int max)
+    {
+        var ids = new List<string>();
+        try
+        {
+            using var doc = JsonDocument.Parse(enrichedStreamJson);
+            if (!doc.RootElement.TryGetProperty("relatedStreams", out var related)) return ids;
+            foreach (var item in related.EnumerateArray())
+            {
+                if (ids.Count >= max) break;
+                var url = item.TryGetProperty("url", out var u) ? u.GetString() ?? "" : "";
+                var idx = url.IndexOf("?v=", StringComparison.Ordinal);
+                var id = idx >= 0 ? url[(idx + 3)..] : "";
+                if (!string.IsNullOrEmpty(id) && !ids.Contains(id)) ids.Add(id);
+            }
+        }
+        catch { /* JSON inesperado: sin candidatos que precalentar */ }
+        return ids;
+    }
+
     /// <summary>Primer videoId de un JSON de búsqueda {"items":[...]}, distinto de <paramref name="excluding"/>.</summary>
     private static string? FirstVideoIdFrom(string searchJson, string excluding)
     {
@@ -831,10 +897,14 @@ public class MusicExtractionService
                 return BuildErrorJson($"yt-dlp falló: {errorOut}");
             }
 
-            // Obtener título, duración (en segundos) y thumbnail con yt-dlp
+            // Obtener título, duración (en segundos), thumbnail y canal con yt-dlp.
+            // El canal/artista es imprescindible para poder buscar canciones relacionadas
+            // despues (EnrichRelatedStreamsIfEmptyAsync se niega a buscar sin artista, para
+            // no traer resultados aleatorios) — sin esto, las canciones que necesitan yt-dlp
+            // (las mas propensas a fallar en Piped) nunca se beneficiaban del precalentado.
             var (_, metaOutput, _, metaTimedOut) = await RunWithTimeoutAsync(
                 "yt-dlp",
-                $"--force-ipv4 --print title --print duration --print thumbnail --no-playlist --quiet https://www.youtube.com/watch?v={videoId}",
+                $"--force-ipv4 --print title --print duration --print thumbnail --print uploader --no-playlist --quiet https://www.youtube.com/watch?v={videoId}",
                 YtDlpTimeout);
             if (metaTimedOut)
                 Console.WriteLine($"[yt-dlp] ⏱ Timeout obteniendo metadatos de {videoId}; se usarán valores por defecto.");
@@ -845,6 +915,8 @@ public class MusicExtractionService
                 System.Globalization.NumberStyles.Any, System.Globalization.CultureInfo.InvariantCulture, out var d)
                 ? (long)d : 0L;
             var thumbnail = metaLines.Length > 2 ? metaLines[2].Trim() : "";
+            var uploader = metaLines.Length > 3 ? metaLines[3].Trim() : "";
+            if (uploader == "NA") uploader = "";
 
             // El WebM/Opus va SIEMPRE PRIMERO y con el mismo bitrate declarado que antes.
             // La app Android elige con maxByOrNull { bitrate }, que ante empate se queda con
@@ -901,7 +973,7 @@ public class MusicExtractionService
             {
                 title = title,
                 description = "",
-                uploader = "",
+                uploader = uploader,
                 uploaderUrl = "",
                 uploaderAvatar = "",
                 uploaderVerified = false,

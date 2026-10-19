@@ -117,7 +117,8 @@ public class RecommendationEngine
 
     // ──────────────── Perfil del usuario ────────────────
     //
-    //  W(i) = PlayCount × e^(-0.05 × days) × SkipPenalty × DownloadBonus
+    //  W(i) = PlaysEscuchadas × e^(-0.05 × days) × DownloadBonus
+    //         (PlaysEscuchadas = PlayCount, menos 1 si la última vez se saltó)
     //  TF(t) = Σ W(i)  para tracks que contienen token t
     //  IDF(t) = ln((N+1)/(df+1)) + 1
     //  ProfileVector[t] = TF(t) × IDF(t)
@@ -126,9 +127,26 @@ public class RecommendationEngine
     // equivale a una canción bastante escuchada.
     private const double FavoriteWeight = 8.0;
 
-    public UserProfile BuildProfile(List<History> history, List<Favorite>? favorites = null)
+    /// <param name="excludedArtists">
+    /// Artistas marcados "no recomendar" (normalizados). Se quitan del perfil: si no, un
+    /// artista muy escuchado pero excluido seguía dominando los top artistas, las
+    /// búsquedas ("música similar a X") y el género, y se recomendaba "más de lo mismo"
+    /// que el usuario había rechazado.
+    /// </param>
+    public UserProfile BuildProfile(List<History> history, List<Favorite>? favorites = null,
+        ISet<string>? excludedArtists = null)
     {
         favorites ??= new List<Favorite>();
+        if (excludedArtists is { Count: > 0 })
+        {
+            bool IsExcluded(string artist)
+            {
+                var na = NormalizeArtist(artist);
+                return na.Length > 0 && excludedArtists.Any(ex => ArtistMatches(ex, na));
+            }
+            history = history.Where(h => !IsExcluded(h.Artist)).ToList();
+            favorites = favorites.Where(f => !IsExcluded(f.Artist)).ToList();
+        }
         if (history.Count == 0 && favorites.Count == 0)
             return new UserProfile();
 
@@ -177,24 +195,31 @@ public class RecommendationEngine
 
         foreach (var entry in history)
         {
-            double daysSince = Math.Max(0, (now - entry.PlayedAt).TotalDays);
-            double recency = Math.Exp(-0.05 * daysSince);
-            double skipPenalty = entry.SkippedEarly ? 0.3 : 1.0;
-            double downloadBonus = entry.IsDownloaded ? 1.5 : 1.0;
-            double weight = entry.PlayCount * recency * skipPenalty * downloadBonus;
-            Accumulate(entry.VideoId, entry.Title, entry.Artist, weight);
+            // SkippedEarly = la última vez se saltó en los primeros segundos (el servidor
+            // lo resetea al volver a escucharla). Esa reproducción saltada no cuenta como
+            // gusto: una canción saltada a la primera aporta 0 al perfil.
+            int listenedPlays = entry.SkippedEarly ? entry.PlayCount - 1 : entry.PlayCount;
+            if (listenedPlays > 0)
+            {
+                double daysSince = Math.Max(0, (now - entry.PlayedAt).TotalDays);
+                double recency = Math.Exp(-0.05 * daysSince);
+                double downloadBonus = entry.IsDownloaded ? 1.5 : 1.0;
+                double weight = listenedPlays * recency * downloadBonus;
+                Accumulate(entry.VideoId, entry.Title, entry.Artist, weight);
+            }
 
-            // Conteo plays/skips por artista (señal negativa posterior).
+            // Canciones y skips por artista (señal negativa posterior). Se cuenta por
+            // canción, no por reproducción: saltar una vez un tema escuchado 70 veces no
+            // son 70 skips.
             var na = NormalizeArtist(entry.Artist);
             if (na.Length > 0)
             {
-                int plays = Math.Max(1, entry.PlayCount);
                 artistPlays.TryGetValue(na, out int pc);
-                artistPlays[na] = pc + plays;
+                artistPlays[na] = pc + 1;
                 if (entry.SkippedEarly)
                 {
                     artistSkips.TryGetValue(na, out int sc);
-                    artistSkips[na] = sc + plays;
+                    artistSkips[na] = sc + 1;
                 }
             }
         }
@@ -218,8 +243,8 @@ public class RecommendationEngine
             idfVector[token] = idf;
         }
 
-        // Tasa de skip por artista: skips/plays. Solo cuenta con muestra suficiente
-        // (≥3 plays) para no penalizar por un único skip accidental.
+        // Tasa de skip por artista: canciones saltadas / canciones en el historial. Solo
+        // con muestra suficiente (≥3 canciones) para no penalizar por un skip accidental.
         var artistSkipRate = new Dictionary<string, double>();
         foreach (var (artist, plays) in artistPlays)
         {
@@ -244,6 +269,19 @@ public class RecommendationEngine
     // ──────────────── Helpers de matching / calidad ────────────────
 
     /// <summary>
+    /// Clave de "misma canción" independiente del vídeo: tokens del título sin
+    /// paréntesis, palabras vacías ni el nombre del artista. Sirve para no recomendar
+    /// otra subida (o una versión de otro canal) de algo que el usuario ya escuchó.
+    /// Devuelve null si el título es demasiado corto para comparar sin falsos positivos.
+    /// </summary>
+    public static string? SongKey(string title, string artist)
+    {
+        var artistTokens = new HashSet<string>(Tokenize(artist));
+        var tokens = Tokenize(title).Where(t => !artistTokens.Contains(t)).Distinct().OrderBy(t => t).ToList();
+        return tokens.Count >= 2 ? string.Join(' ', tokens) : null;
+    }
+
+    /// <summary>
     /// Coincidencia de artista robusta: igualdad normalizada o aparición como palabra
     /// completa (evita falsos positivos tipo "Mora"⊂"Morat"). Exige longitud ≥3.
     /// </summary>
@@ -256,25 +294,38 @@ public class RecommendationEngine
         return Regex.IsMatch(longer, $@"\b{Regex.Escape(shorter)}\b");
     }
 
-    // Palabras que delatan contenido que el usuario no quiere como recomendación:
-    // mixes/compilaciones largas, karaoke, covers, versiones alteradas, tutoriales.
-    private static readonly Regex JunkTitle = new(
-        @"\b(mix|megamix|enganchad[oa]s?|compilaci[oó]n|compilation|full album|album completo|" +
-        @"\d+\s*(h|hr|hrs|hora|horas|hour|hours|min|minutos)|one hour|1\s*hora|" +
-        @"karaoke|cover|tutorial|lesson|nightcore|sped\s*up|slowed|reverb|8d\s*audio|loop|" +
-        @"greatest hits|grandes [eé]xitos\s*(mix|enganchad)|top\s*\d+\s*(mix|canciones))\b",
+    // Siempre basura, sea cual sea la duración: karaoke, covers, versiones alteradas,
+    // tutoriales, popurrís y compilaciones. Las duraciones ("1 hora", "24 horas") NO
+    // van aquí: hay canciones reales con esos títulos y el tope de 10 min ya cubre los
+    // vídeos largos.
+    private static readonly Regex AlwaysJunkTitle = new(
+        @"\b(megamix|enganchad[oa]s?|compilaci[oó]n|compilation|full album|[aá]lbum completo|" +
+        @"karaoke|cover|tutorial|lesson|nightcore|sped\s*up|slowed|8d\s*audio|" +
+        @"greatest hits|top\s*\d+\s*(mix|canciones))\b",
         RegexOptions.IgnoreCase | RegexOptions.Compiled);
 
+    // "mix" solo es basura cuando es un mix de verdad (largo, o con año/volumen/
+    // "bailable"/"éxitos"...). Así no caen "Little Mix" ni versiones tipo
+    // "Ven Bailalo (Reggaeton Mix)" de duración normal.
+    private static readonly Regex MixWord = new(@"\bmix\b", RegexOptions.IgnoreCase | RegexOptions.Compiled);
+    private static readonly Regex MixContext = new(
+        @"\b((19|20)\d\d|vol\.?\s*\d+|bailable|[eé]xitos|lo mejor|cumbias|baladas|salsas|bachatas)\b",
+        RegexOptions.IgnoreCase | RegexOptions.Compiled);
+
+    // Popurrí: varias canciones en un título ("A / B / C").
+    private static readonly Regex Medley = new(@"\s/\s.+\s/\s", RegexOptions.Compiled);
+
     /// <summary>
-    /// true si el candidato es "basura" para recomendación: duración inválida/larga
-    /// (mix o compilación) o título con patrones no deseados. durationSeconds=0 → se
-    /// descarta por no poder validar.
+    /// true si el candidato es "basura" para recomendación: duración inválida o larga
+    /// (mix o compilación), título con patrones no deseados, popurrí o mix. Con
+    /// durationSeconds=0 se descarta porque no se puede validar.
     /// </summary>
     public static bool IsJunkCandidate(string title, int durationSeconds)
     {
         if (durationSeconds <= 0 || durationSeconds > 600) return true; // >10 min = mix/compilación
         if (string.IsNullOrWhiteSpace(title)) return true;
-        return JunkTitle.IsMatch(title);
+        if (AlwaysJunkTitle.IsMatch(title) || Medley.IsMatch(title)) return true;
+        return MixWord.IsMatch(title) && (durationSeconds > 300 || MixContext.IsMatch(title));
     }
 
     // ──────────────── Scoring de candidatos ────────────────

@@ -63,7 +63,11 @@ class ArtworkProvider : ContentProvider() {
             throw FileNotFoundException("URI de carátula inválida")
         }
         if (!isAllowed(remote)) throw FileNotFoundException("Host no permitido")
-        AutoDiagLog(context!!).log("Carátula pedida por ${callingPackage ?: "?"}: ${remote.takeLast(40)}")
+        // Solo las que pide Android Auto: la propia app y la barra del sistema piden
+        // la de lo que suena a cada rato y llenaban el registro.
+        if (callingPackage?.contains("projection.gearhead") == true) {
+            AutoDiagLog(context!!).log("Carátula pedida por Android Auto: ${remote.takeLast(40)}")
+        }
 
         // "artwork-best": la caché anterior ("artwork") tenía versiones de 480×360.
         val dir = File(context!!.cacheDir, "artwork-best").apply { mkdirs() }

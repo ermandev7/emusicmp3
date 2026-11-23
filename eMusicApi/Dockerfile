@@ -21,7 +21,7 @@ WORKDIR /app
 #   sin esto, YouTube devuelve URLs con firma invalida -> HTTP 403 al reproducir)
 RUN apt-get update && \
     apt-get install -y --no-install-recommends python3 python3-pip curl ffmpeg unzip && \
-    pip3 install -U yt-dlp --break-system-packages && \
+    pip3 install -U "yt-dlp[default]" --break-system-packages && \
     curl -fsSL https://deno.land/install.sh | sh && \
     ln -sf /root/.deno/bin/deno /usr/local/bin/deno && \
     apt-get clean && rm -rf /var/lib/apt/lists/*

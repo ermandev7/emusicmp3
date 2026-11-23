@@ -22,6 +22,8 @@ builder.Services.AddResponseCompression(options =>
 builder.Services.AddHttpClient();
 builder.Services.AddSingleton<MusicExtractionService>();
 builder.Services.AddSingleton<RecommendationEngine>();
+// Scoped: usa AppDbContext (historial, favoritos y exclusiones del usuario).
+builder.Services.AddScoped<GenreRadioService>();
 
 builder.Services.AddCors(options =>
 {
@@ -51,6 +53,7 @@ using (var scope = app.Services.CreateScope())
         ("Playlists", "UserId", "ALTER TABLE Playlists ADD COLUMN UserId TEXT NOT NULL DEFAULT ''"),
         ("History", "SkippedEarly", "ALTER TABLE History ADD COLUMN SkippedEarly INTEGER NOT NULL DEFAULT 0"),
         ("History", "IsDownloaded", "ALTER TABLE History ADD COLUMN IsDownloaded INTEGER NOT NULL DEFAULT 0"),
+        ("History", "SkipCount", "ALTER TABLE History ADD COLUMN SkipCount INTEGER NOT NULL DEFAULT 0"),
     };
     foreach (var (table, column, sql) in columnMigrations)
     {
@@ -59,7 +62,13 @@ using (var scope = app.Services.CreateScope())
             .AsEnumerable().FirstOrDefault() > 0;
         if (columnExists) continue;
 
-        try { db.Database.ExecuteSqlRaw(sql); }
+        try
+        {
+            db.Database.ExecuteSqlRaw(sql);
+            // Al estrenar el contador de saltos, lo ya marcado como saltado cuenta como 1.
+            if (table == "History" && column == "SkipCount")
+                db.Database.ExecuteSqlRaw("UPDATE History SET SkipCount = 1 WHERE SkippedEarly = 1");
+        }
         catch (Exception ex) { Console.WriteLine($"[Esquema] No se pudo anadir {table}.{column}: {ex.Message}"); }
     }
 

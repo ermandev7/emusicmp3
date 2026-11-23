@@ -4,6 +4,7 @@ using System.Text.Json.Nodes;
 using System.Threading;
 using System.Threading.Tasks;
 using System;
+using System.Collections.Concurrent;
 using System.Collections.Generic;
 using System.Linq;
 using Microsoft.EntityFrameworkCore;
@@ -17,7 +18,8 @@ namespace eMusicApi.Services;
 
 /// <summary>
 /// Servicio híbrido de extracción de música.
-/// Cascada: Piped Principal → 3 Piped Públicos → YoutubeExplode Nativo.
+/// Streams: yt-dlp (bajo el control de <see cref="YouTubeGate"/>) y, solo si falla,
+/// Piped interno → YoutubeExplode → Piped públicos como respaldo.
 /// Caché inteligente: sólo guarda resultados VÁLIDOS (con audioStreams).
 /// </summary>
 public class MusicExtractionService
@@ -29,6 +31,13 @@ public class MusicExtractionService
     // datos (actualizar favoritos/listas cuando se sustituye un vídeo) hay que abrir
     // un scope propio en cada uso, nunca inyectar AppDbContext directamente aquí.
     private readonly IServiceScopeFactory _scopeFactory;
+
+    // Tope de extracciones por minuto y cortacircuitos ante bloqueos de YouTube.
+    // El servicio es Singleton, así que hay un único control para toda la API.
+    private readonly YouTubeGate _gate = YouTubeGate.FromEnvironment();
+
+    // Extracciones en marcha, por videoId (ver GetStreamAsync).
+    private readonly ConcurrentDictionary<string, PendingStream> _inFlight = new();
 
     // Instancias Piped en orden de preferencia.
     // NOTA: dentro de Docker, el backend Piped se llama "piped-backend" en la red interna.
@@ -75,22 +84,26 @@ public class MusicExtractionService
     /// Ejecuta un proceso externo con un límite de tiempo real. Si se pasa, lo mata
     /// (con todo el árbol de hijos que haya lanzado, p.ej. ffmpeg o deno) en vez de
     /// dejarlo colgado consumiendo CPU/memoria de la Pi sin que nadie lo espere ya.
+    ///
+    /// Los argumentos se pasan uno a uno (ArgumentList), nunca como una sola cadena:
+    /// así un texto que viene de fuera (una búsqueda, un id) llega al proceso como
+    /// UN argumento y no puede colar opciones extra a yt-dlp.
     /// </summary>
     private static async Task<(int exitCode, string stdout, string stderr, bool timedOut)> RunWithTimeoutAsync(
-        string fileName, string arguments, TimeSpan timeout)
+        string fileName, IEnumerable<string> arguments, TimeSpan timeout)
     {
-        using var process = new System.Diagnostics.Process
+        var startInfo = new System.Diagnostics.ProcessStartInfo
         {
-            StartInfo = new System.Diagnostics.ProcessStartInfo
-            {
-                FileName = fileName,
-                Arguments = arguments,
-                RedirectStandardOutput = true,
-                RedirectStandardError = true,
-                UseShellExecute = false,
-                CreateNoWindow = true
-            }
+            FileName = fileName,
+            RedirectStandardOutput = true,
+            RedirectStandardError = true,
+            UseShellExecute = false,
+            CreateNoWindow = true
         };
+        foreach (var argument in arguments)
+            startInfo.ArgumentList.Add(argument);
+
+        using var process = new System.Diagnostics.Process { StartInfo = startInfo };
 
         process.Start();
         var stdoutTask = process.StandardOutput.ReadToEndAsync();
@@ -126,9 +139,20 @@ public class MusicExtractionService
     // ─────────────────────────────────────────────────────────────────
     // BÚSQUEDA
     // ─────────────────────────────────────────────────────────────────
-    public async Task<string> SearchAsync(string query)
+    /// <summary>Filtro de Piped del buscador normal: canciones sueltas de YouTube Music.</summary>
+    public const string DefaultSearchFilter = "music_songs";
+
+    /// <param name="filter">
+    /// Filtro de Piped ("music_songs", "videos", "music_videos"...). Con uno distinto del
+    /// normal solo se pregunta a Piped: los respaldos (Invidious, yt-dlp) no entienden
+    /// de filtros y devolverían otra cosa.
+    /// </param>
+    public async Task<string> SearchAsync(string query, string filter = DefaultSearchFilter)
     {
-        var cacheKey = $"search_{query.ToLowerInvariant()}";
+        bool isDefaultFilter = filter == DefaultSearchFilter;
+        var cacheKey = isDefaultFilter
+            ? $"search_{query.ToLowerInvariant()}"
+            : $"search_{filter}_{query.ToLowerInvariant()}";
         if (_cache.TryGetValue(cacheKey, out string? cached) && cached != null)
             return cached;
 
@@ -138,7 +162,7 @@ public class MusicExtractionService
             {
                 var client = _httpClientFactory.CreateClient();
                 client.Timeout = TimeSpan.FromSeconds(8);
-                var url = $"{instance}/search?q={Uri.EscapeDataString(query)}&filter=music_songs";
+                var url = $"{instance}/search?q={Uri.EscapeDataString(query)}&filter={Uri.EscapeDataString(filter)}";
                 var response = await client.GetAsync(url);
 
                 if (response.IsSuccessStatusCode)
@@ -158,6 +182,12 @@ public class MusicExtractionService
             {
                 Console.WriteLine($"[Search] Fallo en {instance}: {ex.Message}");
             }
+        }
+
+        if (!isDefaultFilter)
+        {
+            Console.WriteLine($"[Search] Sin resultados de Piped para '{query}' (filtro {filter}).");
+            return "{\"items\":[],\"nextpage\":null}";
         }
 
         // Sin resultados de ningún proveedor Piped → intentar Invidious (REST API rápida, ~1-2s)
@@ -362,6 +392,13 @@ public class MusicExtractionService
     // ─────────────────────────────────────────────────────────────────
     private async Task<string> SearchWithYtDlpAsync(string query)
     {
+        // Con YouTube bloqueándonos, buscar con yt-dlp solo alargaría el bloqueo.
+        if (_gate.IsBlocked(out _))
+        {
+            Console.WriteLine($"[yt-dlp Search] Omitida para '{query}': YouTube está limitando la IP.");
+            return "{\"items\":[],\"nextpage\":null}";
+        }
+
         try
         {
             // Primero intentamos YouTube Music (resultados de canciones precisos)
@@ -389,9 +426,11 @@ public class MusicExtractionService
 
     private async Task<List<object>> RunYtDlpSearch(string searchArg, string query, bool isMusic)
     {
+        // "--" marca el fin de las opciones: lo que va detrás (que contiene el texto
+        // que escribió el usuario) solo puede ser la búsqueda, nunca una opción.
         var (_, output, _, timedOut) = await RunWithTimeoutAsync(
             "yt-dlp",
-            $"\"{searchArg}\" --force-ipv4 --flat-playlist -j --quiet --no-warnings --playlist-end 20",
+            new[] { "--force-ipv4", "--flat-playlist", "-j", "--quiet", "--no-warnings", "--playlist-end", "20", "--", searchArg },
             YtDlpTimeout);
         if (timedOut)
             Console.WriteLine($"[yt-dlp Search] ⏱ Timeout buscando '{query}'; proceso detenido.");
@@ -493,6 +532,11 @@ public class MusicExtractionService
     /// </param>
     private async Task<string> GetStreamAsync(string videoId, bool allowSubstitute, bool isPrefetch = false)
     {
+        // El id acaba en la línea de órdenes de yt-dlp y en URLs de otros servicios:
+        // solo se acepta lo que tiene forma de id de YouTube.
+        if (!IsValidVideoId(videoId))
+            return BuildErrorJson("Identificador de vídeo no válido.");
+
         var cacheKey = $"stream_{videoId}";
         if (_cache.TryGetValue(cacheKey, out string? cached) && cached != null)
             return cached;
@@ -507,108 +551,217 @@ public class MusicExtractionService
             return recentFailure;
         }
 
-        // Lanzar TODOS los extractores en paralelo — el primero que devuelva
-        // audioStreams válidos gana. yt-dlp es el más robusto (casi nunca falla),
-        // pero Piped interno puede ser más rápido si está funcionando.
-        using var cts = new CancellationTokenSource(TimeSpan.FromSeconds(20));
-
-        var tasks = new List<Task<(string json, string source)>>();
-
-        // yt-dlp: el más robusto, casi siempre funciona. Se acota con el cts general
-        // para que, aunque el proceso tarde, esta rama del Task.WhenAny no bloquee
-        // más allá del límite común (el proceso en sí se mata por su cuenta si se
-        // pasa de YtDlpTimeout, ver RunWithTimeoutAsync).
-        tasks.Add(BoundedBySource(Task.Run(async () =>
+        // Una sola extracción en marcha por vídeo: si llegan varias peticiones de la
+        // misma canción a la vez (play + precalentado, reintentos de la app...), todas
+        // esperan el mismo resultado en vez de lanzar cada una su yt-dlp contra YouTube.
+        var mine = new PendingStream(
+            new Lazy<Task<string>>(() => ResolveStreamAsync(videoId, allowSubstitute, isPrefetch)),
+            isPrefetch);
+        var pending = _inFlight.GetOrAdd(videoId, mine);
+        string result;
+        try
         {
-            var json = await ExtractWithYtDlpAsync(videoId, cacheKey: null);
-            return (json, "yt-dlp");
-        }), "yt-dlp", cts.Token));
-
-        // Piped interno (Docker) — el más rápido cuando funciona
-        tasks.Add(TryPipedInstanceAsync(PipedInstances[0], videoId, cts.Token));
-
-        // YoutubeExplode — Plan B nativo
-        tasks.Add(BoundedBySource(Task.Run(async () =>
+            result = await pending.Task.Value;
+        }
+        finally
         {
-            var json = await ExtractWithYoutubeExplodeAsync(videoId, cacheKey: null);
-            return (json, "YoutubeExplode");
-        }), "YoutubeExplode", cts.Token));
+            _inFlight.TryRemove(new KeyValuePair<string, PendingStream>(videoId, pending));
+        }
 
-        // 1-2 Piped públicos (solo los que resuelven DNS)
-        if (PipedInstances.Length > 1)
-            tasks.Add(TryPipedInstanceAsync(PipedInstances[1], videoId, cts.Token));
-        if (PipedInstances.Length > 2)
-            tasks.Add(TryPipedInstanceAsync(PipedInstances[2], videoId, cts.Token));
+        // Esta reproducción se sumó a un precalentado que no dio resultado (p.ej. se
+        // descartó por falta de cupo): un play real no se conforma, lo intenta él.
+        if (!isPrefetch && pending.IsPrefetch && !HasValidAudioStreams(result))
+            return await GetStreamAsync(videoId, allowSubstitute, isPrefetch: false);
 
-        // Esperar al primero que tenga audioStreams válidos
-        while (tasks.Count > 0)
+        return result;
+    }
+
+    /// <summary>
+    /// Precalentado pedido por la app (resultados de búsqueda, siguientes de la cola).
+    /// Es "si sobra cupo": no encadena más precalentados ni busca sustitutos.
+    /// </summary>
+    public void Prefetch(string videoId) =>
+        _ = GetStreamAsync(videoId, allowSubstitute: false, isPrefetch: true);
+
+    private sealed record PendingStream(Lazy<Task<string>> Task, bool IsPrefetch);
+
+    private static bool IsValidVideoId(string? id) =>
+        !string.IsNullOrEmpty(id) && id.Length <= 32 &&
+        id.All(c => char.IsAsciiLetterOrDigit(c) || c == '-' || c == '_');
+
+    /// <summary>
+    /// Extracción real de un vídeo que no está en caché. Orden:
+    ///  1. yt-dlp, pasando por <see cref="YouTubeGate"/> (tope por minuto y cortacircuitos).
+    ///     Es el único extractor que funciona hoy: entre el 19/10 y el 23/11/2026 ganó
+    ///     las 1.326 extracciones; Piped local y YoutubeExplode, ninguna.
+    ///  2. Solo si yt-dlp falla: Piped y YoutubeExplode como respaldo. Antes se lanzaban
+    ///     siempre en paralelo con yt-dlp y multiplicaban las peticiones a YouTube desde
+    ///     la IP de la Pi sin aportar nada.
+    /// </summary>
+    private async Task<string> ResolveStreamAsync(string videoId, bool allowSubstitute, bool isPrefetch)
+    {
+        var cacheKey = $"stream_{videoId}";
+        try
         {
-            var completed = await Task.WhenAny(tasks);
-            tasks.Remove(completed);
+            // true = ahora mismo no se puede (o no se debe) llamar a YouTube desde esta IP.
+            var youTubeUnavailable = false;
 
+            var entry = await _gate.TryEnterAsync(isPrefetch);
+            if (entry.Lease == null)
+            {
+                youTubeUnavailable = true;
+                Console.WriteLine(isPrefetch
+                    ? $"[Stream] Precalentado de {videoId} descartado: {entry.DeniedReason}."
+                    : $"[Stream] {videoId}: no se llama a YouTube ahora ({entry.DeniedReason}).");
+            }
+            else
+            {
+                string ytJson;
+                bool blocked;
+                using (entry.Lease)
+                    (ytJson, blocked) = await ExtractWithYtDlpAsync(videoId);
+
+                if (HasValidAudioStreams(ytJson))
+                {
+                    _gate.ReportSuccess();
+                    return OnStreamResolved(videoId, ytJson, "yt-dlp", isPrefetch);
+                }
+
+                if (blocked)
+                {
+                    _gate.ReportBlocked($"al extraer {videoId}");
+                    youTubeUnavailable = true;
+                }
+                else
+                {
+                    Console.WriteLine($"[Stream] yt-dlp respondió sin audioStreams válidos para {videoId}.");
+                }
+            }
+
+            // Un precalentado termina aquí: ni respaldos ni marcar la canción como
+            // fallida. Si luego se reproduce de verdad, se intentará todo entonces.
+            if (isPrefetch)
+                return BuildErrorJson("Precalentado sin resultado.");
+
+            // Respaldos. Si YouTube nos está limitando, solo los Piped públicos (salen
+            // desde otra IP): Piped local y YoutubeExplode usan la misma IP bloqueada y
+            // seguir llamando desde ella es lo que alarga el bloqueo.
+            using var cts = new CancellationTokenSource(TimeSpan.FromSeconds(8));
+            var tasks = new List<Task<(string json, string source)>>();
+            if (!youTubeUnavailable)
+            {
+                _gate.RecordExtra();
+                tasks.Add(TryPipedInstanceAsync(PipedInstances[0], videoId, cts.Token));
+                tasks.Add(BoundedBySource(Task.Run(async () =>
+                {
+                    var json = await ExtractWithYoutubeExplodeAsync(videoId, cacheKey: null);
+                    return (json, "YoutubeExplode");
+                }), "YoutubeExplode", cts.Token));
+            }
+            for (var i = 1; i <= 2 && i < PipedInstances.Length; i++)
+                tasks.Add(TryPipedInstanceAsync(PipedInstances[i], videoId, cts.Token));
+
+            while (tasks.Count > 0)
+            {
+                var completed = await Task.WhenAny(tasks);
+                tasks.Remove(completed);
+
+                try
+                {
+                    var (json, source) = await completed;
+                    if (HasValidAudioStreams(json))
+                    {
+                        cts.Cancel(); // Cancelar el resto
+                        return OnStreamResolved(videoId, json, source, isPrefetch);
+                    }
+                    Console.WriteLine($"[Stream] {source} respondió sin audioStreams válidos.");
+                }
+                catch (Exception ex)
+                {
+                    Console.WriteLine($"[Stream] Extractor falló: {ex.Message}");
+                }
+            }
+
+            // El problema es el acceso a YouTube, no esta canción: NO se marca como
+            // fallida (antes cada canción quedaba 10 min inservible aunque el bloqueo ya
+            // hubiera pasado) y no se busca sustituto. La app reintentará.
+            if (youTubeUnavailable)
+            {
+                var message = _gate.IsBlocked(out var remaining)
+                    ? $"YouTube está limitando temporalmente al servidor. Reintenta en {Math.Max(1, (int)Math.Ceiling(remaining.TotalMinutes))} min."
+                    : "Demasiadas canciones seguidas. Reintenta en unos segundos.";
+                Console.WriteLine($"[Stream] {videoId}: sin audio por ahora, no se marca como fallida ({message})");
+                return BuildErrorJson(message);
+            }
+
+            // Nada pudo extraer audio de este vídeo. Antes de rendirnos, intentar servir
+            // la MISMA canción desde otra fuente para que el reproductor no note nada.
+            if (allowSubstitute)
+            {
+                var substitute = await TryFindSubstituteAsync(videoId);
+                if (substitute != null)
+                {
+                    _cache.Set(cacheKey, substitute, TimeSpan.FromMinutes(55));
+                    Console.WriteLine($"[Stream] {videoId}: servido con una fuente alternativa de la misma canción.");
+                    return substitute;
+                }
+            }
+
+            var failureJson = BuildErrorJson("Todos los extractores fallaron.");
+            _cache.Set($"stream_failed_{videoId}", failureJson, StreamFailureCooldown);
+            Console.WriteLine($"[Stream] {videoId}: todos los extractores fallaron (sin sustituto disponible); en enfriamiento {StreamFailureCooldown.TotalMinutes:F0} min.");
+            return failureJson;
+        }
+        catch (Exception ex)
+        {
+            Console.WriteLine($"[Stream] Error inesperado resolviendo {videoId}: {ex.Message}");
+            return BuildErrorJson(ex.Message);
+        }
+    }
+
+    /// <summary>
+    /// Guarda en caché un stream recién extraído y, en segundo plano, le añade
+    /// canciones relacionadas y precalienta las 2 más probables de sonar después.
+    /// </summary>
+    private string OnStreamResolved(string videoId, string json, string source, bool isPrefetch)
+    {
+        var cacheKey = $"stream_{videoId}";
+        _cache.Set(cacheKey, json, TimeSpan.FromMinutes(55));
+        Console.WriteLine($"[Stream] OK via {source}{(isPrefetch ? " (precalentado)" : "")} para {videoId}");
+
+        // Enriquecer related streams en background (no bloquea el play) y
+        // precalentar (prefetch) las 2 canciones mas probables de sonar despues.
+        // Arregla el caso "una cancion tarda 4-5s en resolver y el reproductor la
+        // salta por tardar": si ya llego precalentada desde que sonaba la anterior,
+        // el play es instantaneo sin importar cuanto tarde esa cancion en concreto.
+        _ = Task.Run(async () =>
+        {
             try
             {
-                var (json, source) = await completed;
-                if (HasValidAudioStreams(json))
-                {
-                    _cache.Set(cacheKey, json, TimeSpan.FromMinutes(55));
-                    Console.WriteLine($"[Stream] OK via {source} (paralelo) para {videoId}");
-                    cts.Cancel(); // Cancelar el resto
-                    // Enriquecer related streams en background (no bloquea el play) y
-                    // precalentar (prefetch) las 2 canciones mas probables de sonar despues.
-                    // Arregla el caso "una cancion tarda 4-5s en resolver (p.ej. necesita
-                    // yt-dlp porque Piped no le saca audio) y el reproductor la salta por
-                    // tardar": si ya llego precalentada desde que sonaba la anterior, el
-                    // play es instantaneo sin importar cuanto tarde esa cancion en concreto.
-                    // Se aplica siempre, para cualquier cancion, no solo para las que ya
-                    // sabemos que son lentas.
-                    _ = Task.Run(async () =>
-                    {
-                        var enriched = await EnrichRelatedStreamsIfEmptyAsync(json, videoId);
-                        if (enriched != json)
-                            _cache.Set(cacheKey, enriched, TimeSpan.FromMinutes(55));
+                var enriched = await EnrichRelatedStreamsIfEmptyAsync(json, videoId);
+                if (enriched != json)
+                    _cache.Set(cacheKey, enriched, TimeSpan.FromMinutes(55));
 
-                        // Solo desde una reproduccion real: si esta llamada YA es un
-                        // precalentado, no encadenar mas (evita una cascada sin limite que
-                        // multiplica las peticiones a YouTube y dispara su bloqueo por
-                        // "demasiadas peticiones" — nos paso el 29/09, ver commit).
-                        if (!isPrefetch)
-                        {
-                            foreach (var relatedId in ExtractRelatedVideoIds(enriched, max: 2))
-                            {
-                                if (relatedId == videoId) continue;
-                                if (_cache.TryGetValue($"stream_{relatedId}", out string? _)) continue; // ya calentada
-                                _ = GetStreamAsync(relatedId, allowSubstitute: true, isPrefetch: true); // fire-and-forget, un solo nivel
-                            }
-                        }
-                    });
-                    return json;
+                // Solo desde una reproduccion real: si esta llamada YA es un
+                // precalentado, no encadenar mas (evita una cascada sin limite que
+                // multiplica las peticiones a YouTube y dispara su bloqueo por
+                // "demasiadas peticiones" — nos paso el 29/09, ver commit).
+                if (isPrefetch) return;
+
+                foreach (var relatedId in ExtractRelatedVideoIds(enriched, max: 2))
+                {
+                    if (relatedId == videoId) continue;
+                    if (_cache.TryGetValue($"stream_{relatedId}", out string? _)) continue; // ya calentada
+                    Prefetch(relatedId); // fire-and-forget, un solo nivel
                 }
-                Console.WriteLine($"[Stream] {source} respondió sin audioStreams válidos.");
             }
             catch (Exception ex)
             {
-                Console.WriteLine($"[Stream] Extractor falló: {ex.Message}");
+                Console.WriteLine($"[Stream] Error enriqueciendo {videoId}: {ex.Message}");
             }
-        }
+        });
 
-        // Nada pudo extraer audio de este vídeo. Antes de rendirnos, intentar servir
-        // la MISMA canción desde otra fuente para que el reproductor no note nada.
-        if (allowSubstitute)
-        {
-            var substitute = await TryFindSubstituteAsync(videoId);
-            if (substitute != null)
-            {
-                _cache.Set(cacheKey, substitute, TimeSpan.FromMinutes(55));
-                Console.WriteLine($"[Stream] {videoId}: servido con una fuente alternativa de la misma canción.");
-                return substitute;
-            }
-        }
-
-        var failureJson = BuildErrorJson("Todos los extractores fallaron.");
-        _cache.Set(failKey, failureJson, StreamFailureCooldown);
-        Console.WriteLine($"[Stream] {videoId}: todos los extractores fallaron (sin sustituto disponible); en enfriamiento {StreamFailureCooldown.TotalMinutes:F0} min.");
-        return failureJson;
+        return json;
     }
 
     // ─────────────────────────────────────────────────────────────────
@@ -843,171 +996,367 @@ public class MusicExtractionService
     }
 
     /// <summary>
-    /// URL directa del primer formato que matchee <paramref name="formatSelector"/>.
-    /// Devuelve null si yt-dlp falla o si ese formato no existe para el vídeo, para que
-    /// el llamador pueda seguir sin él (no lanza).
+    /// true si la salida de error de yt-dlp indica que YouTube está limitando o
+    /// bloqueando la IP de la Pi (un problema de TODAS las canciones, no de este vídeo).
     /// </summary>
-    private static async Task<string?> RunYtDlpGetUrlAsync(string formatSelector, string videoId)
+    internal static bool LooksLikeYouTubeBlock(string? stderr)
     {
-        try
-        {
-            var (exitCode, output, _, timedOut) = await RunWithTimeoutAsync(
-                "yt-dlp",
-                $"--force-ipv4 --format {formatSelector} --get-url --no-playlist --quiet https://www.youtube.com/watch?v={videoId}",
-                YtDlpTimeout);
-            if (timedOut)
-                Console.WriteLine($"[yt-dlp {formatSelector}] ⏱ Timeout para {videoId}; proceso detenido.");
-            var trimmed = output.Trim();
-            return exitCode == 0 && !string.IsNullOrWhiteSpace(trimmed) ? trimmed : null;
-        }
-        catch (Exception ex)
-        {
-            Console.WriteLine($"[yt-dlp {formatSelector}] {ex.Message}");
-            return null;
-        }
+        if (string.IsNullOrEmpty(stderr)) return false;
+        return stderr.Contains("HTTP Error 429", StringComparison.OrdinalIgnoreCase)
+            || stderr.Contains("Too Many Requests", StringComparison.OrdinalIgnoreCase)
+            || stderr.Contains("not a bot", StringComparison.OrdinalIgnoreCase);
     }
 
+    /// <summary>Lo relevante de la salida de error de yt-dlp, acotado para el log.</summary>
+    private static string SummarizeYtDlpError(string stderr)
+    {
+        var lines = stderr.Split('\n', StringSplitOptions.RemoveEmptyEntries | StringSplitOptions.TrimEntries)
+            .Where(l => l.StartsWith("ERROR", StringComparison.Ordinal) || l.StartsWith("WARNING: [youtube]", StringComparison.Ordinal))
+            .Select(l => l.Length > 220 ? l[..220] + "…" : l)
+            .Take(4)
+            .ToList();
+        if (lines.Count > 0) return string.Join(" | ", lines);
+        var trimmed = stderr.Trim();
+        return trimmed.Length > 300 ? trimmed[..300] + "…" : trimmed;
+    }
+
+    private static string JsonString(JsonElement obj, string name) =>
+        obj.TryGetProperty(name, out var el) && el.ValueKind == JsonValueKind.String ? el.GetString() ?? "" : "";
+
     // ─────────────────────────────────────────────────────────────────
-    // EXTRACTOR yt-dlp — Plan C, el más actualizado y robusto
+    // EXTRACTOR yt-dlp — el único que funciona hoy contra YouTube
     // ─────────────────────────────────────────────────────────────────
-    private async Task<string> ExtractWithYtDlpAsync(string videoId, string? cacheKey)
+
+    /// <summary>Lo que una ejecución de yt-dlp saca de un vídeo.</summary>
+    private sealed record YtDlpAudio(
+        string AudioUrl, string? M4aUrl, string Title, string Thumbnail, string Uploader, long DurationSecs,
+        DateTimeOffset? AvailableAt, bool BlockedByYouTube, string Error)
+    {
+        public bool HasAudio => AudioUrl.Length > 0;
+
+        /// <summary>Direcciones de Google tal cual, sin pasar por nuestro proxy.</summary>
+        public string[] DirectUrls =>
+            string.IsNullOrWhiteSpace(M4aUrl) || M4aUrl == AudioUrl ? new[] { AudioUrl } : new[] { AudioUrl, M4aUrl! };
+    }
+
+    // "Clientes" de YouTube con los que yt-dlp pide el audio, en orden de preferencia.
+    //
+    //  1. visionos: una sola petición a YouTube, sin reto JavaScript y, sobre todo, sin
+    //     espera por anuncio: la dirección sirve al instante. Medido el 23/11/2026 en 10
+    //     vídeos (incluido un mix de 73 min): 1,7-2,4 s por extracción, los dos formatos
+    //     (Opus y m4a) y audio descargable al momento en los 10.
+    //  2. null = los clientes por defecto de yt-dlp (hoy "tv samsung"): ~4 s, y si el
+    //     vídeo lleva anuncio YouTube no sirve el audio hasta pasados ~5 s (ver
+    //     WaitUntilPlayableAsync). Queda de respaldo por si visionos deja de funcionar o
+    //     no trae formatos para algún vídeo.
+    private static readonly string?[] YtDlpPlayerClients = { "visionos", null };
+
+    /// <returns>
+    /// El JSON del stream (o un JSON de error) y si el fallo fue un bloqueo de YouTube a
+    /// la IP, para que el llamador abra el cortacircuitos.
+    /// </returns>
+    private async Task<(string json, bool blockedByYouTube)> ExtractWithYtDlpAsync(string videoId)
     {
         try
         {
-            // El m4a (AAC) se pide EN PARALELO con el bestaudio de siempre.
-            // Motivo: `bestaudio` en YouTube es Opus/WebM, que ExoPlayer (Android)
-            // decodifica sin problema pero AVFoundation (iOS) no soporta en absoluto.
-            // Se lanza antes que nada para que no sume latencia al play.
-            var m4aUrlTask = RunYtDlpGetUrlAsync("bestaudio[ext=m4a]", videoId);
+            string? lastJson = null;
+            var lastError = "sin formatos de audio";
 
-            // Obtener URL directa de audio con yt-dlp (con límite de tiempo real: si
-            // YouTube exige resolver un reto JS y yt-dlp se queda esperando, esto lo
-            // mata en vez de dejar la petición colgada indefinidamente)
-            var (urlExitCode, audioUrlRaw, errorOut, urlTimedOut) = await RunWithTimeoutAsync(
-                "yt-dlp",
-                $"--force-ipv4 --format bestaudio --get-url --no-playlist --quiet https://www.youtube.com/watch?v={videoId}",
-                YtDlpTimeout);
-            var audioUrl = audioUrlRaw.Trim();
-
-            if (urlTimedOut)
-                Console.WriteLine($"[yt-dlp] ⏱ Timeout obteniendo audio de {videoId}; proceso detenido.");
-            if (urlExitCode != 0 || string.IsNullOrEmpty(audioUrl))
+            foreach (var client in YtDlpPlayerClients)
             {
-                Console.WriteLine($"[yt-dlp] ERROR: {errorOut}");
-                return BuildErrorJson($"yt-dlp falló: {errorOut}");
-            }
+                var clientName = client ?? "clientes por defecto";
+                var audio = await RunYtDlpAudioAsync(videoId, client);
 
-            // Obtener título, duración (en segundos), thumbnail y canal con yt-dlp.
-            // El canal/artista es imprescindible para poder buscar canciones relacionadas
-            // despues (EnrichRelatedStreamsIfEmptyAsync se niega a buscar sin artista, para
-            // no traer resultados aleatorios) — sin esto, las canciones que necesitan yt-dlp
-            // (las mas propensas a fallar en Piped) nunca se beneficiaban del precalentado.
-            var (_, metaOutput, _, metaTimedOut) = await RunWithTimeoutAsync(
-                "yt-dlp",
-                $"--force-ipv4 --print title --print duration --print thumbnail --print uploader --no-playlist --quiet https://www.youtube.com/watch?v={videoId}",
-                YtDlpTimeout);
-            if (metaTimedOut)
-                Console.WriteLine($"[yt-dlp] ⏱ Timeout obteniendo metadatos de {videoId}; se usarán valores por defecto.");
-            var metaLines = metaOutput.Split('\n');
-
-            var title = metaLines.Length > 0 ? metaLines[0].Trim() : videoId;
-            var durationSecs = metaLines.Length > 1 && double.TryParse(metaLines[1].Trim(),
-                System.Globalization.NumberStyles.Any, System.Globalization.CultureInfo.InvariantCulture, out var d)
-                ? (long)d : 0L;
-            var thumbnail = metaLines.Length > 2 ? metaLines[2].Trim() : "";
-            var uploader = metaLines.Length > 3 ? metaLines[3].Trim() : "";
-            if (uploader == "NA") uploader = "";
-
-            // El WebM/Opus va SIEMPRE PRIMERO y con el mismo bitrate declarado que antes.
-            // La app Android elige con maxByOrNull { bitrate }, que ante empate se queda con
-            // el primer elemento: su comportamiento no cambia en absoluto y el APK ya
-            // distribuido sigue funcionando igual. El m4a se agrega solo para iOS, que no
-            // puede decodificar Opus.
-            var m4aUrl = await m4aUrlTask;
-            var audioStreamsArray = string.IsNullOrWhiteSpace(m4aUrl)
-                ? new[]
+                if (!audio.HasAudio)
                 {
-                    new
-                    {
-                        url = RewriteToOwnProxy(audioUrl),
-                        format = "webm",
-                        quality = "bestaudio",
-                        mimeType = "audio/webm",
-                        bitrate = 128000L,
-                        videoOnly = false,
-                        itag = 0,
-                        codec = "opus"
-                    }
+                    Console.WriteLine($"[yt-dlp] ERROR ({clientName}): {audio.Error}");
+                    // Un bloqueo de la IP afecta a todos los clientes: insistir con
+                    // otro solo alargaría el bloqueo.
+                    if (audio.BlockedByYouTube)
+                        return (BuildErrorJson($"yt-dlp falló: {audio.Error}"), true);
+                    lastError = audio.Error;
+                    continue;
                 }
-                : new[]
+
+                var json = BuildYtDlpStreamJson(videoId, audio);
+                if (await WaitUntilPlayableAsync(videoId, audio.DirectUrls, audio.AvailableAt))
                 {
-                    new
-                    {
-                        url = RewriteToOwnProxy(audioUrl),
-                        format = "webm",
-                        quality = "bestaudio",
-                        mimeType = "audio/webm",
-                        bitrate = 128000L,
-                        videoOnly = false,
-                        itag = 0,
-                        codec = "opus"
-                    },
-                    new
-                    {
-                        url = RewriteToOwnProxy(m4aUrl!),
-                        format = "m4a",
-                        quality = "bestaudio",
-                        mimeType = "audio/mp4",
-                        bitrate = 128000L,
-                        videoOnly = false,
-                        itag = 0,
-                        codec = "aac"
-                    }
-                };
+                    Console.WriteLine($"[yt-dlp] ✅ Audio extraído exitosamente: {audio.Title}");
+                    return (json, false);
+                }
 
-            if (string.IsNullOrWhiteSpace(m4aUrl))
-                Console.WriteLine($"[yt-dlp] ⚠ Sin m4a para {videoId}: iOS no podrá reproducirlo.");
-
-            // Construir JSON base con relatedStreams vacío
-            var result = new
-            {
-                title = title,
-                description = "",
-                uploader = uploader,
-                uploaderUrl = "",
-                uploaderAvatar = "",
-                uploaderVerified = false,
-                thumbnailUrl = thumbnail,
-                duration = durationSecs,
-                views = 0L,
-                likes = 0L,
-                dislikes = 0L,
-                hls = (string?)null,
-                dash = (string?)null,
-                livestream = false,
-                proxyUrl = "",
-                chapters = Array.Empty<object>(),
-                subtitles = Array.Empty<object>(),
-                relatedStreams = Array.Empty<object>(),
-                previewFrames = Array.Empty<object>(),
-                audioStreams = audioStreamsArray,
-                videoStreams = Array.Empty<object>()
-            };
-
-            // Serializar sin enriquecer (se hace en background desde GetStreamAsync)
-            var json = JsonSerializer.Serialize(result, new JsonSerializerOptions { PropertyNamingPolicy = JsonNamingPolicy.CamelCase });
-            if (cacheKey != null)
-            {
-                json = await EnrichRelatedStreamsIfEmptyAsync(json, videoId);
-                _cache.Set(cacheKey, json, TimeSpan.FromMinutes(50));
+                // De vez en cuando YouTube entrega una dirección que no llega a
+                // funcionar nunca (visto ~1 de cada 10 con los clientes por defecto).
+                Console.WriteLine($"[yt-dlp] ⚠ {videoId}: la dirección obtenida con {clientName} responde 403; se prueba otra vía.");
+                lastJson = json;
             }
-            Console.WriteLine($"[yt-dlp] ✅ Audio extraído exitosamente: {title}");
-            return json;
+
+            // Ninguna vía dio una dirección comprobada. Si hay alguna sin comprobar se
+            // entrega igualmente: puede que funcione desde el reproductor.
+            return lastJson != null
+                ? (lastJson, false)
+                : (BuildErrorJson($"yt-dlp falló: {lastError}"), false);
         }
         catch (Exception ex)
         {
             Console.WriteLine($"[yt-dlp] EXCEPCIÓN: {ex.Message}");
-            return BuildErrorJson($"Todos los extractores fallaron: {ex.Message}");
+            return (BuildErrorJson($"yt-dlp falló: {ex.Message}"), false);
+        }
+    }
+
+    /// <summary>
+    /// UNA ejecución de yt-dlp para un vídeo. Antes eran tres por canción (bestaudio,
+    /// m4a y metadatos), cada una con su propia tanda de peticiones a YouTube.
+    ///
+    /// "bestaudio,bestaudio[ext=m4a]" selecciona dos formatos y --print escribe una
+    /// línea JSON por cada uno, en ese orden:
+    ///   1ª: el bestaudio de siempre (Opus/WebM), con los metadatos del vídeo.
+    ///   2ª: el mejor m4a/AAC, solo para iOS (AVFoundation no decodifica Opus).
+    ///       Si el vídeo no tiene m4a, simplemente no sale esa línea.
+    /// </summary>
+    /// <param name="playerClient">Cliente de YouTube a usar; null = los de yt-dlp por defecto.</param>
+    private async Task<YtDlpAudio> RunYtDlpAudioAsync(string videoId, string? playerClient)
+    {
+        var arguments = new List<string> { "--force-ipv4", "--no-playlist", "--quiet" };
+        if (playerClient != null)
+        {
+            arguments.Add("--extractor-args");
+            arguments.Add($"youtube:player_client={playerClient}");
+        }
+        arguments.AddRange(new[]
+        {
+            "--format", "bestaudio,bestaudio[ext=m4a]",
+            "--print", "%(.{url,ext,title,duration,thumbnail,uploader,available_at})j",
+            $"https://www.youtube.com/watch?v={videoId}"
+        });
+
+        // Con límite de tiempo real: si yt-dlp se queda esperando (p.ej. resolviendo un
+        // reto JS), se mata en vez de dejar la petición colgada.
+        var (_, stdout, errorOut, timedOut) = await RunWithTimeoutAsync("yt-dlp", arguments, YtDlpTimeout);
+        if (timedOut)
+            Console.WriteLine($"[yt-dlp] ⏱ Timeout obteniendo audio de {videoId}; proceso detenido.");
+
+        var audioUrl = "";
+        string? m4aUrl = null;
+        var title = videoId;
+        var thumbnail = "";
+        var uploader = "";
+        var durationSecs = 0L;
+        DateTimeOffset? availableAt = null;
+
+        foreach (var line in stdout.Split('\n', StringSplitOptions.RemoveEmptyEntries))
+        {
+            try
+            {
+                using var doc = JsonDocument.Parse(line);
+                var root = doc.RootElement;
+                if (root.ValueKind != JsonValueKind.Object) continue;
+
+                var url = JsonString(root, "url");
+                if (string.IsNullOrWhiteSpace(url)) continue;
+
+                // Cada formato trae su propia hora de disponibilidad: cuenta la más tardía.
+                if (root.TryGetProperty("available_at", out var avEl) && avEl.ValueKind == JsonValueKind.Number)
+                {
+                    var at = DateTimeOffset.FromUnixTimeSeconds((long)Math.Ceiling(avEl.GetDouble()));
+                    if (availableAt == null || at > availableAt) availableAt = at;
+                }
+
+                if (audioUrl.Length == 0)
+                {
+                    audioUrl = url;
+                    var printedTitle = JsonString(root, "title");
+                    if (printedTitle.Length > 0) title = printedTitle;
+                    thumbnail = JsonString(root, "thumbnail");
+                    // El canal/artista es imprescindible para buscar canciones
+                    // relacionadas despues (EnrichRelatedStreamsIfEmptyAsync se niega
+                    // a buscar sin artista, para no traer resultados aleatorios).
+                    uploader = JsonString(root, "uploader");
+                    if (uploader == "NA") uploader = "";
+                    if (root.TryGetProperty("duration", out var durEl) && durEl.ValueKind == JsonValueKind.Number)
+                        durationSecs = (long)durEl.GetDouble();
+                }
+
+                // Igual que antes: si el propio bestaudio ya es m4a, tambien se
+                // publica como entrada m4a (iOS busca la de mimeType audio/mp4).
+                if (m4aUrl == null && JsonString(root, "ext") == "m4a")
+                    m4aUrl = url;
+            }
+            catch { /* línea que no es JSON: se ignora */ }
+        }
+
+        bool blocked = audioUrl.Length == 0 && !timedOut && LooksLikeYouTubeBlock(errorOut);
+        var error = audioUrl.Length == 0 ? SummarizeYtDlpError(errorOut) : "";
+        return new YtDlpAudio(audioUrl, m4aUrl, title, thumbnail, uploader, durationSecs, availableAt, blocked, error);
+    }
+
+    /// <summary>JSON con el formato Piped que espera la app, a partir de lo que dio yt-dlp.</summary>
+    private static string BuildYtDlpStreamJson(string videoId, YtDlpAudio audio)
+    {
+        var audioUrl = audio.AudioUrl;
+        var m4aUrl = audio.M4aUrl;
+        var title = audio.Title;
+        var thumbnail = audio.Thumbnail;
+        var uploader = audio.Uploader;
+        var durationSecs = audio.DurationSecs;
+
+        // El WebM/Opus va SIEMPRE PRIMERO y con el mismo bitrate declarado que antes.
+        // La app Android elige con maxByOrNull { bitrate }, que ante empate se queda con
+        // el primer elemento: su comportamiento no cambia en absoluto y el APK ya
+        // distribuido sigue funcionando igual. El m4a se agrega solo para iOS, que no
+        // puede decodificar Opus.
+        var audioStreamsArray = string.IsNullOrWhiteSpace(m4aUrl)
+            ? new[]
+            {
+                new
+                {
+                    url = RewriteToOwnProxy(audioUrl),
+                    format = "webm",
+                    quality = "bestaudio",
+                    mimeType = "audio/webm",
+                    bitrate = 128000L,
+                    videoOnly = false,
+                    itag = 0,
+                    codec = "opus"
+                }
+            }
+            : new[]
+            {
+                new
+                {
+                    url = RewriteToOwnProxy(audioUrl),
+                    format = "webm",
+                    quality = "bestaudio",
+                    mimeType = "audio/webm",
+                    bitrate = 128000L,
+                    videoOnly = false,
+                    itag = 0,
+                    codec = "opus"
+                },
+                new
+                {
+                    url = RewriteToOwnProxy(m4aUrl!),
+                    format = "m4a",
+                    quality = "bestaudio",
+                    mimeType = "audio/mp4",
+                    bitrate = 128000L,
+                    videoOnly = false,
+                    itag = 0,
+                    codec = "aac"
+                }
+            };
+
+        if (string.IsNullOrWhiteSpace(m4aUrl))
+            Console.WriteLine($"[yt-dlp] ⚠ Sin m4a para {videoId}: iOS no podrá reproducirlo.");
+
+        // Construir JSON base con relatedStreams vacío
+        var result = new
+        {
+            title = title,
+            description = "",
+            uploader = uploader,
+            uploaderUrl = "",
+            uploaderAvatar = "",
+            uploaderVerified = false,
+            thumbnailUrl = thumbnail,
+            duration = durationSecs,
+            views = 0L,
+            likes = 0L,
+            dislikes = 0L,
+            hls = (string?)null,
+            dash = (string?)null,
+            livestream = false,
+            proxyUrl = "",
+            chapters = Array.Empty<object>(),
+            subtitles = Array.Empty<object>(),
+            relatedStreams = Array.Empty<object>(),
+            previewFrames = Array.Empty<object>(),
+            audioStreams = audioStreamsArray,
+            videoStreams = Array.Empty<object>()
+        };
+
+        // Sin enriquecer: las canciones relacionadas se añaden en segundo plano desde
+        // OnStreamResolved, para no retrasar el play.
+        return JsonSerializer.Serialize(result, new JsonSerializerOptions { PropertyNamingPolicy = JsonNamingPolicy.CamelCase });
+    }
+
+    // ─────────────────────────────────────────────────────────────────
+    // ESPERA hasta que YouTube sirve de verdad el audio recién extraído
+    // ─────────────────────────────────────────────────────────────────
+    //
+    // Con los clientes por defecto de yt-dlp, cuando un vídeo lleva anuncio previo
+    // YouTube no sirve su audio hasta que pasa el tiempo en que el anuncio se puede
+    // saltar (unos 5 s): hasta entonces la dirección responde 403. yt-dlp da la hora
+    // exacta en "available_at". Con el cliente visionos no hay espera.
+    //
+    // Con la extracción antigua (tres ejecuciones de yt-dlp, 8-10 s) esto no se notaba:
+    // al responder a la app ya había pasado ese tiempo, por casualidad. Al pasar a una
+    // sola ejecución la dirección se entregaba antes de hora: el reproductor recibía
+    // 403, reintentaba, volvía a recibir 403 y saltaba de canción. Por eso se espera
+    // hasta la hora indicada y se comprueba que el audio responde antes de entregarlo.
+
+    // Anuncio saltable: ~5 s. Uno no saltable puede pedir 15 s o más; más allá de este
+    // tope no se espera, para no agotar los 25 s que aguanta la app.
+    private static readonly TimeSpan MaxAvailabilityWait = TimeSpan.FromSeconds(12);
+    // Margen sobre la hora que da yt-dlp: viene en segundos enteros y calculada en la
+    // Pi, así que puede quedarse algo corta respecto a la de Google.
+    private static readonly TimeSpan AvailabilityMargin = TimeSpan.FromSeconds(1.5);
+    private const int PlayableChecks = 2;
+    private static readonly TimeSpan PlayableRetryDelay = TimeSpan.FromMilliseconds(800);
+
+    /// <returns>
+    /// false solo si el audio sigue respondiendo 403 una vez pasada su hora: esa
+    /// dirección no sirve. Otra respuesta o un error de red no se arreglan esperando ni
+    /// cambiando de vía, así que cuentan como "no hay nada que objetar".
+    /// </returns>
+    private async Task<bool> WaitUntilPlayableAsync(string videoId, IReadOnlyList<string> directUrls, DateTimeOffset? availableAt)
+    {
+        if (directUrls.Count == 0) return true;
+
+        if (availableAt is { } at)
+        {
+            var wait = at - DateTimeOffset.UtcNow + AvailabilityMargin;
+            if (wait > MaxAvailabilityWait)
+            {
+                Console.WriteLine($"[Stream] ⚠ {videoId}: YouTube pide esperar {wait.TotalSeconds:F0} s (anuncio largo); se espera solo {MaxAvailabilityWait.TotalSeconds:F0} s.");
+                wait = MaxAvailabilityWait;
+            }
+            if (wait > AvailabilityMargin)
+                await Task.Delay(wait);
+        }
+
+        var client = _httpClientFactory.CreateClient();
+        client.Timeout = TimeSpan.FromSeconds(5);
+        var pending = directUrls.ToList();
+        for (int check = 1; check <= PlayableChecks; check++)
+        {
+            for (int i = pending.Count - 1; i >= 0; i--)
+            {
+                if (await ProbeStatusAsync(client, pending[i]) != 403)
+                    pending.RemoveAt(i);
+            }
+            if (pending.Count == 0) return true;
+            if (check < PlayableChecks) await Task.Delay(PlayableRetryDelay);
+        }
+        return false;
+    }
+
+    /// <summary>Código HTTP al pedir el primer KB del audio (0 = error de red o timeout).</summary>
+    private static async Task<int> ProbeStatusAsync(HttpClient client, string url)
+    {
+        try
+        {
+            using var request = new HttpRequestMessage(HttpMethod.Get, url);
+            request.Headers.Range = new System.Net.Http.Headers.RangeHeaderValue(0, 1023);
+            // Google rechaza las peticiones de audio sin User-Agent de navegador.
+            request.Headers.TryAddWithoutValidation("User-Agent",
+                "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 Chrome/124 Safari/537.36");
+            using var response = await client.SendAsync(request, HttpCompletionOption.ResponseHeadersRead);
+            return (int)response.StatusCode;
+        }
+        catch
+        {
+            return 0;
         }
     }
 
@@ -1317,13 +1666,168 @@ public class MusicExtractionService
         if (_cache.TryGetValue(cacheKey, out string? cached) && cached != null)
             return cached;
 
-        var related = await GetRelatedStreamsFromInvidiousAsync(videoId);
+        if (!IsValidVideoId(videoId))
+            return "{\"items\":[]}";
+
+        // Antes solo se preguntaba a Invidious, y sus instancias públicas llevan
+        // tiempo caídas (403 / sin DNS): el "descubrimiento" del recomendador
+        // devolvía siempre cero candidatos. Orden actual:
+        //  1. La "radio" que YouTube genera para esa canción (lista RD): canciones
+        //     realmente parecidas, con el artista bien puesto. Una petición ligera.
+        //  2. Las relacionadas que da Piped local (más ruido: canales de letras,
+        //     compilaciones... que luego filtra IsJunkCandidate).
+        //  3. Invidious, por si alguna instancia vuelve.
+        var related = await GetRelatedFromYouTubeRadioAsync(videoId);
+        if (related.Length == 0) related = await GetRelatedFromPipedAsync(videoId);
+        if (related.Length == 0) related = await GetRelatedStreamsFromInvidiousAsync(videoId);
+
         var json = JsonSerializer.Serialize(
             new { items = related },
             new JsonSerializerOptions { PropertyNamingPolicy = JsonNamingPolicy.CamelCase });
+        // Las canciones parecidas a una dada cambian poco: un día de caché evita
+        // repetir la petición a YouTube cada vez que se recalculan recomendaciones.
         if (related.Length > 0)
-            _cache.Set(cacheKey, json, TimeSpan.FromHours(2));
+            _cache.Set(cacheKey, json, TimeSpan.FromHours(24));
         return json;
+    }
+
+    /// <summary>Forma común de un candidato relacionado (la que lee ParseCandidates).</summary>
+    private static object RelatedItem(string id, string title, string artist, long durationSeconds) => new
+    {
+        url = $"/watch?v={id}",
+        videoId = id,
+        type = "stream",
+        title,
+        thumbnail = $"https://i.ytimg.com/vi/{id}/mqdefault.jpg",
+        uploaderName = artist,
+        uploaderUrl = "",
+        uploaderAvatar = "",
+        uploaderVerified = false,
+        duration = durationSeconds,
+        views = 0L,
+        uploaded = 0L,
+        shortDescription = "",
+        isShort = false
+    };
+
+    // ─────────────────────────────────────────────────────────────────
+    // RELATED via la "radio" de YouTube (lista RD{videoId}) con yt-dlp
+    // ─────────────────────────────────────────────────────────────────
+    /// <summary>
+    /// Canciones de la radio automática de YouTube para un vídeo. No extrae audio
+    /// (--flat-playlist): es una sola petición ligera, pero sigue siendo tráfico a
+    /// YouTube desde la IP de la Pi, así que respeta el cupo y el cortacircuitos.
+    /// </summary>
+    private async Task<object[]> GetRelatedFromYouTubeRadioAsync(string videoId)
+    {
+        if (!_gate.TryConsume())
+        {
+            Console.WriteLine($"[Radio Related] Omitida para {videoId}: sin cupo de YouTube ahora.");
+            return Array.Empty<object>();
+        }
+
+        try
+        {
+            var (_, stdout, stderr, timedOut) = await RunWithTimeoutAsync(
+                "yt-dlp",
+                new[]
+                {
+                    "--force-ipv4", "--flat-playlist", "--quiet", "--no-warnings",
+                    "--playlist-end", "30",
+                    "--print", "%(.{id,title,uploader,channel,duration})j",
+                    "--", $"https://www.youtube.com/watch?v={videoId}&list=RD{videoId}"
+                },
+                YtDlpTimeout);
+
+            if (!timedOut && LooksLikeYouTubeBlock(stderr))
+            {
+                _gate.ReportBlocked($"al pedir la radio de {videoId}");
+                return Array.Empty<object>();
+            }
+
+            var items = new List<object>();
+            foreach (var line in stdout.Split('\n', StringSplitOptions.RemoveEmptyEntries))
+            {
+                try
+                {
+                    using var doc = JsonDocument.Parse(line);
+                    var root = doc.RootElement;
+                    if (root.ValueKind != JsonValueKind.Object) continue;
+
+                    var id = JsonString(root, "id");
+                    var title = JsonString(root, "title");
+                    if (!IsValidVideoId(id) || id == videoId || title.Length == 0) continue;
+
+                    var artist = JsonString(root, "uploader");
+                    if (artist.Length == 0) artist = JsonString(root, "channel");
+                    var duration = root.TryGetProperty("duration", out var durEl) && durEl.ValueKind == JsonValueKind.Number
+                        ? (long)durEl.GetDouble() : 0L;
+
+                    items.Add(RelatedItem(id, title, artist, duration));
+                }
+                catch { /* línea que no es JSON: se ignora */ }
+            }
+
+            Console.WriteLine(items.Count > 0
+                ? $"[Radio Related] ✅ {items.Count} canciones parecidas a {videoId}"
+                : $"[Radio Related] Sin resultados para {videoId}{(timedOut ? " (timeout)" : "")}");
+            return items.ToArray();
+        }
+        catch (Exception ex)
+        {
+            Console.WriteLine($"[Radio Related] Error para {videoId}: {ex.Message}");
+            return Array.Empty<object>();
+        }
+    }
+
+    // ─────────────────────────────────────────────────────────────────
+    // RELATED via Piped local (/streams/{id} → relatedStreams)
+    // ─────────────────────────────────────────────────────────────────
+    /// <summary>
+    /// Piped local ya no consigue audio, pero sí devuelve las relacionadas del vídeo.
+    /// </summary>
+    private async Task<object[]> GetRelatedFromPipedAsync(string videoId)
+    {
+        if (_gate.IsBlocked(out _)) return Array.Empty<object>(); // Piped sale por la misma IP
+
+        try
+        {
+            var client = _httpClientFactory.CreateClient();
+            client.Timeout = TimeSpan.FromSeconds(8);
+            var response = await client.GetAsync($"{PipedInstances[0]}/streams/{videoId}");
+            if (!response.IsSuccessStatusCode) return Array.Empty<object>();
+
+            using var doc = JsonDocument.Parse(await response.Content.ReadAsStringAsync());
+            if (!doc.RootElement.TryGetProperty("relatedStreams", out var related) ||
+                related.ValueKind != JsonValueKind.Array)
+                return Array.Empty<object>();
+
+            var items = new List<object>();
+            foreach (var v in related.EnumerateArray())
+            {
+                if (v.ValueKind != JsonValueKind.Object) continue;
+                if (JsonString(v, "type") is { Length: > 0 } type && type != "stream") continue;
+
+                var url = JsonString(v, "url");
+                var idx = url.IndexOf("?v=", StringComparison.Ordinal);
+                var id = idx >= 0 ? url[(idx + 3)..] : "";
+                var title = JsonString(v, "title");
+                if (!IsValidVideoId(id) || id == videoId || title.Length == 0) continue;
+
+                var duration = v.TryGetProperty("duration", out var durEl) && durEl.ValueKind == JsonValueKind.Number
+                    ? (long)durEl.GetDouble() : 0L;
+                items.Add(RelatedItem(id, title, JsonString(v, "uploaderName"), duration));
+            }
+
+            if (items.Count > 0)
+                Console.WriteLine($"[Piped Related] ✅ {items.Count} relacionadas para {videoId}");
+            return items.ToArray();
+        }
+        catch (Exception ex)
+        {
+            Console.WriteLine($"[Piped Related] Fallo para {videoId}: {ex.Message}");
+            return Array.Empty<object>();
+        }
     }
 
     // ─────────────────────────────────────────────────────────────────

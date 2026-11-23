@@ -42,10 +42,12 @@ public class StreamsController : ControllerBase
         if (request?.VideoIds == null || request.VideoIds.Length == 0)
             return BadRequest();
 
-        // Limitar a 3 para no sobrecargar la Pi
+        // Limitar a 3 para no sobrecargar la Pi. Se marcan como precalentado: antes
+        // entraban como una reproducción real, así que cada una precalentaba a su vez
+        // 2 relacionadas (3 pedidas -> hasta 9 canciones extraídas de YouTube).
         var ids = request.VideoIds.Take(3).ToArray();
         foreach (var id in ids)
-            _ = _musicService.GetStreamAsync(id);
+            _musicService.Prefetch(id);
 
         return Accepted();
     }

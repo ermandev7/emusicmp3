@@ -18,5 +18,7 @@ public class History
     public DateTime PlayedAt { get; set; } = DateTime.UtcNow;
     public string UserId { get; set; } = "";
     public bool SkippedEarly { get; set; }
+    /// <summary>Veces que el usuario saltó esta canción (no se borra al volver a escucharla).</summary>
+    public int SkipCount { get; set; }
     public bool IsDownloaded { get; set; }
 }

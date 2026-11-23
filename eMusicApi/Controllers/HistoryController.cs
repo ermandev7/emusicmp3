@@ -33,6 +33,8 @@ public class HistoryController : ControllerBase
         return _extraction.TryGetCachedDurationMs(videoId) ?? clientDuration;
     }
 
+    private const int MaxHistoryPerUser = 2000;
+
     private string GetUserId() =>
         Request.Headers.TryGetValue("X-User-Id", out var val) ? val.ToString() : "";
 
@@ -77,10 +79,12 @@ public class HistoryController : ControllerBase
 
         await _context.SaveChangesAsync();
 
-        // Limpiar historial antiguo de este usuario (mantener 200)
+        // Limpiar historial antiguo de este usuario. Se guardan 2000 canciones (antes
+        // 200): con 200, un usuario activo perdía sus canciones más escuchadas en cuanto
+        // dejaba de ponerlas unas semanas, y el recomendador olvidaba su gusto de fondo.
         var oldHistory = await _context.History
             .Where(h => h.UserId == userId)
-            .OrderByDescending(h => h.PlayedAt).Skip(200).ToListAsync();
+            .OrderByDescending(h => h.PlayedAt).Skip(MaxHistoryPerUser).ToListAsync();
         if (oldHistory.Any())
         {
             _context.History.RemoveRange(oldHistory);
@@ -129,7 +133,8 @@ public class HistoryController : ControllerBase
         if (combined.Contains("bachi")) return "bachata";
         if (combined.Contains("ranchera") || combined.Contains("mariachi") || combined.Contains("norteñ")) return "ranchera";
         if (combined.Contains("corrido") || combined.Contains("tumbado")) return "corrido";
-        if (combined.Contains("romántic") || combined.Contains("amor") || combined.Contains("corazón")) return "balada";
+        // "amor"/"corazón" en el título ya no cuentan como balada (ver RecommendationEngine.DetectGenre).
+        if (combined.Contains("romántic")) return "balada";
 
         return null;
     }
@@ -143,6 +148,9 @@ public class HistoryController : ControllerBase
         if (entry == null) return NotFound();
 
         entry.SkippedEarly = true;
+        // SkippedEarly se borra cuando la canción vuelve a sonar; el contador no, así
+        // el recomendador distingue un salto suelto de una canción que siempre se salta.
+        entry.SkipCount++;
         await _context.SaveChangesAsync();
         return NoContent();
     }

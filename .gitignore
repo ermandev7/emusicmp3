@@ -37,3 +37,12 @@ Thumbs.db
 DerivedData/
 *.xcworkspace/xcshareddata/IDEWorkspaceChecks.plist
 kotlinapp/iosApp/build/
+
+# Bases de datos: NUNCA al repositorio. Contienen el historial de escucha, los
+# favoritos y los identificadores de los usuarios, y este repositorio es publico.
+# (El 23/11/2026 se eliminaron de todo el historial las que se habian subido.)
+*.db
+*.db-wal
+*.db-shm
+*.sqlite
+*.sqlite3
